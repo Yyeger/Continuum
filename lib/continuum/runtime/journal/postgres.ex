@@ -103,6 +103,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   @impl true
+  def suspend!(run_id, lease_token) do
+    cas_update_run(run_id, lease_token, %{state: "suspended"})
+  end
+
+  @impl true
   def complete!(run_id, result, lease_token) do
     cas_update_run(run_id, lease_token, %{
       state: "completed",

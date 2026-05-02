@@ -22,6 +22,8 @@ defmodule Continuum.Runtime.Journal do
 
   @callback load(run_id :: binary()) :: [map()]
 
+  @callback suspend!(run_id :: binary(), lease_token :: integer() | nil) :: :ok
+
   @callback complete!(run_id :: binary(), result :: term(), lease_token :: integer() | nil) ::
               :ok
 

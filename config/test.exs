@@ -3,6 +3,7 @@ import Config
 config :continuum,
   repo: Continuum.Test.Repo,
   ecto_repos: [Continuum.Test.Repo],
+  dispatcher: false,
   determinism_violations: :error
 
 config :continuum, Continuum.Test.Repo,

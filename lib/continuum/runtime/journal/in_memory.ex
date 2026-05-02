@@ -34,6 +34,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   @impl true
+  def suspend!(run_id, _lease_token) do
+    GenServer.call(__MODULE__, {:suspend, run_id})
+  end
+
+  @impl true
   def complete!(run_id, result, _lease_token) do
     GenServer.call(__MODULE__, {:complete, run_id, result})
   end
@@ -93,6 +98,15 @@ defmodule Continuum.Runtime.Journal.InMemory do
       end
 
     {:reply, events, state}
+  end
+
+  def handle_call({:suspend, run_id}, _from, state) do
+    state =
+      Map.update(state, run_id, init_run(run_id), fn run ->
+        %{run | state: :suspended}
+      end)
+
+    {:reply, :ok, state}
   end
 
   def handle_call({:complete, run_id, result}, _from, state) do

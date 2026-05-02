@@ -14,13 +14,14 @@ defmodule Continuum.Runtime.Engine do
   use GenServer
   require Logger
 
-  alias Continuum.Runtime.Context
+  alias Continuum.Runtime.{Context, Lease}
 
   defstruct [
     :run_id,
     :workflow_module,
     :input,
     :journal,
+    :lease_owner,
     :lease_token,
     :status,
     :result,
@@ -37,6 +38,16 @@ defmodule Continuum.Runtime.Engine do
   def start_run(workflow_module, input, opts \\ []) do
     run_id = Keyword.get(opts, :run_id, Continuum.Runtime.IdGen.run_id())
 
+    start_child(workflow_module, input, run_id, opts)
+  end
+
+  @doc false
+  def resume_run(workflow_module, input, run_id, opts \\ []) do
+    opts = Keyword.put(opts, :resume, true)
+    start_child(workflow_module, input, run_id, opts)
+  end
+
+  defp start_child(workflow_module, input, run_id, opts) do
     case DynamicSupervisor.start_child(
            Continuum.Runtime.RunSupervisor,
            {__MODULE__, {workflow_module, input, run_id, opts}}
@@ -100,12 +111,19 @@ defmodule Continuum.Runtime.Engine do
         {:error, %{run_id: run_id, state: :cancelled}}
 
       %{state: :running} ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          {:error, :timeout}
-        else
-          Process.sleep(5)
-          poll_until(run_id, deadline, journal)
-        end
+        poll_pending(run_id, deadline, journal)
+
+      %{state: :suspended} ->
+        poll_pending(run_id, deadline, journal)
+    end
+  end
+
+  defp poll_pending(run_id, deadline, journal) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      {:error, :timeout}
+    else
+      Process.sleep(5)
+      poll_until(run_id, deadline, journal)
     end
   end
 
@@ -129,14 +147,20 @@ defmodule Continuum.Runtime.Engine do
   @impl true
   def init({workflow_module, input, run_id, opts}) do
     journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.InMemory)
-    :ok = journal.start_run(run_id, workflow_module, input)
+
+    unless Keyword.get(opts, :resume, false) do
+      :ok = journal.start_run(run_id, workflow_module, input)
+    end
+
+    {lease_owner, lease_token} = acquire_lease(journal, run_id, opts)
 
     state = %__MODULE__{
       run_id: run_id,
       workflow_module: workflow_module,
       input: input,
       journal: journal,
-      lease_token: nil,
+      lease_owner: lease_owner,
+      lease_token: lease_token,
       status: :running,
       result: nil,
       error: nil
@@ -169,8 +193,20 @@ defmodule Continuum.Runtime.Engine do
   def handle_call(:cancel, _from, state) do
     :ok = state.journal.fail!(state.run_id, :cancelled, state.lease_token)
     state = %{state | status: :cancelled, error: :cancelled}
+    untrack_lease(state)
     {:stop, :normal, :ok, state}
   end
+
+  @impl true
+  def handle_info(
+        {:continuum_lease_lost, run_id, token},
+        %{run_id: run_id, lease_token: token} = state
+      ) do
+    Logger.warning("Workflow #{run_id} lost its Postgres lease; stopping stale engine")
+    {:stop, :normal, state}
+  end
+
+  def handle_info({:continuum_lease_lost, _run_id, _token}, state), do: {:noreply, state}
 
   # ---------------------------------------------------------------------------
   # Replay loop
@@ -197,6 +233,7 @@ defmodule Continuum.Runtime.Engine do
     catch
       {:continuum_suspend, reason} ->
         Logger.debug("Workflow #{state.run_id} suspended: #{inspect(reason)}")
+        :ok = state.journal.suspend!(state.run_id, state.lease_token)
         %{state | status: :suspended}
 
       kind, reason ->
@@ -211,6 +248,41 @@ defmodule Continuum.Runtime.Engine do
   defp finalize(%{status: :suspended} = state), do: {:noreply, state}
 
   defp finalize(state) do
+    untrack_lease(state)
     {:stop, :normal, state}
   end
+
+  defp acquire_lease(Continuum.Runtime.Journal.Postgres, run_id, opts) do
+    case {Keyword.get(opts, :lease_owner), Keyword.get(opts, :lease_token)} do
+      {owner, token} when is_binary(owner) and is_integer(token) ->
+        track_lease(%Lease{run_id: run_id, owner: owner, token: token})
+        {owner, token}
+
+      _ ->
+        lease =
+          Lease.acquire!(run_id,
+            owner: Keyword.get_lazy(opts, :lease_owner, &Lease.owner/0),
+            ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
+          )
+
+        track_lease(lease)
+        {lease.owner, lease.token}
+    end
+  end
+
+  defp acquire_lease(_journal, _run_id, _opts), do: {nil, nil}
+
+  defp track_lease(%Lease{} = lease) do
+    if Process.whereis(Continuum.Runtime.Lease.Heartbeater) do
+      Continuum.Runtime.Lease.Heartbeater.track(lease, self())
+    end
+  end
+
+  defp untrack_lease(%{run_id: run_id, lease_token: token}) when is_integer(token) do
+    if Process.whereis(Continuum.Runtime.Lease.Heartbeater) do
+      Continuum.Runtime.Lease.Heartbeater.untrack(run_id)
+    end
+  end
+
+  defp untrack_lease(_state), do: :ok
 end
