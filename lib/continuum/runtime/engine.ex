@@ -48,9 +48,7 @@ defmodule Continuum.Runtime.Engine do
 
   @doc false
   def start_link({workflow_module, input, run_id, opts}) do
-    GenServer.start_link(__MODULE__, {workflow_module, input, run_id, opts},
-      name: via(run_id)
-    )
+    GenServer.start_link(__MODULE__, {workflow_module, input, run_id, opts}, name: via(run_id))
   end
 
   @doc false
@@ -78,14 +76,17 @@ defmodule Continuum.Runtime.Engine do
 
   Polls the journal at 5 ms intervals. Source of truth is the journal —
   works even after the engine process has exited.
+
+  Accepts `journal:` in opts to override which journal adapter to poll.
   """
-  def await(run_id, timeout) do
+  def await(run_id, timeout, opts \\ []) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    poll_until(run_id, deadline)
+    journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.default())
+    poll_until(run_id, deadline, journal)
   end
 
-  defp poll_until(run_id, deadline) do
-    case Continuum.Runtime.Journal.InMemory.get_run(run_id) do
+  defp poll_until(run_id, deadline, journal) do
+    case journal.get_run(run_id) do
       nil ->
         {:error, :not_found}
 
@@ -103,7 +104,7 @@ defmodule Continuum.Runtime.Engine do
           {:error, :timeout}
         else
           Process.sleep(5)
-          poll_until(run_id, deadline)
+          poll_until(run_id, deadline, journal)
         end
     end
   end

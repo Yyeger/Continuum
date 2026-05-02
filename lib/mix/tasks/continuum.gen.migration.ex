@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     {opts, _, _} = OptionParser.parse(args, switches: [repo: :string])
 
     repo = parse_repo(opts)
-    path = Ecto.Migrator.migrations_path(repo)
+    path = source_migrations_path(repo)
     File.mkdir_p!(path)
 
     timestamp = timestamp()
@@ -34,6 +34,11 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
 
     File.write!(filename, migration_source(module_name))
     Mix.shell().info("Created #{filename}")
+  end
+
+  defp source_migrations_path(repo) do
+    priv = Keyword.get(repo.config(), :priv, "priv/repo")
+    Path.join([File.cwd!(), priv, "migrations"])
   end
 
   defp parse_repo(opts) do

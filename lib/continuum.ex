@@ -53,9 +53,9 @@ defmodule Continuum do
   @doc """
   Block until the run completes. Test/synchronous use only.
   """
-  @spec await(run_id(), timeout()) :: {:ok, map()} | {:error, term()}
-  def await(run_id, timeout \\ 5_000) do
-    Continuum.Runtime.Engine.await(run_id, timeout)
+  @spec await(run_id(), timeout(), keyword()) :: {:ok, map()} | {:error, term()}
+  def await(run_id, timeout \\ 5_000, opts \\ []) do
+    Continuum.Runtime.Engine.await(run_id, timeout, opts)
   end
 
   # ---------------------------------------------------------------------------

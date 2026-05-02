@@ -59,7 +59,8 @@ defmodule Continuum.MixProject do
 
   defp aliases do
     [
-      test: ["test"]
+      "test.setup": ["ecto.drop --quiet", "ecto.create --quiet", "ecto.migrate --quiet"],
+      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
     ]
   end
 end

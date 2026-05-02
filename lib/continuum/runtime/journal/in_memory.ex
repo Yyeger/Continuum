@@ -49,7 +49,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
   @doc "Wipe all journals. Test helper only."
   def reset, do: GenServer.call(__MODULE__, :reset)
 
-  @doc "Look up the run record (state, result, error). Returns nil if absent."
+  @impl true
   def get_run(run_id), do: GenServer.call(__MODULE__, {:get_run, run_id})
 
   # ---------------------------------------------------------------------------

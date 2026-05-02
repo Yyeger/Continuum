@@ -58,7 +58,7 @@ defmodule Continuum.Runtime.Context do
 
       nil ->
         raise Continuum.NotInWorkflowError,
-          "this function must be called from inside a Continuum workflow process"
+              "this function must be called from inside a Continuum workflow process"
     end
   end
 end

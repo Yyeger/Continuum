@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    container_name: continuum_postgres
+    environment:
+      POSTGRES_USER: continuum
+      POSTGRES_PASSWORD: continuum
+      POSTGRES_DB: continuum_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - continuum_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U continuum"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  continuum_pgdata:
