@@ -1,0 +1,117 @@
+defmodule Continuum.AstCheckTest do
+  use ExUnit.Case, async: true
+
+  alias Continuum.AstCheck
+
+  describe "scan/2" do
+    test "passes through pure code" do
+      ast =
+        quote do
+          fn items ->
+            Enum.reduce(items, 0, fn x, acc -> x.price + acc end)
+          end
+        end
+
+      assert :ok == AstCheck.scan(ast)
+    end
+
+    test "rejects DateTime.utc_now/0 with a remediation hint" do
+      ast =
+        quote do
+          DateTime.utc_now()
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast, "test/fake.ex")
+      assert violation.mfa == {DateTime, :utc_now}
+      assert violation.hint =~ "Continuum.now/0"
+      assert violation.file == "test/fake.ex"
+    end
+
+    test "rejects :rand.uniform/0" do
+      ast =
+        quote do
+          :rand.uniform()
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {:rand, :uniform}
+      assert violation.hint =~ "Continuum.random/0"
+    end
+
+    test "rejects ETS access" do
+      ast =
+        quote do
+          :ets.lookup(:my_table, :my_key)
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {:ets, :lookup}
+    end
+
+    test "rejects raw Process.send_after" do
+      ast =
+        quote do
+          Process.send_after(self(), :wake, 1000)
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.hint =~ "Continuum.timer/1"
+    end
+
+    test "rejects File.read! deep inside an expression" do
+      ast =
+        quote do
+          fn ->
+            data = File.read!("/etc/secrets")
+            String.split(data, "\n")
+          end
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {File, :read!}
+    end
+
+    test "collects multiple violations" do
+      ast =
+        quote do
+          fn ->
+            now = DateTime.utc_now()
+            r = :rand.uniform()
+            {now, r}
+          end
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert length(violations) == 2
+
+      mfas = Enum.map(violations, & &1.mfa)
+      assert {DateTime, :utc_now} in mfas
+      assert {:rand, :uniform} in mfas
+    end
+
+    test "format/1 produces a readable diagnostic" do
+      {:error, violations} =
+        AstCheck.scan(quote(do: DateTime.utc_now()), "test/foo.ex")
+
+      output = AstCheck.format(violations)
+      assert output =~ "Determinism violation"
+      assert output =~ "Continuum.now/0"
+    end
+  end
+
+  describe "denylist coverage" do
+    test "every entry has a non-empty hint" do
+      for {{mod, fun}, hint} <- AstCheck.forbidden_calls() do
+        assert is_atom(mod), "module must be an atom: #{inspect({mod, fun})}"
+        assert is_atom(fun), "function must be an atom: #{inspect({mod, fun})}"
+        assert is_binary(hint) and hint != "", "missing hint for #{inspect({mod, fun})}"
+      end
+    end
+
+    test "trusted stdlib modules are non-empty atoms" do
+      for mod <- AstCheck.trusted_stdlib() do
+        assert is_atom(mod)
+      end
+    end
+  end
+end
