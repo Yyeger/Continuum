@@ -98,6 +98,7 @@ defmodule Continuum.Runtime.Recovery do
         END
     WHERE state IN ('running', 'suspended')
       AND (lease_owner IS NOT NULL OR lease_token IS NOT NULL OR lease_expires_at IS NOT NULL)
+      AND lease_expires_at < now()
       #{skip_local_sql}
     RETURNING id
     """

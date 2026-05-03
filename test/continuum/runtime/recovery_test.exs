@@ -56,6 +56,11 @@ defmodule Continuum.Runtime.RecoveryTest do
     assert {:ok, %Lease{token: token}} = Lease.acquire(run_id, owner: "dead-node")
     :ok = Postgres.suspend!(run_id, token)
 
+    Repo.update_all(
+      from(r in Run, where: r.id == ^run_id),
+      set: [lease_expires_at: past_time()]
+    )
+
     assert {:ok, %{runs: 1}} = Recovery.recover_once()
 
     recovered = Repo.one!(from(r in Run, where: r.id == ^run_id))
@@ -67,6 +72,21 @@ defmodule Continuum.Runtime.RecoveryTest do
 
     assert {:ok, %{state: :completed, result: {:ok, 5}}} =
              Continuum.await(run_id, 1_000, journal: Postgres)
+  end
+
+  test "does not clear another node's live run lease" do
+    run_id = Ecto.UUID.generate()
+    :ok = Postgres.start_run(run_id, RecoverFlow, %{seed: 4})
+    assert {:ok, %Lease{token: token}} = Lease.acquire(run_id, owner: "live-node")
+    :ok = Postgres.suspend!(run_id, token)
+
+    assert {:ok, %{runs: 0}} = Recovery.recover_once()
+
+    recovered = Repo.one!(from(r in Run, where: r.id == ^run_id))
+    assert recovered.state == "suspended"
+    assert recovered.lease_owner == "live-node"
+    assert recovered.lease_token == token
+    assert DateTime.compare(recovered.lease_expires_at, DateTime.utc_now()) == :gt
   end
 
   test "requeues activity tasks leased by a crashed worker" do
