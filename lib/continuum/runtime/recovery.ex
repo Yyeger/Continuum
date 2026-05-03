@@ -10,6 +10,8 @@ defmodule Continuum.Runtime.Recovery do
   use GenServer
   require Logger
 
+  alias Continuum.Telemetry
+
   @doc false
   def child_spec(opts) do
     %{
@@ -47,6 +49,12 @@ defmodule Continuum.Runtime.Recovery do
     with {:ok, runs} <- recover_runs(),
          {:ok, activity_tasks} <- recover_activity_tasks(),
          {:ok, timers} <- recover_due_timers() do
+      Telemetry.execute([:continuum, :recovery, :completed], %{}, %{
+        runs: runs,
+        activity_tasks: activity_tasks,
+        timers: timers
+      })
+
       {:ok, %{runs: runs, activity_tasks: activity_tasks, timers: timers}}
     end
   end

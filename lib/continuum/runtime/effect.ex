@@ -19,7 +19,7 @@ defmodule Continuum.Runtime.Effect do
   deterministic primitives (`Continuum.now/0`, `Continuum.uuid4/0`, etc.).
   """
 
-  alias Continuum.Runtime.Context
+  alias Continuum.{Runtime.Context, Telemetry}
 
   @type effect ::
           {:activity, {module(), atom(), list()}, keyword()}
@@ -128,6 +128,13 @@ defmodule Continuum.Runtime.Effect do
         ctx.lease_token
       )
 
+    Telemetry.execute([:continuum, :activity, :scheduled], %{}, %{
+      run_id: ctx.run_id,
+      task_id: task_id,
+      mfa: {mod, fun, args},
+      seq: ctx.cursor
+    })
+
     throw({:continuum_suspend, {:activity_pending, task_id}})
   end
 
@@ -161,6 +168,13 @@ defmodule Continuum.Runtime.Effect do
         ctx.lease_token
       )
 
+    Telemetry.execute([:continuum, :timer, :scheduled], %{duration_ms: ms}, %{
+      run_id: ctx.run_id,
+      timer_id: timer_id,
+      fires_at: fires_at,
+      seq: ctx.cursor
+    })
+
     throw({:continuum_suspend, {:timer_pending, timer_id}})
   end
 
@@ -183,9 +197,21 @@ defmodule Continuum.Runtime.Effect do
         ctx.lease_token
       )
 
+    Telemetry.execute([:continuum, :signal, :awaited], %{}, %{
+      run_id: ctx.run_id,
+      signal_name: name,
+      seq: ctx.cursor
+    })
+
     case Continuum.Runtime.Journal.Postgres.consume_signal(ctx.run_id, name, ctx.lease_token) do
       {:ok, payload} ->
         Context.put(%{ctx | cursor: ctx.cursor + 2})
+
+        Telemetry.execute([:continuum, :signal, :received], %{}, %{
+          run_id: ctx.run_id,
+          signal_name: name
+        })
+
         payload
 
       :none ->
@@ -194,8 +220,19 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp live_tail!(ctx, {:activity, {mod, fun, args}, _opts} = effect, _live_compute) do
+    Telemetry.execute([:continuum, :activity, :started], %{}, %{
+      run_id: ctx.run_id,
+      mfa: {mod, fun, args}
+    })
+
     result = apply(mod, fun, args)
     journal_live!(ctx, effect, result)
+
+    Telemetry.execute([:continuum, :activity, :completed], %{}, %{
+      run_id: ctx.run_id,
+      mfa: {mod, fun, args}
+    })
+
     result
   end
 
@@ -300,8 +337,16 @@ defmodule Continuum.Runtime.Effect do
 
       nil ->
         case Continuum.Runtime.Journal.Postgres.consume_signal(ctx.run_id, name, ctx.lease_token) do
-          {:ok, payload} -> {:ok, payload, 2}
-          :none -> :pending
+          {:ok, payload} ->
+            Telemetry.execute([:continuum, :signal, :received], %{}, %{
+              run_id: ctx.run_id,
+              signal_name: name
+            })
+
+            {:ok, payload, 2}
+
+          :none ->
+            :pending
         end
 
       _other ->

@@ -17,6 +17,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   import Ecto.Query
 
   alias Continuum.Schema.{ActivityTask, Event, Run, Signal, Timer}
+  alias Continuum.Telemetry
 
   @impl true
   def start_run(run_id, workflow, input) do
@@ -249,6 +250,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case result do
       {:ok, :ok} ->
+        Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
+          run_id: run_id,
+          signal_name: name,
+          durable?: true
+        })
+
         :ok
 
       {:error, reason} ->

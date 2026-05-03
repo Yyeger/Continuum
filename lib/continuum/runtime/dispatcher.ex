@@ -11,7 +11,7 @@ defmodule Continuum.Runtime.Dispatcher do
   use GenServer
   require Logger
 
-  alias Continuum.Runtime.{Engine, Journal, Lease}
+  alias Continuum.{Runtime.Engine, Runtime.Journal, Runtime.Lease, Telemetry}
 
   @default_interval_ms 1_000
   @default_batch_size 10
@@ -33,6 +33,12 @@ defmodule Continuum.Runtime.Dispatcher do
 
     with {:ok, claimed} <- claim(owner, batch_size, ttl_seconds) do
       Enum.each(claimed, &start_engine/1)
+
+      Telemetry.execute([:continuum, :dispatcher, :polled], %{count: length(claimed)}, %{
+        owner: owner,
+        batch_size: batch_size
+      })
+
       {:ok, length(claimed)}
     end
   end
@@ -93,7 +99,14 @@ defmodule Continuum.Runtime.Dispatcher do
 
     case repo().query(sql, [owner, batch_size, ttl_seconds]) do
       {:ok, %{rows: rows}} ->
-        {:ok, Enum.map(rows, &decode_claim(owner, &1))}
+        claimed = Enum.map(rows, &decode_claim(owner, &1))
+
+        Telemetry.execute([:continuum, :dispatcher, :claimed], %{count: length(claimed)}, %{
+          owner: owner,
+          batch_size: batch_size
+        })
+
+        {:ok, claimed}
 
       {:error, reason} ->
         {:error, reason}

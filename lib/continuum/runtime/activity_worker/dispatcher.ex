@@ -6,7 +6,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   use GenServer
   require Logger
 
-  alias Continuum.Runtime.ActivityWorker.Worker
+  alias Continuum.{Runtime.ActivityWorker.Worker, Telemetry}
 
   @default_interval_ms 1_000
   @default_batch_size 10
@@ -28,6 +28,12 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
     with {:ok, tasks} <- claim(owner, batch_size, ttl_seconds) do
       Enum.each(tasks, &start_worker/1)
+
+      Telemetry.execute([:continuum, :activity_dispatcher, :polled], %{count: length(tasks)}, %{
+        owner: owner,
+        batch_size: batch_size
+      })
+
       {:ok, length(tasks)}
     end
   end
@@ -83,8 +89,22 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     """
 
     case repo().query(sql, [owner, batch_size, ttl_seconds]) do
-      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &decode_claim/1)}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{rows: rows}} ->
+        tasks = Enum.map(rows, &decode_claim/1)
+
+        Telemetry.execute(
+          [:continuum, :activity_dispatcher, :claimed],
+          %{count: length(tasks)},
+          %{
+            owner: owner,
+            batch_size: batch_size
+          }
+        )
+
+        {:ok, tasks}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

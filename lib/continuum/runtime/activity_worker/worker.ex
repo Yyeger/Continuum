@@ -7,7 +7,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
 
   import Ecto.Query
 
-  alias Continuum.Runtime.{Engine, Journal}
+  alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
   alias Continuum.Schema.{ActivityTask, Run}
 
   @doc false
@@ -32,9 +32,18 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
 
   @impl true
   def handle_continue(:run, task) do
+    started_at = System.monotonic_time(:millisecond)
+
+    Telemetry.execute([:continuum, :activity, :started], %{}, %{
+      run_id: task.run_id,
+      task_id: task.id,
+      mfa: task.mfa,
+      attempt: task.attempt
+    })
+
     case run_activity(task) do
-      {:ok, result} -> complete(task, result)
-      {:error, error} -> fail_or_retry(task, error)
+      {:ok, result} -> complete(task, result, started_at)
+      {:error, error} -> fail_or_retry(task, error, started_at)
     end
 
     {:stop, :normal, task}
@@ -73,7 +82,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
     end
   end
 
-  defp complete(task, result) do
+  defp complete(task, result, started_at) do
     event = %{
       type: :activity_completed,
       mfa: task.mfa,
@@ -89,31 +98,53 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
     )
 
     Engine.wake(task.run_id)
+
+    Telemetry.execute(
+      [:continuum, :activity, :completed],
+      %{duration_ms: System.monotonic_time(:millisecond) - started_at},
+      %{run_id: task.run_id, task_id: task.id, mfa: task.mfa, attempt: task.attempt}
+    )
   end
 
-  defp fail_or_retry(task, error) do
+  defp fail_or_retry(task, error, started_at) do
     if task.attempt < max_attempts(task.retry) do
-      retry(task, error)
+      retry(task, error, started_at)
     else
-      fail(task, error)
+      fail(task, error, started_at)
     end
   end
 
-  defp retry(task, error) do
+  defp retry(task, error, started_at) do
+    retry_at = retry_at(task)
+
     repo().update_all(
       from(t in ActivityTask, where: t.id == ^task.id),
       set: [
         state: "available",
         attempt: task.attempt + 1,
-        available_at: retry_at(task),
+        available_at: retry_at,
         lease_owner: nil,
         lease_expires_at: nil,
         error: encode_term(error)
       ]
     )
+
+    Telemetry.execute(
+      [:continuum, :activity, :retried],
+      %{duration_ms: System.monotonic_time(:millisecond) - started_at},
+      %{
+        run_id: task.run_id,
+        task_id: task.id,
+        mfa: task.mfa,
+        attempt: task.attempt,
+        next_attempt: task.attempt + 1,
+        retry_at: retry_at,
+        error: error
+      }
+    )
   end
 
-  defp fail(task, error) do
+  defp fail(task, error, started_at) do
     event = %{
       type: :activity_failed,
       mfa: task.mfa,
@@ -130,6 +161,12 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
     )
 
     Engine.wake(task.run_id)
+
+    Telemetry.execute(
+      [:continuum, :activity, :failed],
+      %{duration_ms: System.monotonic_time(:millisecond) - started_at},
+      %{run_id: task.run_id, task_id: task.id, mfa: task.mfa, attempt: task.attempt, error: error}
+    )
   end
 
   defp max_attempts(retry) do

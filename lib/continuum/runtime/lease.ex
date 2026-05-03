@@ -10,6 +10,8 @@ defmodule Continuum.Runtime.Lease do
 
   defstruct [:run_id, :owner, :token]
 
+  alias Continuum.Telemetry
+
   @default_ttl_seconds 30
 
   @type t :: %__MODULE__{
@@ -48,9 +50,20 @@ defmodule Continuum.Runtime.Lease do
     """
 
     case repo().query(sql, [owner, ttl_seconds, run_id]) do
-      {:ok, %{rows: [[token]]}} -> {:ok, %__MODULE__{run_id: run_id, owner: owner, token: token}}
-      {:ok, %{rows: []}} -> {:error, :not_acquired}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{rows: [[token]]}} ->
+        Telemetry.execute([:continuum, :lease, :acquired], %{}, %{
+          run_id: run_id,
+          owner: owner,
+          lease_token: token
+        })
+
+        {:ok, %__MODULE__{run_id: run_id, owner: owner, token: token}}
+
+      {:ok, %{rows: []}} ->
+        {:error, :not_acquired}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -87,9 +100,26 @@ defmodule Continuum.Runtime.Lease do
     """
 
     case repo().query(sql, [run_id, owner, token, ttl_seconds]) do
-      {:ok, %{rows: [[_run_id]]}} -> :ok
-      {:ok, %{rows: []}} -> {:error, :lost}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{rows: [[_run_id]]}} ->
+        Telemetry.execute([:continuum, :lease, :renewed], %{}, %{
+          run_id: run_id,
+          owner: owner,
+          lease_token: token
+        })
+
+        :ok
+
+      {:ok, %{rows: []}} ->
+        Telemetry.execute([:continuum, :lease, :lost], %{}, %{
+          run_id: run_id,
+          owner: owner,
+          lease_token: token
+        })
+
+        {:error, :lost}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

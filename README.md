@@ -26,6 +26,24 @@ end
 
 See `lib/continuum.ex` for the public facade; `Continuum.Workflow` for the DSL; `Continuum.Activity` for activities.
 
+## Generators
+
+```bash
+mix continuum.gen.migration --repo MyApp.Repo
+mix continuum.gen.workflow MyApp.OrderFlow
+mix continuum.gen.activity MyApp.Activities.ValidateOrder
+```
+
+## Guides
+
+The ExDoc guides cover the v0.1 path:
+
+* Your first workflow
+* Activities, retries, and idempotency
+* Determinism rules and replay drift
+
+See `examples/continuum_example_orders` for the manual crash-resume smoke test.
+
 ## License
 
 Apache-2.0.

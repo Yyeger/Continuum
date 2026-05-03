@@ -53,7 +53,15 @@ defmodule Continuum.MixProject do
   defp docs do
     [
       main: "Continuum",
-      extras: ["README.md"]
+      extras: [
+        "README.md",
+        "guides/your-first-workflow.md",
+        "guides/activities-retries-idempotency.md",
+        "guides/determinism-rules.md"
+      ],
+      groups_for_extras: [
+        Guides: ~r/guides\/.*/
+      ]
     ]
   end
 

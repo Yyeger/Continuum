@@ -10,7 +10,7 @@ defmodule Continuum.Runtime.TimerWheel do
   use GenServer
   require Logger
 
-  alias Continuum.Runtime.{Engine, Journal}
+  alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
   alias Continuum.Schema.Run
 
   import Ecto.Query
@@ -105,6 +105,11 @@ defmodule Continuum.Runtime.TimerWheel do
     :ok = Journal.Postgres.append!(timer.run_id, event, lease_token)
     :ok = Journal.Postgres.clear_next_wakeup!(timer.run_id, lease_token)
     Engine.wake(timer.run_id)
+
+    Telemetry.execute([:continuum, :timer, :fired], %{}, %{
+      run_id: timer.run_id,
+      timer_id: timer.id
+    })
   end
 
   defp run_lease_token(run_id) do

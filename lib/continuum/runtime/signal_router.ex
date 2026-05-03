@@ -10,7 +10,7 @@ defmodule Continuum.Runtime.SignalRouter do
 
   use GenServer
 
-  alias Continuum.Runtime.{Engine, Journal}
+  alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -53,6 +53,13 @@ defmodule Continuum.Runtime.SignalRouter do
     case Registry.lookup(Continuum.Runtime.Registry, run_id) do
       [{_pid, _value}] ->
         Engine.deliver_signal(run_id, name, payload)
+
+        Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
+          run_id: run_id,
+          signal_name: name,
+          durable?: false
+        })
+
         :ok
 
       [] ->

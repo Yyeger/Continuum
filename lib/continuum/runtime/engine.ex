@@ -14,7 +14,7 @@ defmodule Continuum.Runtime.Engine do
   use GenServer
   require Logger
 
-  alias Continuum.Runtime.{Context, Lease}
+  alias Continuum.{Runtime.Context, Runtime.Lease, Telemetry}
 
   defstruct [
     :run_id,
@@ -174,6 +174,14 @@ defmodule Continuum.Runtime.Engine do
       error: nil
     }
 
+    Telemetry.execute([:continuum, :run, :started], %{}, %{
+      run_id: run_id,
+      workflow: workflow_module,
+      resumed?: Keyword.get(opts, :resume, false),
+      lease_owner: lease_owner,
+      lease_token: lease_token
+    })
+
     {:ok, state, {:continue, :run}}
   end
 
@@ -194,6 +202,13 @@ defmodule Continuum.Runtime.Engine do
     }
 
     :ok = state.journal.append!(state.run_id, event, state.lease_token)
+
+    Telemetry.execute([:continuum, :signal, :received], %{}, %{
+      run_id: state.run_id,
+      signal_name: name,
+      journal: state.journal
+    })
+
     {:noreply, state, {:continue, :run}}
   end
 
@@ -205,6 +220,13 @@ defmodule Continuum.Runtime.Engine do
   def handle_call(:cancel, _from, state) do
     :ok = state.journal.fail!(state.run_id, :cancelled, state.lease_token)
     state = %{state | status: :cancelled, error: :cancelled}
+
+    Telemetry.execute([:continuum, :run, :cancelled], %{}, %{
+      run_id: state.run_id,
+      workflow: state.workflow_module,
+      lease_token: state.lease_token
+    })
+
     untrack_lease(state)
     {:stop, :normal, :ok, state}
   end
@@ -260,6 +282,13 @@ defmodule Continuum.Runtime.Engine do
 
   defp complete_run(state, result) do
     :ok = state.journal.complete!(state.run_id, result, state.lease_token)
+
+    Telemetry.execute([:continuum, :run, :completed], %{}, %{
+      run_id: state.run_id,
+      workflow: state.workflow_module,
+      lease_token: state.lease_token
+    })
+
     %{state | status: :completed, result: result}
   rescue
     error ->
@@ -269,6 +298,14 @@ defmodule Continuum.Runtime.Engine do
   defp suspend_run(state, reason) do
     Logger.debug("Workflow #{state.run_id} suspended: #{inspect(reason)}")
     :ok = state.journal.suspend!(state.run_id, state.lease_token)
+
+    Telemetry.execute([:continuum, :run, :suspended], %{}, %{
+      run_id: state.run_id,
+      workflow: state.workflow_module,
+      reason: reason,
+      lease_token: state.lease_token
+    })
+
     %{state | status: :suspended}
   rescue
     error ->
@@ -277,6 +314,14 @@ defmodule Continuum.Runtime.Engine do
 
   defp fail_run(state, journal_error, state_error) do
     :ok = state.journal.fail!(state.run_id, journal_error, state.lease_token)
+
+    Telemetry.execute([:continuum, :run, :failed], %{}, %{
+      run_id: state.run_id,
+      workflow: state.workflow_module,
+      error: state_error,
+      lease_token: state.lease_token
+    })
+
     %{state | status: :failed, error: state_error}
   rescue
     error ->
@@ -331,6 +376,13 @@ defmodule Continuum.Runtime.Engine do
 
   defp lease_lost(state) do
     Logger.warning("Workflow #{state.run_id} lost its Postgres lease; stopping stale engine")
+
+    Telemetry.execute([:continuum, :run, :lease_lost], %{}, %{
+      run_id: state.run_id,
+      workflow: state.workflow_module,
+      lease_token: state.lease_token
+    })
+
     %{state | status: :lease_lost}
   end
 

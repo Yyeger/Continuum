@@ -18,6 +18,7 @@ defmodule Continuum do
     * `await/2` — block until a workflow completes (test/synchronous use)
     * `now/0`, `uuid4/0`, `random/0`, `side_effect/1` — deterministic primitives
       callable from workflow code
+    * `patched?/1` — v0.1 compatibility stub for future workflow patches
   """
 
   alias Continuum.Runtime.{Context, Effect}
@@ -118,6 +119,16 @@ defmodule Continuum do
   def in_workflow? do
     Context.active?()
   end
+
+  @doc """
+  Compatibility marker for future workflow patches.
+
+  v0.1 ships this as a deterministic stub returning `false`. Real patch
+  markers are planned for a later release; until then, use explicit workflow
+  versions for incompatible changes.
+  """
+  @spec patched?(atom() | binary()) :: false
+  def patched?(_patch_name), do: false
 
   # ---------------------------------------------------------------------------
 
