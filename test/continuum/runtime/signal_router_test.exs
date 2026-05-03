@@ -6,6 +6,13 @@ defmodule Continuum.Runtime.SignalRouterTest do
   alias Continuum.Schema.{Event, Run, Signal, Timer}
 
   setup do
+    previous_journal = Application.get_env(:continuum, :journal)
+    Application.put_env(:continuum, :journal, Postgres)
+
+    on_exit(fn ->
+      restore_env(:journal, previous_journal)
+    end)
+
     start_supervised!({Continuum.Runtime.SignalRouter, listen?: false})
     :ok
   end
@@ -153,4 +160,7 @@ defmodule Continuum.Runtime.SignalRouterTest do
   end
 
   defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
+
+  defp restore_env(key, nil), do: Application.delete_env(:continuum, key)
+  defp restore_env(key, value), do: Application.put_env(:continuum, key, value)
 end

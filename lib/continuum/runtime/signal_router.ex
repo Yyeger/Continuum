@@ -19,12 +19,9 @@ defmodule Continuum.Runtime.SignalRouter do
   @doc "Deliver a signal to a run."
   @spec deliver(binary(), atom(), term()) :: :ok | {:error, term()}
   def deliver(run_id, name, payload) do
-    if postgres_run?(run_id) do
-      :ok = Journal.Postgres.deliver_signal!(run_id, name, payload)
-      route(run_id)
-      :ok
-    else
-      deliver_local(run_id, name, payload)
+    case Journal.default() do
+      Journal.Postgres -> deliver_durable(run_id, name, payload)
+      _journal -> deliver_local(run_id, name, payload)
     end
   end
 
@@ -48,6 +45,12 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   def handle_info({:notification, _pid, _ref, _channel, _payload}, state), do: {:noreply, state}
+
+  defp deliver_durable(run_id, name, payload) do
+    :ok = Journal.Postgres.deliver_signal!(run_id, name, payload)
+    route(run_id)
+    :ok
+  end
 
   defp deliver_local(run_id, name, payload) do
     case Registry.lookup(Continuum.Runtime.Registry, run_id) do
@@ -81,16 +84,6 @@ defmodule Continuum.Runtime.SignalRouter do
     :ok
   end
 
-  defp postgres_run?(run_id) do
-    try do
-      Application.get_env(:continuum, :repo) != nil and Journal.Postgres.get_run(run_id) != nil
-    rescue
-      _ -> false
-    catch
-      :exit, _ -> false
-    end
-  end
-
   defp start_listener(%{listen?: false} = state), do: state
 
   defp start_listener(state) do
@@ -121,6 +114,6 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   defp listen_enabled? do
-    Application.get_env(:continuum, :repo) != nil
+    Journal.default() == Journal.Postgres and Application.get_env(:continuum, :repo) != nil
   end
 end

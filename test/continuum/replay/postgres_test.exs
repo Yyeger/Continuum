@@ -13,6 +13,17 @@ defmodule Continuum.Replay.PostgresTest do
 
   alias Continuum.Runtime.Journal.Postgres
 
+  setup do
+    previous_journal = Application.get_env(:continuum, :journal)
+    Application.put_env(:continuum, :journal, Postgres)
+
+    on_exit(fn ->
+      restore_env(:journal, previous_journal)
+    end)
+
+    :ok
+  end
+
   describe "happy-path execution with Postgres journal" do
     defmodule TwoStepPgFlow do
       use Continuum.Workflow, version: 1
@@ -150,4 +161,7 @@ defmodule Continuum.Replay.PostgresTest do
     :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
     |> IO.iodata_to_binary()
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:continuum, key)
+  defp restore_env(key, value), do: Application.put_env(:continuum, key, value)
 end
