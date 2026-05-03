@@ -2,13 +2,12 @@ defmodule Continuum.Runtime.Engine do
   @moduledoc """
   GenServer-per-run. The heart of replay.
 
-  v0.1 in-memory, single-node implementation. Each run is owned by exactly
-  one Engine GenServer process; the process is started by `start_run/3`
-  under `Continuum.Runtime.RunSupervisor`.
+  Each run is owned by exactly one Engine GenServer process; the process is
+  started by `start_run/3` under `Continuum.Runtime.RunSupervisor`.
 
-  The Postgres-backed engine (planned for v0.1 final) replaces the
-  in-memory journal calls with transactional writes guarded by a lease
-  token; the replay loop and effect protocol stay identical.
+  The same replay loop runs against both the in-memory journal and the
+  Postgres journal. Postgres durability, scheduling, and fencing are provided
+  by the journal adapter and runtime pollers around this engine.
   """
 
   use GenServer

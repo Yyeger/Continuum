@@ -30,10 +30,10 @@ defmodule Continuum.Workflow do
 
   ## Versioning
 
-  The module's AST is hashed at compile time and registered in
-  `Continuum.VersionRegistry`. Each run journals its hash on start; on resume
-  the engine dispatches into the matching version, so in-flight workflows
-  always finish on the code they started on.
+  The module's AST is hashed at compile time and exposed through
+  `__continuum_workflow__/0`. Each Postgres run stores that hash on start so
+  drift can be surfaced. Full content-addressed module dispatch is deliberately
+  deferred until workflow versioning becomes load-bearing.
   """
 
   @doc """

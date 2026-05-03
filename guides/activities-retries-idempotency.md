@@ -44,7 +44,9 @@ Retry policy is resolved in this order:
 `backoff: :exponential` uses `base_ms * 2 ^ (attempt - 1)`. Any other backoff
 value uses constant delay.
 
-Idempotency keys are carried in the durable task payload in v0.1. Use them for
-activities that perform externally visible writes, such as payments, emails,
-or third-party API mutations. The first release preserves the plumbing; later
-releases can add a result side-table without changing workflow code.
+Idempotency keys are carried in the durable task payload in v0.1, but they are
+not enforced yet. Activities that perform externally visible writes, such as
+payments, emails, or third-party API mutations, should still pass their own
+idempotency key to the external system. The first release preserves the
+Continuum-side plumbing; v0.2 can add a result side-table without changing
+workflow code.

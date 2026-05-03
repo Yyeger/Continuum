@@ -6,8 +6,8 @@ defmodule Continuum.Runtime.Journal do
 
     * `Continuum.Runtime.Journal.InMemory` — process-level state for tests and
       single-node hello-world. No durability.
-    * `Continuum.Runtime.Journal.Postgres` — Ecto-backed durable journal
-      (skeleton; full implementation lands with the schema migration).
+    * `Continuum.Runtime.Journal.Postgres` — Ecto-backed durable journal with
+      transactional appends and lease-token fencing.
 
   All append operations carry a `lease_token` (or `nil` for unleased
   in-memory / pre-dispatch execution). The Postgres adapter rejects writes

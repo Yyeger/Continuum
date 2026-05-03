@@ -17,11 +17,10 @@ defmodule Continuum.Activity do
   arbitrary I/O, talk to NIFs, raise, etc. Their return value is journaled
   on first success and replayed on workflow resume.
 
-  Implementing the optional `c:idempotency_key/1` callback enables the
-  exactly-once-ish semantics described in the architecture plan: the
-  dispatcher records `(activity_id, attempt, key) -> result` so a duplicate
-  execution after a node crash returns the prior result rather than running
-  the side effect twice.
+  Implementing the optional `c:idempotency_key/1` callback stores the key in
+  the durable task payload. v0.1 preserves this metadata for future
+  exactly-once-ish execution, but it does not yet deduplicate duplicate
+  activity execution with a side table.
   """
 
   @type retry_policy :: keyword()
