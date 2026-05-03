@@ -83,7 +83,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp complete(task, result, started_at) do
-    :ok = Journal.Postgres.complete_activity_task!(task, result, run_lease_token(task.run_id))
+    :ok = Journal.Postgres.complete_activity_task!(task, result, task.run_lease_token)
     Engine.wake(task.run_id)
 
     Telemetry.execute(
@@ -132,7 +132,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp fail(task, error, started_at) do
-    :ok = Journal.Postgres.fail_activity_task!(task, error, run_lease_token(task.run_id))
+    :ok = Journal.Postgres.fail_activity_task!(task, error, task.run_lease_token)
     Engine.wake(task.run_id)
 
     Telemetry.execute(
@@ -160,10 +160,6 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
       :exponential -> trunc(base_ms * :math.pow(2, max(attempt - 1, 0)))
       _ -> base_ms
     end
-  end
-
-  defp run_lease_token(run_id) do
-    repo().one(from(r in Continuum.Schema.Run, where: r.id == ^run_id, select: r.lease_token))
   end
 
   defp encode_term(nil), do: nil

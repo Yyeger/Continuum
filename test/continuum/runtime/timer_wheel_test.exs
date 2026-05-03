@@ -52,6 +52,25 @@ defmodule Continuum.Runtime.TimerWheelTest do
     assert {:error, :timeout} = Continuum.await(run_id, 25, journal: Postgres)
   end
 
+  test "timer fire rejects stale run authority before appending an event" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(Timer, :count) == 1
+    end)
+
+    timer = Repo.one!(Timer)
+    run = Repo.one!(from(r in Run, where: r.id == ^run_id))
+
+    assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+      Postgres.fire_timer!(run_id, timer.id, run.lease_token + 1)
+    end
+
+    assert event_types(run_id) == ["timer_started"]
+    assert Repo.one!(Timer).fired == false
+  end
+
   defp force_due(timer_id) do
     due_at =
       DateTime.utc_now()
@@ -61,6 +80,16 @@ defmodule Continuum.Runtime.TimerWheelTest do
     Repo.update_all(
       from(t in Timer, where: t.id == ^timer_id),
       set: [fires_at: due_at]
+    )
+  end
+
+  defp event_types(run_id) do
+    Repo.all(
+      from(e in Continuum.Schema.Event,
+        where: e.run_id == ^run_id,
+        order_by: [asc: e.seq],
+        select: e.event_type
+      )
     )
   end
 

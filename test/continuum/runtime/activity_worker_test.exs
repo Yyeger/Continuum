@@ -150,6 +150,42 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert Repo.one!(ActivityTask).state == "leased"
   end
 
+  test "activity completion rejects stale run authority before appending an event" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 5}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [state: "leased", lease_owner: "worker-a", lease_expires_at: future_time()]
+    )
+
+    claimed_task =
+      task.mfa
+      |> decode_term()
+      |> Map.merge(%{
+        id: task.id,
+        run_id: task.run_id,
+        seq: task.seq,
+        attempt: task.attempt,
+        lease_owner: "worker-a"
+      })
+
+    current_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+
+    assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+      Postgres.complete_activity_task!(claimed_task, {:ok, 10}, current_token + 1)
+    end
+
+    assert ["activity_scheduled"] = event_types(run_id)
+    assert Repo.one!(ActivityTask).state == "leased"
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do

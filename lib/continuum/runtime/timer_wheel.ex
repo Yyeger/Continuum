@@ -11,9 +11,6 @@ defmodule Continuum.Runtime.TimerWheel do
   require Logger
 
   alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
-  alias Continuum.Schema.Run
-
-  import Ecto.Query
 
   @default_interval_ms 1_000
   @default_batch_size 50
@@ -65,28 +62,25 @@ defmodule Continuum.Runtime.TimerWheel do
 
   defp claim_due(batch_size) do
     sql = """
-    WITH candidates AS (
-      SELECT t.id
-      FROM continuum_timers AS t
-      JOIN continuum_runs AS r ON r.id = t.run_id
-      WHERE t.fired = false
-        AND t.fires_at <= now()
-        AND r.state = 'suspended'
-        AND r.lease_token IS NOT NULL
-      ORDER BY t.fires_at
-      FOR UPDATE SKIP LOCKED
-      LIMIT $1
-    )
-    UPDATE continuum_timers AS t
-    SET fired = true
-    FROM candidates
-    WHERE t.id = candidates.id
-    RETURNING t.id::text, t.run_id::text
+    SELECT t.id::text, t.run_id::text, r.lease_token
+    FROM continuum_timers AS t
+    JOIN continuum_runs AS r ON r.id = t.run_id
+    WHERE t.fired = false
+      AND t.fires_at <= now()
+      AND r.state = 'suspended'
+      AND r.lease_token IS NOT NULL
+      AND r.lease_expires_at > now()
+    ORDER BY t.fires_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT $1
     """
 
     case repo().query(sql, [batch_size]) do
       {:ok, %{rows: rows}} ->
-        {:ok, Enum.map(rows, fn [id, run_id] -> %{id: id, run_id: run_id} end)}
+        {:ok,
+         Enum.map(rows, fn [id, run_id, lease_token] ->
+           %{id: id, run_id: run_id, lease_token: lease_token}
+         end)}
 
       {:error, reason} ->
         {:error, reason}
@@ -94,19 +88,13 @@ defmodule Continuum.Runtime.TimerWheel do
   end
 
   defp fire_timer(timer) do
-    lease_token = run_lease_token(timer.run_id)
-
-    :ok = Journal.Postgres.fire_timer!(timer.run_id, timer.id, lease_token)
+    :ok = Journal.Postgres.fire_timer!(timer.run_id, timer.id, timer.lease_token)
     Engine.wake(timer.run_id)
 
     Telemetry.execute([:continuum, :timer, :fired], %{}, %{
       run_id: timer.run_id,
       timer_id: timer.id
     })
-  end
-
-  defp run_lease_token(run_id) do
-    repo().one(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
   end
 
   defp timer_config do

@@ -70,12 +70,16 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   defp claim(owner, batch_size, ttl_seconds) do
     sql = """
     WITH candidates AS (
-      SELECT id
-      FROM continuum_activity_tasks
-      WHERE state = 'available'
-        AND available_at <= now()
-        AND (lease_owner IS NULL OR lease_expires_at < now())
-      ORDER BY available_at, scheduled_at
+      SELECT t.id, r.lease_token
+      FROM continuum_activity_tasks AS t
+      JOIN continuum_runs AS r ON r.id = t.run_id
+      WHERE t.state = 'available'
+        AND t.available_at <= now()
+        AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
+        AND r.state IN ('running', 'suspended')
+        AND r.lease_token IS NOT NULL
+        AND r.lease_expires_at > now()
+      ORDER BY t.available_at, t.scheduled_at
       FOR UPDATE SKIP LOCKED
       LIMIT $2
     )
@@ -85,7 +89,8 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
         lease_expires_at = now() + make_interval(secs => $3)
     FROM candidates
     WHERE t.id = candidates.id
-    RETURNING t.id::text, t.run_id::text, t.seq, t.mfa, t.attempt, t.lease_owner
+    RETURNING t.id::text, t.run_id::text, t.seq, t.mfa, t.attempt, t.lease_owner,
+              candidates.lease_token
     """
 
     case repo().query(sql, [owner, batch_size, ttl_seconds]) do
@@ -108,7 +113,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     end
   end
 
-  defp decode_claim([id, run_id, seq, encoded_task, attempt, lease_owner]) do
+  defp decode_claim([id, run_id, seq, encoded_task, attempt, lease_owner, run_lease_token]) do
     task =
       encoded_task
       |> decode_term()
@@ -117,7 +122,8 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
         run_id: run_id,
         seq: seq,
         attempt: attempt,
-        lease_owner: lease_owner
+        lease_owner: lease_owner,
+        run_lease_token: run_lease_token
       })
 
     task
