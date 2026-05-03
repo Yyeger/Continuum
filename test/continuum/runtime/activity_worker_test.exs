@@ -47,6 +47,32 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule DeclinedError do
+    defexception [:reason, :code, message: "payment declined"]
+  end
+
+  defmodule DeclinedActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(_n) do
+      raise %DeclinedError{reason: :insufficient_funds, code: "card_declined"}
+    end
+  end
+
+  defmodule DeclinedFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      case activity(DeclinedActivity.run(input.seed)) do
+        {:error, %DeclinedError{reason: reason, code: code}} ->
+          {:ok, {reason, code}}
+
+        other ->
+          {:unexpected, other}
+      end
+    end
+  end
+
   setup do
     start_supervised!(%{
       id: FlakyActivity,
@@ -112,6 +138,28 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
     assert {:ok, %{state: :completed, result: {:ok, 9}}} =
              Continuum.await(run_id, 1_000, journal: Postgres)
+  end
+
+  test "preserves exception structs from failed activities" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(DeclinedFlow, %{seed: 9}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "activity-test", batch_size: 1)
+
+    assert {:ok, %{state: :completed, result: {:ok, {:insufficient_funds, "card_declined"}}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    task_error = Repo.one!(ActivityTask).error |> decode_term()
+    assert %DeclinedError{reason: :insufficient_funds, code: "card_declined"} = task_error
+
+    [%{type: :activity_scheduled}, %{type: :activity_failed, error: event_error}] =
+      Postgres.load(run_id)
+
+    assert %DeclinedError{reason: :insufficient_funds, code: "card_declined"} = event_error
   end
 
   test "activity completion rejects stale task authority before appending an event" do

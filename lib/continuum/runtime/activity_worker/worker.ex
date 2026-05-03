@@ -56,7 +56,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
           try do
             {:ok, apply(mod, fun, args)}
           rescue
-            exception -> {:error, {exception.__struct__, Exception.message(exception)}}
+            exception -> {:error, exception}
           catch
             kind, reason -> {:error, {kind, reason}}
           end
