@@ -268,6 +268,7 @@ defmodule Continuum.Runtime.Engine do
       lease_token: state.lease_token
     })
 
+    :ok = broadcast_run_finished(state.run_id, :cancelled, :cancelled)
     untrack_lease(state)
     {:stop, :normal, :ok, state}
   end
