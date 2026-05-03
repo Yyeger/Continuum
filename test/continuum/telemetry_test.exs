@@ -36,7 +36,7 @@ defmodule Continuum.TelemetryTest do
 
     try do
       Continuum.Test.reset_in_memory!()
-      {:ok, run_id} = Continuum.Test.start_in_memory(TelemetryFlow, %{value: 2})
+      {:ok, run_id} = Continuum.Test.start_synchronous(TelemetryFlow, %{value: 2})
 
       assert {:ok, %{state: :completed, result: {:ok, 3}}} = Continuum.await(run_id, 1_000)
       assert_receive {:telemetry, [:continuum, :run, :started], %{}, %{run_id: ^run_id}}

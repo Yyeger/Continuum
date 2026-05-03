@@ -27,10 +27,10 @@ defmodule Continuum.Test do
           | {:error, term()}
 
   @doc """
-  Start a workflow run against the in-memory journal.
+  Start a workflow run synchronously against the in-memory journal.
   """
-  @spec start_in_memory(module(), term(), keyword()) :: {:ok, binary()} | {:error, term()}
-  def start_in_memory(workflow_module, input, opts \\ []) do
+  @spec start_synchronous(module(), term(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def start_synchronous(workflow_module, input, opts \\ []) do
     opts = Keyword.put(opts, :journal, Journal.InMemory)
     Continuum.start(workflow_module, input, opts)
   end

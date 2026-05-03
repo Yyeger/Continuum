@@ -19,7 +19,7 @@ defmodule Continuum.ReplayPropertyTest do
     check all(steps <- list_of(integer(-100..100), max_length: 20), max_runs: 50) do
       Continuum.Test.reset_in_memory!()
 
-      {:ok, run_id} = Continuum.Test.start_in_memory(SideEffectChainFlow, %{steps: steps})
+      {:ok, run_id} = Continuum.Test.start_synchronous(SideEffectChainFlow, %{steps: steps})
       expected = {:ok, Enum.sum(steps)}
 
       assert {:ok, %{state: :completed, result: ^expected}} = Continuum.await(run_id, 1_000)

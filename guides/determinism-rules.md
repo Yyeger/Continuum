@@ -54,7 +54,7 @@ that still has active runs. Prefer one of these patterns:
 Record a known-good history once:
 
 ```elixir
-{:ok, run_id} = Continuum.Test.start_in_memory(MyApp.OrderFlow, input)
+{:ok, run_id} = Continuum.Test.start_synchronous(MyApp.OrderFlow, input)
 {:ok, _} = Continuum.await(run_id, 5_000)
 Continuum.Test.dump_history!(run_id, "test/golden/order_v1.journal")
 ```

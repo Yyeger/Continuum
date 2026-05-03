@@ -30,7 +30,7 @@ defmodule Continuum.TestHelpersTest do
   test "loads history and asserts golden replay" do
     Continuum.Test.reset_in_memory!()
 
-    {:ok, run_id} = Continuum.Test.start_in_memory(GoldenFlow, %{seed: 10})
+    {:ok, run_id} = Continuum.Test.start_synchronous(GoldenFlow, %{seed: 10})
     assert {:ok, %{state: :completed, result: {:ok, 21}}} = Continuum.await(run_id, 1_000)
 
     history = Continuum.Test.history(run_id)
@@ -43,7 +43,7 @@ defmodule Continuum.TestHelpersTest do
   test "dumps and reloads golden history files" do
     Continuum.Test.reset_in_memory!()
 
-    {:ok, run_id} = Continuum.Test.start_in_memory(GoldenFlow, %{seed: 4})
+    {:ok, run_id} = Continuum.Test.start_synchronous(GoldenFlow, %{seed: 4})
     assert {:ok, %{state: :completed, result: {:ok, 9}}} = Continuum.await(run_id, 1_000)
 
     path = Path.join(System.tmp_dir!(), "continuum-golden-#{System.unique_integer()}.journal")
@@ -60,7 +60,7 @@ defmodule Continuum.TestHelpersTest do
   test "fires in-memory timers injected through test helpers" do
     Continuum.Test.reset_in_memory!()
 
-    {:ok, run_id} = Continuum.Test.start_in_memory(TimerFlow, %{ms: 60_000})
+    {:ok, run_id} = Continuum.Test.start_synchronous(TimerFlow, %{ms: 60_000})
 
     assert_eventually(fn ->
       match?([%{type: :timer_started}], Continuum.Test.history(run_id))
@@ -78,7 +78,7 @@ defmodule Continuum.TestHelpersTest do
 
     refute function_exported?(Continuum.Runtime.Engine, :deliver_signal, 3)
 
-    {:ok, run_id} = Continuum.Test.start_in_memory(SignalFlow, %{})
+    {:ok, run_id} = Continuum.Test.start_synchronous(SignalFlow, %{})
     assert {:error, :timeout} = Continuum.await(run_id, 25)
     assert :ok = Continuum.Test.inject_signal(run_id, :decision, :go)
 
