@@ -55,6 +55,18 @@ defmodule Continuum.WorkflowCompileTest do
         end
       end
     end
+
+    test "a workflow that calls Continuum.signal refuses to compile" do
+      assert_raise CompileError, ~r/signal\/3 is a side effect/, fn ->
+        defmodule BadFlow4 do
+          use Continuum.Workflow, version: 1
+
+          def run(%{child_id: id}) do
+            Continuum.signal(id, :parent_done, :ok)
+          end
+        end
+      end
+    end
   end
 
   describe "version hash stability" do

@@ -42,10 +42,18 @@ defmodule Continuum.AstCheck do
     {System, :fetch_env!} => "read env at workflow start; pass it as input",
     {Node, :list} => "cluster topology is non-deterministic; wrap in an activity",
     {Node, :self} => "use Continuum.workflow_info/0",
-    {Process, :send} => "use Continuum.signal/3 or wrap in an activity",
+    {Process, :send} => "send messages outside the workflow, or wrap in an activity",
     {Process, :send_after} => "use Continuum.timer/1",
     {Process, :sleep} => "use Continuum.timer/1",
     {Process, :spawn} => "spawn forbidden in workflows; use child workflows",
+    {Continuum, :start} =>
+      "start workflows outside workflow code; child workflows are planned post-v0.1",
+    {Continuum, :signal} =>
+      "signal/3 is a side effect; wrap it in Continuum.activity/2 or wait for Continuum.signal_child/2 (v0.3+)",
+    {Continuum, :cancel} =>
+      "cancel workflows outside workflow code or wrap cancellation in an activity",
+    {Continuum, :await} =>
+      "await/2 polls workflow state; use the workflow DSL's await signal(...) form",
     {IO, :puts} => "use Continuum.log/1 (journaled)",
     {IO, :inspect} => "use Continuum.log/1 (journaled)",
     {IO, :write} => "use Continuum.log/1 (journaled)",

@@ -58,6 +58,27 @@ defmodule Continuum.AstCheckTest do
       assert violation.hint =~ "Continuum.timer/1"
     end
 
+    test "rejects Continuum facade calls that would mutate runtime state" do
+      ast =
+        quote do
+          Continuum.start(MyFlow, %{id: 1})
+          Continuum.signal("run-id", :approved, :ok)
+          Continuum.cancel("run-id")
+          Continuum.await("run-id", 1_000)
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      mfas = Enum.map(violations, & &1.mfa)
+      assert {Continuum, :start} in mfas
+      assert {Continuum, :signal} in mfas
+      assert {Continuum, :cancel} in mfas
+      assert {Continuum, :await} in mfas
+
+      signal_violation = Enum.find(violations, &(&1.mfa == {Continuum, :signal}))
+      assert signal_violation.hint =~ "signal/3 is a side effect"
+    end
+
     test "rejects File.read! deep inside an expression" do
       ast =
         quote do
