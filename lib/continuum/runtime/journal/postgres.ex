@@ -143,6 +143,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       type: :activity_completed,
       mfa: task.mfa,
       payload: result,
+      command_id: Map.get(task, :command_id),
       seq: task.seq + 1
     }
 
@@ -160,6 +161,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       mfa: task.mfa,
       error: error,
       attempt: task.attempt,
+      command_id: Map.get(task, :command_id),
       seq: task.seq + 1
     }
 
@@ -472,8 +474,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
         lock_and_validate_run!(run_id, lease_token)
 
         case timer_winner(run_id, timer_id) do
-          {:pending, _timer_event, winner_seq} ->
-            event = %{type: :timer_fired, timer_id: timer_id, seq: winner_seq}
+          {:pending, timer_event, winner_seq} ->
+            event = %{
+              type: :timer_fired,
+              timer_id: timer_id,
+              command_id: Map.get(timer_event, :command_id),
+              seq: winner_seq
+            }
+
             winner_event = insert_event!(run_id, event)
             mark_timer_resolved(run_id, timer_id, lease_token)
             {:ok, winner_event}
@@ -663,6 +671,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             type: :signal_received,
             name: await_event.name,
             payload: payload,
+            command_id: Map.get(await_event, :command_id),
             seq: await_event.seq + 1
           })
 
@@ -688,6 +697,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         insert_event!(run_id, %{
           type: :timer_fired,
           timer_id: timer_id,
+          command_id: Map.get(event, :command_id),
           seq: event.seq + 1
         })
 
@@ -979,14 +989,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp encode_term(nil), do: nil
-  defp encode_term(term), do: %{__term__: Base.encode64(:erlang.term_to_binary(term))}
+  defp encode_term(term), do: :erlang.term_to_binary(term)
 
   defp decode_term(nil), do: nil
-
-  defp decode_term(%{"__term__" => encoded}) when is_binary(encoded) do
-    :erlang.binary_to_term(Base.decode64!(encoded))
-  end
-
+  defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
   defp decode_term(other), do: other
 
   defp repo do

@@ -7,7 +7,7 @@ defmodule Continuum.Schema.Signal do
   schema "continuum_signals" do
     field(:run_id, :binary_id)
     field(:name, :string)
-    field(:payload, :map)
+    field(:payload, :binary)
     field(:delivered, :boolean, default: false)
     field(:inserted_at, :utc_datetime_usec)
   end

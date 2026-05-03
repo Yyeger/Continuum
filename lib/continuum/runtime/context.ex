@@ -3,14 +3,23 @@ defmodule Continuum.Runtime.Context do
   Per-run effect context, kept in the workflow process's process dictionary.
 
   The context holds the journal handle, the current cursor (how many events
-  have been replayed so far), the run id, and the lease token. It is
+  have been replayed so far), per-callsite command ordinals, the run id, and
+  the lease token. It is
   established by `Continuum.Runtime.Engine` before invoking the user's
   `run/1` and unset on suspend or completion.
   """
 
   @key :continuum_ctx
 
-  defstruct [:run_id, :history, :cursor, :workflow_module, :lease_token, :journal]
+  defstruct [
+    :run_id,
+    :history,
+    :cursor,
+    :workflow_module,
+    :lease_token,
+    :journal,
+    command_counts: %{}
+  ]
 
   @type t :: %__MODULE__{
           run_id: binary(),
@@ -18,7 +27,8 @@ defmodule Continuum.Runtime.Context do
           cursor: non_neg_integer(),
           workflow_module: module(),
           lease_token: integer() | nil,
-          journal: module()
+          journal: module(),
+          command_counts: map()
         }
 
   @doc "Set the current context for this process."

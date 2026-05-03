@@ -159,10 +159,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     "#{node()}:#{inspect(self())}:activity"
   end
 
-  defp decode_term(%{"__term__" => encoded}) when is_binary(encoded) do
-    :erlang.binary_to_term(Base.decode64!(encoded))
-  end
-
+  defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
   defp decode_term(other), do: other
 
   defp repo do

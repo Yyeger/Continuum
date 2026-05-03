@@ -45,20 +45,29 @@ defmodule Continuum.Workflow do
   """
   defmacro activity(call, opts \\ [])
 
-  defmacro activity({{:., _, [mod, fun]}, _, args}, opts) do
+  defmacro activity({{:., _, [{:__aliases__, _, _} = mod_alias, fun]}, _, args}, opts) do
+    command =
+      command_base(
+        __CALLER__,
+        :activity,
+        {Macro.expand(mod_alias, __CALLER__), fun, length(args || [])}
+      )
+
     quote do
       Continuum.Runtime.Effect.run(
-        {:activity, {unquote(mod), unquote(fun), unquote(args)}, unquote(opts)},
-        __ENV__.line
+        {:activity, {unquote(mod_alias), unquote(fun), unquote(args)}, unquote(opts)},
+        {:command, unquote(Macro.escape(command))}
       )
     end
   end
 
-  defmacro activity({{:., _, [{:__aliases__, _, _} = mod_alias, fun]}, _, args}, opts) do
+  defmacro activity({{:., _, [mod, fun]}, _, args}, opts) do
+    command = command_base(__CALLER__, :activity, {mod, fun, length(args || [])})
+
     quote do
       Continuum.Runtime.Effect.run(
-        {:activity, {unquote(mod_alias), unquote(fun), unquote(args)}, unquote(opts)},
-        __ENV__.line
+        {:activity, {unquote(mod), unquote(fun), unquote(args)}, unquote(opts)},
+        {:command, unquote(Macro.escape(command))}
       )
     end
   end
@@ -71,11 +80,12 @@ defmodule Continuum.Workflow do
   """
   defmacro await({:signal, _, args}) do
     {name, opts} = parse_signal_args(args)
+    command = command_base(__CALLER__, :await_signal, name)
 
     quote do
       Continuum.Runtime.Effect.run(
         {:await_signal, unquote(name), unquote(opts)},
-        __ENV__.line
+        {:command, unquote(Macro.escape(command))}
       )
     end
   end
@@ -86,10 +96,12 @@ defmodule Continuum.Workflow do
       timer(hours(24))
   """
   defmacro timer(duration) do
+    command = command_base(__CALLER__, :timer, :timer)
+
     quote do
       Continuum.Runtime.Effect.run(
         {:timer, unquote(duration)},
-        __ENV__.line
+        {:command, unquote(Macro.escape(command))}
       )
     end
   end
@@ -107,6 +119,8 @@ defmodule Continuum.Workflow do
     retention = Keyword.get(opts, :retention, {:days, 30})
 
     quote do
+      require Continuum
+
       import Continuum.Workflow,
         only: [
           activity: 1,
@@ -145,6 +159,17 @@ defmodule Continuum.Workflow do
 
   defp parse_signal_args([name]), do: {name, []}
   defp parse_signal_args([name, opts]), do: {name, opts}
+
+  defp command_base(env, type, shape) do
+    {type, env.module, env.function, env.line, hash_term(shape)}
+  end
+
+  defp hash_term(term) do
+    term
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
 end
 
 defmodule Continuum.Workflow.OnDef do

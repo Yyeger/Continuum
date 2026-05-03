@@ -76,9 +76,9 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :workflow, :text, null: false
           add :version_hash, :bytea, null: false
           add :state, :text, null: false
-          add :input, :jsonb, null: false
-          add :result, :jsonb
-          add :error, :jsonb
+          add :input, :bytea, null: false
+          add :result, :bytea
+          add :error, :bytea
           add :started_at, :utc_datetime_usec, null: false, default: fragment("now()")
           add :completed_at, :utc_datetime_usec
           add :lease_owner, :text
@@ -106,7 +106,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :run_id, :uuid, null: false
           add :seq, :bigint, null: false
           add :event_type, :text, null: false
-          add :payload, :jsonb, null: false
+          add :payload, :bytea, null: false
           add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
         end
 
@@ -115,7 +115,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         create table(:continuum_signals) do
           add :run_id, :uuid, null: false
           add :name, :text, null: false
-          add :payload, :jsonb, null: false
+          add :payload, :bytea, null: false
           add :delivered, :boolean, null: false, default: false
           add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
         end
@@ -143,15 +143,15 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :id, :uuid, primary_key: true
           add :run_id, :uuid, null: false
           add :seq, :bigint, null: false
-          add :mfa, :jsonb, null: false
+          add :mfa, :bytea, null: false
           add :attempt, :integer, null: false, default: 1
           add :state, :text, null: false
           add :scheduled_at, :utc_datetime_usec, null: false, default: fragment("now()")
           add :available_at, :utc_datetime_usec, null: false, default: fragment("now()")
           add :lease_owner, :text
           add :lease_expires_at, :utc_datetime_usec
-          add :result, :jsonb
-          add :error, :jsonb
+          add :result, :bytea
+          add :error, :bytea
         end
 
         execute \"\"\"

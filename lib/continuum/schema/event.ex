@@ -9,7 +9,7 @@ defmodule Continuum.Schema.Event do
     field(:run_id, :binary_id, primary_key: true)
     field(:seq, :integer, primary_key: true)
     field(:event_type, :string)
-    field(:payload, :map)
+    field(:payload, :binary)
     field(:inserted_at, :utc_datetime_usec)
   end
 end

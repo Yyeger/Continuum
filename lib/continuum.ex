@@ -101,33 +101,57 @@ defmodule Continuum do
   @doc """
   The current wall-clock time, journaled and replayed deterministically.
   """
-  @spec now() :: DateTime.t()
-  def now do
-    Effect.run({:side_effect, :now}, fn -> DateTime.utc_now() end)
+  defmacro now do
+    command = command_base(__CALLER__, :now)
+
+    quote do
+      Continuum.Runtime.Effect.run(
+        {:side_effect, :now},
+        {:command, unquote(Macro.escape(command)), &DateTime.utc_now/0}
+      )
+    end
   end
 
   @doc """
   The current UTC date, journaled and replayed deterministically.
   """
-  @spec today() :: Date.t()
-  def today do
-    Effect.run({:side_effect, :today}, fn -> Date.utc_today() end)
+  defmacro today do
+    command = command_base(__CALLER__, :today)
+
+    quote do
+      Continuum.Runtime.Effect.run(
+        {:side_effect, :today},
+        {:command, unquote(Macro.escape(command)), &Date.utc_today/0}
+      )
+    end
   end
 
   @doc """
   A v4 UUID, journaled and replayed deterministically.
   """
-  @spec uuid4() :: binary()
-  def uuid4 do
-    Effect.run({:side_effect, :uuid4}, &generate_uuid4/0)
+  defmacro uuid4 do
+    command = command_base(__CALLER__, :uuid4)
+
+    quote do
+      Continuum.Runtime.Effect.run(
+        {:side_effect, :uuid4},
+        {:command, unquote(Macro.escape(command)), &Continuum.__generate_uuid4__/0}
+      )
+    end
   end
 
   @doc """
   A pseudo-random float in [0, 1), journaled and replayed deterministically.
   """
-  @spec random() :: float()
-  def random do
-    Effect.run({:side_effect, :random}, fn -> :rand.uniform_real() end)
+  defmacro random do
+    command = command_base(__CALLER__, :random)
+
+    quote do
+      Continuum.Runtime.Effect.run(
+        {:side_effect, :random},
+        {:command, unquote(Macro.escape(command)), &:rand.uniform_real/0}
+      )
+    end
   end
 
   @doc """
@@ -169,7 +193,8 @@ defmodule Continuum do
   defp child(module, true), do: module
   defp child(module, opts), do: {module, opts}
 
-  defp generate_uuid4 do
+  @doc false
+  def __generate_uuid4__ do
     <<u0::48, _::4, u1::12, _::2, u2::62>> = :crypto.strong_rand_bytes(16)
 
     <<a::32, b::16, c::16, d::16, e::48>> =
@@ -177,5 +202,16 @@ defmodule Continuum do
 
     :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
     |> IO.iodata_to_binary()
+  end
+
+  defp command_base(env, kind) do
+    {:side_effect, env.module, env.function, env.line, hash_term(kind)}
+  end
+
+  defp hash_term(term) do
+    term
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 end

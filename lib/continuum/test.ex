@@ -209,8 +209,19 @@ defmodule Continuum.Test do
   end
 
   defp fire_journal_timer(run_id, journal) do
-    with {:ok, timer_id} <- latest_pending_timer(journal.load(run_id)) do
-      :ok = journal.append!(run_id, %{type: :timer_fired, timer_id: timer_id, seq: nil}, nil)
+    with {:ok, timer_event} <- latest_pending_timer(journal.load(run_id)) do
+      :ok =
+        journal.append!(
+          run_id,
+          %{
+            type: :timer_fired,
+            timer_id: Map.fetch!(timer_event, :timer_id),
+            command_id: Map.get(timer_event, :command_id),
+            seq: nil
+          },
+          nil
+        )
+
       Engine.wake(run_id)
       :ok
     end
@@ -255,7 +266,7 @@ defmodule Continuum.Test do
     end)
     |> case do
       nil -> {:error, :no_pending_timer}
-      event -> {:ok, Map.fetch!(event, :timer_id)}
+      event -> {:ok, event}
     end
   end
 

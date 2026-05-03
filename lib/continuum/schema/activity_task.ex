@@ -8,14 +8,14 @@ defmodule Continuum.Schema.ActivityTask do
   schema "continuum_activity_tasks" do
     field(:run_id, :binary_id)
     field(:seq, :integer)
-    field(:mfa, :map)
+    field(:mfa, :binary)
     field(:attempt, :integer, default: 1)
     field(:state, :string)
     field(:scheduled_at, :utc_datetime_usec)
     field(:available_at, :utc_datetime_usec)
     field(:lease_owner, :string)
     field(:lease_expires_at, :utc_datetime_usec)
-    field(:result, :map)
-    field(:error, :map)
+    field(:result, :binary)
+    field(:error, :binary)
   end
 end

@@ -50,6 +50,7 @@ defmodule Continuum.AstCheck do
       "start workflows outside workflow code; child workflows are planned post-v0.1",
     {Continuum, :signal} =>
       "signal/3 is a side effect; wrap it in Continuum.activity/2 or wait for Continuum.signal_child/2 (v0.3+)",
+    {Continuum, :__generate_uuid4__} => "use Continuum.uuid4/0",
     {Continuum, :cancel} =>
       "cancel workflows outside workflow code or wrap cancellation in an activity",
     {Continuum, :await} =>

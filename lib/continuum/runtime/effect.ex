@@ -42,32 +42,52 @@ defmodule Continuum.Runtime.Effect do
       execution; its return value is journaled. On replay, the journaled
       value is returned without invoking the producer.
 
-    * `run(effect, line)` — for journaled effects (`:activity`,
-      `:await_signal`, `:timer`). The `line` is the AST line of the call
-      site, used for replay-drift diagnostics. Live execution suspends the
+    * `run(effect, {:command, command_base})` — for workflow DSL effects.
+      The command base is expanded from the AST call site and becomes part
+      of the journaled command identity.
+
+    * `run(effect, line)` — compatibility form for journaled effects
+      (`:activity`, `:await_signal`, `:timer`). Live execution suspends the
       workflow process via `throw {:continuum_suspend, _}`.
   """
-  @spec run(effect(), (-> term()) | pos_integer()) :: term()
+  @spec run(
+          effect(),
+          (-> term()) | pos_integer() | {:command, term()} | {:command, term(), (-> term())}
+        ) ::
+          term()
   def run({:side_effect, _kind} = effect, producer) when is_function(producer, 0) do
-    advance(effect, producer)
+    advance(effect, producer, fn ctx -> side_effect_command_base(ctx, effect, producer) end)
+  end
+
+  def run({:side_effect, _kind} = effect, {:command, command_base, producer})
+      when is_function(producer, 0) do
+    advance(effect, producer, fn _ctx -> command_base end)
   end
 
   def run(effect, line) when is_integer(line) do
-    advance(effect, fn -> compute_live(effect) end)
+    advance(effect, fn -> compute_live(effect) end, fn ctx ->
+      line_command_base(ctx, effect, line)
+    end)
+  end
+
+  def run(effect, {:command, command_base}) do
+    advance(effect, fn -> compute_live(effect) end, fn _ctx -> command_base end)
   end
 
   # ---------------------------------------------------------------------------
 
-  defp advance(effect, live_compute) do
+  defp advance(effect, live_compute, command_base_fun) do
     ctx = Context.get() || raise_not_in_workflow(effect)
+    {ctx, command_id} = assign_command_id(ctx, command_base_fun.(ctx))
+    Context.put(ctx)
 
     case Enum.at(ctx.history, ctx.cursor) do
       nil ->
-        live_tail!(ctx, effect, live_compute)
+        live_tail!(ctx, effect, live_compute, command_id)
 
       event ->
         # Replay: validate and return.
-        replay_event!(ctx, event, effect)
+        replay_event!(ctx, event, effect, command_id)
     end
   end
 
@@ -87,8 +107,8 @@ defmodule Continuum.Runtime.Effect do
     throw({:continuum_suspend, :awaiting_timer})
   end
 
-  defp journal_live!(ctx, effect, result) do
-    event = encode_event(effect, result, ctx.cursor)
+  defp journal_live!(ctx, effect, result, command_id) do
+    event = encode_event(effect, result, ctx.cursor, command_id)
     new_history = ctx.history ++ [event]
     new_ctx = %{ctx | history: new_history, cursor: ctx.cursor + 1}
     Context.put(new_ctx)
@@ -98,7 +118,8 @@ defmodule Continuum.Runtime.Effect do
   defp live_tail!(
          %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
          {:activity, {mod, fun, args}, opts},
-         _live_compute
+         _live_compute,
+         command_id
        ) do
     task_id = Ecto.UUID.generate()
 
@@ -107,6 +128,7 @@ defmodule Continuum.Runtime.Effect do
       task_id: task_id,
       mfa: {mod, fun, args},
       opts: opts,
+      command_id: command_id,
       seq: ctx.cursor
     }
 
@@ -117,7 +139,8 @@ defmodule Continuum.Runtime.Effect do
       opts: opts,
       retry: retry_policy(mod, opts),
       timeout_ms: timeout_ms(mod, opts),
-      idempotency_key: idempotency_key(mod, args, opts)
+      idempotency_key: idempotency_key(mod, args, opts),
+      command_id: command_id
     }
 
     :ok =
@@ -141,7 +164,8 @@ defmodule Continuum.Runtime.Effect do
   defp live_tail!(
          %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
          {:timer, ms},
-         _live_compute
+         _live_compute,
+         command_id
        ) do
     timer_id = Ecto.UUID.generate()
 
@@ -155,6 +179,7 @@ defmodule Continuum.Runtime.Effect do
       timer_id: timer_id,
       duration_ms: ms,
       fires_at: fires_at,
+      command_id: command_id,
       seq: ctx.cursor
     }
 
@@ -178,7 +203,7 @@ defmodule Continuum.Runtime.Effect do
     throw({:continuum_suspend, {:timer_pending, timer_id}})
   end
 
-  defp live_tail!(ctx, {:timer, ms}, _live_compute) do
+  defp live_tail!(ctx, {:timer, ms}, _live_compute, command_id) do
     timer_id = Ecto.UUID.generate()
 
     fires_at =
@@ -191,6 +216,7 @@ defmodule Continuum.Runtime.Effect do
       timer_id: timer_id,
       duration_ms: ms,
       fires_at: fires_at,
+      command_id: command_id,
       seq: ctx.cursor
     }
 
@@ -209,13 +235,15 @@ defmodule Continuum.Runtime.Effect do
   defp live_tail!(
          %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
          {:await_signal, name, opts},
-         _live_compute
+         _live_compute,
+         command_id
        ) do
     event =
       %{
         type: :signal_awaited,
         name: name,
         opts: opts,
+        command_id: command_id,
         seq: ctx.cursor
       }
       |> Map.merge(signal_timeout(opts))
@@ -257,14 +285,19 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
-  defp live_tail!(ctx, {:activity, {mod, fun, args}, _opts} = effect, _live_compute) do
+  defp live_tail!(
+         ctx,
+         {:activity, {mod, fun, args}, _opts} = effect,
+         _live_compute,
+         command_id
+       ) do
     Telemetry.execute([:continuum, :activity, :started], %{}, %{
       run_id: ctx.run_id,
       mfa: {mod, fun, args}
     })
 
     result = apply(mod, fun, args)
-    journal_live!(ctx, effect, result)
+    journal_live!(ctx, effect, result, command_id)
 
     Telemetry.execute([:continuum, :activity, :completed], %{}, %{
       run_id: ctx.run_id,
@@ -274,14 +307,19 @@ defmodule Continuum.Runtime.Effect do
     result
   end
 
-  defp live_tail!(ctx, effect, live_compute) do
+  defp live_tail!(ctx, effect, live_compute, command_id) do
     result = live_compute.()
-    journal_live!(ctx, effect, result)
+    journal_live!(ctx, effect, result, command_id)
     result
   end
 
-  defp replay_event!(ctx, event, effect) do
-    case match_event(ctx, event, effect) do
+  defp replay_event!(ctx, event, effect, command_id) do
+    result =
+      if command_matches?(event, command_id),
+        do: match_event(ctx, event, effect, command_id),
+        else: :mismatch
+
+    case result do
       {:ok, result} ->
         Context.put(%{ctx | cursor: ctx.cursor + 1})
         result
@@ -302,31 +340,33 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
-  defp encode_event({:side_effect, kind}, result, seq) do
-    %{type: :side_effect, kind: kind, payload: result, seq: seq}
+  defp encode_event({:side_effect, kind}, result, seq, command_id) do
+    %{type: :side_effect, kind: kind, payload: result, command_id: command_id, seq: seq}
   end
 
-  defp encode_event({:activity, {mod, fun, args}, _opts}, result, seq) do
+  defp encode_event({:activity, {mod, fun, args}, _opts}, result, seq, command_id) do
     %{
       type: :activity_completed,
       mfa: {mod, fun, args},
       payload: result,
+      command_id: command_id,
       seq: seq
     }
   end
 
-  defp encode_event({:await_signal, name, _opts}, payload, seq) do
-    %{type: :signal_received, name: name, payload: payload, seq: seq}
+  defp encode_event({:await_signal, name, _opts}, payload, seq, command_id) do
+    %{type: :signal_received, name: name, payload: payload, command_id: command_id, seq: seq}
   end
 
-  defp encode_event({:timer, ms}, _result, seq) do
-    %{type: :timer_fired, duration_ms: ms, seq: seq}
+  defp encode_event({:timer, ms}, _result, seq, command_id) do
+    %{type: :timer_fired, duration_ms: ms, command_id: command_id, seq: seq}
   end
 
   defp match_event(
          _ctx,
          %{type: :side_effect, kind: ek, payload: payload},
-         {:side_effect, ek}
+         {:side_effect, ek},
+         _command_id
        )
        when is_atom(ek),
        do: {:ok, payload}
@@ -334,15 +374,16 @@ defmodule Continuum.Runtime.Effect do
   defp match_event(
          ctx,
          %{type: :activity_scheduled, mfa: {emod, efun, _ja}},
-         {:activity, {lmod, lfun, _la}, _opts}
+         {:activity, {lmod, lfun, _la}, _opts},
+         command_id
        )
        when emod == lmod and efun == lfun do
     case Enum.at(ctx.history, ctx.cursor + 1) do
-      %{type: :activity_completed, mfa: {^emod, ^efun, _}, payload: payload} ->
-        {:ok, payload, 2}
+      %{type: :activity_completed, mfa: {^emod, ^efun, _}, payload: payload} = event ->
+        if command_matches?(event, command_id), do: {:ok, payload, 2}, else: :mismatch
 
-      %{type: :activity_failed, mfa: {^emod, ^efun, _}, error: error} ->
-        {:ok, {:error, error}, 2}
+      %{type: :activity_failed, mfa: {^emod, ^efun, _}, error: error} = event ->
+        if command_matches?(event, command_id), do: {:ok, {:error, error}, 2}, else: :mismatch
 
       nil ->
         :pending
@@ -355,7 +396,8 @@ defmodule Continuum.Runtime.Effect do
   defp match_event(
          _ctx,
          %{type: :activity_completed, mfa: {emod, efun, _ja}, payload: payload},
-         {:activity, {lmod, lfun, _la}, _opts}
+         {:activity, {lmod, lfun, _la}, _opts},
+         _command_id
        )
        when emod == lmod and efun == lfun,
        do: {:ok, payload}
@@ -363,7 +405,8 @@ defmodule Continuum.Runtime.Effect do
   defp match_event(
          _ctx,
          %{type: :signal_received, name: ename, payload: payload},
-         {:await_signal, lname, _opts}
+         {:await_signal, lname, _opts},
+         _command_id
        )
        when ename == lname,
        do: {:ok, payload}
@@ -371,16 +414,18 @@ defmodule Continuum.Runtime.Effect do
   defp match_event(
          ctx,
          %{type: :signal_awaited, name: name} = event,
-         {:await_signal, name, _opts}
+         {:await_signal, name, _opts},
+         command_id
        ) do
     timeout_timer_id = Map.get(event, :timeout_timer_id)
 
     case Enum.at(ctx.history, ctx.cursor + 1) do
-      %{type: :signal_received, name: ^name, payload: payload} ->
-        {:ok, payload, 2}
+      %{type: :signal_received, name: ^name, payload: payload} = event ->
+        if command_matches?(event, command_id), do: {:ok, payload, 2}, else: :mismatch
 
-      %{type: :timer_fired, timer_id: ^timeout_timer_id} when not is_nil(timeout_timer_id) ->
-        {:ok, :timeout, 2}
+      %{type: :timer_fired, timer_id: ^timeout_timer_id} = event
+      when not is_nil(timeout_timer_id) ->
+        if command_matches?(event, command_id), do: {:ok, :timeout, 2}, else: :mismatch
 
       nil ->
         case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
@@ -408,10 +453,10 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
-  defp match_event(ctx, %{type: :timer_started, timer_id: timer_id}, {:timer, _ms}) do
+  defp match_event(ctx, %{type: :timer_started, timer_id: timer_id}, {:timer, _ms}, command_id) do
     case Enum.at(ctx.history, ctx.cursor + 1) do
-      %{type: :timer_fired, timer_id: ^timer_id} ->
-        {:ok, :ok, 2}
+      %{type: :timer_fired, timer_id: ^timer_id} = event ->
+        if command_matches?(event, command_id), do: {:ok, :ok, 2}, else: :mismatch
 
       nil ->
         :pending
@@ -421,9 +466,61 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
-  defp match_event(_ctx, %{type: :timer_fired}, {:timer, _ms}), do: {:ok, :ok}
+  defp match_event(_ctx, %{type: :timer_fired}, {:timer, _ms}, _command_id), do: {:ok, :ok}
 
-  defp match_event(_ctx, _, _), do: :mismatch
+  defp match_event(_ctx, _, _, _), do: :mismatch
+
+  defp assign_command_id(ctx, base) do
+    counts = ctx.command_counts || %{}
+    ordinal = Map.get(counts, base, 0)
+    command_id = Tuple.insert_at(base, tuple_size(base), ordinal)
+    {%{ctx | command_counts: Map.put(counts, base, ordinal + 1)}, command_id}
+  end
+
+  defp line_command_base(ctx, effect, line) do
+    {type, shape} = effect_shape(effect)
+    {type, ctx.workflow_module, nil, line, hash_term(shape)}
+  end
+
+  defp side_effect_command_base(ctx, {:side_effect, kind}, producer) do
+    {:side_effect, kind, producer_fingerprint(producer), hash_term(ctx.workflow_module)}
+  end
+
+  defp producer_fingerprint(fun) do
+    info = :erlang.fun_info(fun)
+
+    {
+      Keyword.fetch!(info, :module),
+      Keyword.fetch!(info, :name),
+      Keyword.fetch!(info, :arity),
+      Keyword.get(info, :new_index, Keyword.get(info, :index)),
+      Keyword.get(info, :new_uniq, Keyword.get(info, :uniq))
+    }
+  end
+
+  defp command_matches?(event, command_id) do
+    case Map.get(event, :command_id) || Map.get(event, "command_id") do
+      nil -> true
+      ^command_id -> true
+      _other -> false
+    end
+  end
+
+  defp effect_shape({:side_effect, kind}), do: {:side_effect, kind}
+
+  defp effect_shape({:activity, {mod, fun, args}, _opts}) do
+    {:activity, {mod, fun, length(args || [])}}
+  end
+
+  defp effect_shape({:await_signal, name, _opts}), do: {:await_signal, name}
+  defp effect_shape({:timer, _ms}), do: {:timer, :timer}
+
+  defp hash_term(term) do
+    term
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
 
   defp retry_policy(mod, opts) do
     Keyword.get(opts, :retry) || activity_metadata(mod)[:retry] || [max_attempts: 1]
