@@ -333,7 +333,7 @@ defmodule Continuum.Runtime.Effect do
 
   defp match_event(
          ctx,
-         %{type: :activity_scheduled, mfa: {emod, efun, _ja}} = event,
+         %{type: :activity_scheduled, mfa: {emod, efun, _ja}},
          {:activity, {lmod, lfun, _la}, _opts}
        )
        when emod == lmod and efun == lfun do
@@ -348,7 +348,7 @@ defmodule Continuum.Runtime.Effect do
         :pending
 
       _other ->
-        if Map.has_key?(event, :task_id), do: :pending, else: :mismatch
+        :mismatch
     end
   end
 

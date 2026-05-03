@@ -109,11 +109,23 @@ defmodule Continuum.ReplayTest do
   end
 
   describe "replay drift detection" do
+    defmodule DriftActivity do
+      def run(value), do: {:ok, value}
+    end
+
     defmodule DriftFlow do
       use Continuum.Workflow, version: 1
 
       def run(_input) do
         Continuum.side_effect(fn -> :first end)
+      end
+    end
+
+    defmodule ActivityDriftFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(input) do
+        activity(DriftActivity.run(input.value))
       end
     end
 
@@ -136,6 +148,37 @@ defmodule Continuum.ReplayTest do
       try do
         assert_raise Continuum.ReplayDriftError, fn ->
           DriftFlow.run(%{})
+        end
+      after
+        Continuum.Runtime.Context.clear()
+      end
+    end
+
+    test "raises ReplayDriftError when scheduled activity is followed by an unexpected event" do
+      events = [
+        %{
+          type: :activity_scheduled,
+          task_id: "task-1",
+          mfa: {DriftActivity, :run, [1]},
+          seq: 0
+        },
+        %{type: :timer_fired, timer_id: "timer-1", seq: 1}
+      ]
+
+      ctx = %Continuum.Runtime.Context{
+        run_id: "activity-drift",
+        history: events,
+        cursor: 0,
+        workflow_module: ActivityDriftFlow,
+        lease_token: nil,
+        journal: InMemory
+      }
+
+      Continuum.Runtime.Context.put(ctx)
+
+      try do
+        assert_raise Continuum.ReplayDriftError, fn ->
+          ActivityDriftFlow.run(%{value: 1})
         end
       after
         Continuum.Runtime.Context.clear()
