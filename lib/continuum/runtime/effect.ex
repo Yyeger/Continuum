@@ -183,12 +183,14 @@ defmodule Continuum.Runtime.Effect do
          {:await_signal, name, opts},
          _live_compute
        ) do
-    event = %{
-      type: :signal_awaited,
-      name: name,
-      opts: opts,
-      seq: ctx.cursor
-    }
+    event =
+      %{
+        type: :signal_awaited,
+        name: name,
+        opts: opts,
+        seq: ctx.cursor
+      }
+      |> Map.merge(signal_timeout(opts))
 
     :ok =
       Continuum.Runtime.Journal.Postgres.schedule_signal_await!(
@@ -203,9 +205,13 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     })
 
-    case Continuum.Runtime.Journal.Postgres.consume_signal(ctx.run_id, name, ctx.lease_token) do
-      {:ok, payload} ->
-        Context.put(%{ctx | cursor: ctx.cursor + 2})
+    case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
+           ctx.run_id,
+           event,
+           ctx.lease_token
+         ) do
+      {:ok, payload, winner_event} ->
+        Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 2})
 
         Telemetry.execute([:continuum, :signal, :received], %{}, %{
           run_id: ctx.run_id,
@@ -213,6 +219,10 @@ defmodule Continuum.Runtime.Effect do
         })
 
         payload
+
+      {:timeout, winner_event} ->
+        Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 2})
+        :timeout
 
       :none ->
         throw({:continuum_suspend, {:awaiting_signal, name}})
@@ -330,20 +340,36 @@ defmodule Continuum.Runtime.Effect do
        when ename == lname,
        do: {:ok, payload}
 
-  defp match_event(ctx, %{type: :signal_awaited, name: name}, {:await_signal, name, _opts}) do
+  defp match_event(
+         ctx,
+         %{type: :signal_awaited, name: name} = event,
+         {:await_signal, name, _opts}
+       ) do
+    timeout_timer_id = Map.get(event, :timeout_timer_id)
+
     case Enum.at(ctx.history, ctx.cursor + 1) do
       %{type: :signal_received, name: ^name, payload: payload} ->
         {:ok, payload, 2}
 
+      %{type: :timer_fired, timer_id: ^timeout_timer_id} when not is_nil(timeout_timer_id) ->
+        {:ok, :timeout, 2}
+
       nil ->
-        case Continuum.Runtime.Journal.Postgres.consume_signal(ctx.run_id, name, ctx.lease_token) do
-          {:ok, payload} ->
+        case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
+               ctx.run_id,
+               event,
+               ctx.lease_token
+             ) do
+          {:ok, payload, _winner_event} ->
             Telemetry.execute([:continuum, :signal, :received], %{}, %{
               run_id: ctx.run_id,
               signal_name: name
             })
 
             {:ok, payload, 2}
+
+          {:timeout, _winner_event} ->
+            {:ok, :timeout, 2}
 
           :none ->
             :pending
@@ -379,6 +405,27 @@ defmodule Continuum.Runtime.Effect do
     opts
     |> Keyword.get(:timeout, activity_metadata(mod)[:timeout] || {:seconds, 30})
     |> duration_to_ms()
+  end
+
+  defp signal_timeout(opts) do
+    case Keyword.fetch(opts, :timeout) do
+      {:ok, timeout} ->
+        ms = duration_to_ms(timeout)
+
+        fires_at =
+          DateTime.utc_now()
+          |> DateTime.add(ms, :millisecond)
+          |> DateTime.truncate(:microsecond)
+
+        %{
+          timeout_ms: ms,
+          timeout_timer_id: Ecto.UUID.generate(),
+          timeout_at: fires_at
+        }
+
+      :error ->
+        %{}
+    end
   end
 
   defp idempotency_key(mod, args, opts) do

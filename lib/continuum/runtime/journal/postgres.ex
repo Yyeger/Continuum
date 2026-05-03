@@ -193,6 +193,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     result =
       repo().transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
+        now = DateTime.utc_now()
 
         changeset =
           %Event{}
@@ -201,12 +202,16 @@ defmodule Continuum.Runtime.Journal.Postgres do
             seq: event.seq,
             event_type: event_type,
             payload: payload,
-            inserted_at: DateTime.utc_now()
+            inserted_at: now
           })
 
-        case repo().insert(changeset) do
-          {:ok, _event} -> :ok
+        with {:ok, _event} <- repo().insert(changeset),
+             :ok <- maybe_insert_signal_timeout_timer(run_id, event),
+             :ok <- maybe_set_signal_timeout_wakeup(run_id, event, lease_token) do
+          :ok
+        else
           {:error, changeset} -> repo().rollback({:signal_await_failed, changeset})
+          {0, _} -> repo().rollback({:signal_await_failed, :lease_mismatch})
         end
       end)
 
@@ -216,6 +221,26 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       {:error, reason} ->
         raise "Continuum.Runtime.Journal.Postgres schedule_signal_await! failed: #{inspect(reason)}"
+    end
+  end
+
+  def resolve_signal_await(run_id, await_event, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+
+        case signal_await_winner(run_id, await_event) do
+          :none -> consume_signal_or_timeout(run_id, await_event)
+          result -> result
+        end
+      end)
+
+    case result do
+      {:ok, value} ->
+        value
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres resolve_signal_await failed: #{inspect(reason)}"
     end
   end
 
@@ -328,8 +353,263 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  def fire_timer!(run_id, timer_id, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+
+        case timer_winner(run_id, timer_id) do
+          {:pending, _timer_event, winner_seq} ->
+            event = %{type: :timer_fired, timer_id: timer_id, seq: winner_seq}
+            winner_event = insert_event!(run_id, event)
+            mark_timer_resolved(run_id, timer_id, lease_token)
+            {:ok, winner_event}
+
+          {:already_fired, winner_event} ->
+            mark_timer_resolved(run_id, timer_id, lease_token)
+            {:ok, winner_event}
+
+          {:already_resolved, _winner_event} ->
+            mark_timer_resolved(run_id, timer_id, lease_token)
+            :already_resolved
+
+          :not_found ->
+            repo().rollback({:timer_fire_failed, :not_found})
+
+          :mismatch ->
+            repo().rollback({:timer_fire_failed, :winner_mismatch})
+        end
+      end)
+
+    case result do
+      {:ok, _value} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres fire_timer! failed: #{inspect(reason)}"
+    end
+  end
+
   def clear_next_wakeup!(run_id, lease_token) do
     cas_update_run(run_id, lease_token, %{next_wakeup_at: nil})
+  end
+
+  defp maybe_insert_signal_timeout_timer(run_id, %{
+         timeout_timer_id: timer_id,
+         timeout_at: fires_at
+       }) do
+    changeset =
+      %Timer{}
+      |> Ecto.Changeset.change(%{
+        id: timer_id,
+        run_id: run_id,
+        fires_at: fires_at,
+        fired: false
+      })
+
+    case repo().insert(changeset) do
+      {:ok, _timer} -> :ok
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  defp maybe_insert_signal_timeout_timer(_run_id, _event), do: :ok
+
+  defp maybe_set_signal_timeout_wakeup(run_id, %{timeout_at: timeout_at}, lease_token) do
+    case repo().update_all(
+           leased_run_query(run_id, lease_token),
+           set: [next_wakeup_at: timeout_at]
+         ) do
+      {1, _} -> :ok
+      other -> other
+    end
+  end
+
+  defp maybe_set_signal_timeout_wakeup(_run_id, _event, _lease_token), do: :ok
+
+  defp signal_await_winner(run_id, await_event) do
+    winner_seq = await_event.seq + 1
+    await_name = await_event.name
+    timeout_timer_id = Map.get(await_event, :timeout_timer_id)
+
+    run_id
+    |> event_at(winner_seq)
+    |> case do
+      nil ->
+        :none
+
+      %{type: :signal_received, name: ^await_name, payload: payload} = winner_event ->
+        {:ok, payload, winner_event}
+
+      %{type: :timer_fired, timer_id: ^timeout_timer_id} = winner_event
+      when not is_nil(timeout_timer_id) ->
+        {:timeout, winner_event}
+
+      _other ->
+        repo().rollback({:signal_await_failed, :winner_mismatch})
+    end
+  end
+
+  defp consume_signal_or_timeout(run_id, await_event) do
+    case pending_signal(run_id, await_event.name) do
+      nil ->
+        maybe_timeout_signal_await(run_id, await_event)
+
+      %Signal{} = signal ->
+        payload = decode_term(signal.payload)
+
+        winner_event =
+          insert_event!(run_id, %{
+            type: :signal_received,
+            name: await_event.name,
+            payload: payload,
+            seq: await_event.seq + 1
+          })
+
+        with {1, _} <-
+               repo().update_all(
+                 from(s in Signal, where: s.id == ^signal.id),
+                 set: [delivered: true]
+               ) do
+          mark_signal_timeout_resolved(run_id, await_event)
+          {:ok, payload, winner_event}
+        else
+          {0, _} -> repo().rollback({:signal_consume_failed, :already_delivered})
+        end
+    end
+  end
+
+  defp maybe_timeout_signal_await(
+         run_id,
+         %{timeout_timer_id: timer_id, timeout_at: timeout_at} = event
+       ) do
+    if DateTime.compare(DateTime.utc_now(), timeout_at) in [:gt, :eq] do
+      winner_event =
+        insert_event!(run_id, %{
+          type: :timer_fired,
+          timer_id: timer_id,
+          seq: event.seq + 1
+        })
+
+      mark_timer_resolved(run_id, timer_id, nil)
+      {:timeout, winner_event}
+    else
+      :none
+    end
+  end
+
+  defp maybe_timeout_signal_await(_run_id, _event), do: :none
+
+  defp pending_signal(run_id, name) do
+    signal_name = Atom.to_string(name)
+
+    repo().one(
+      from(s in Signal,
+        where: s.run_id == ^run_id and s.name == ^signal_name and s.delivered == false,
+        order_by: [asc: s.inserted_at, asc: s.id],
+        limit: 1,
+        lock: "FOR UPDATE SKIP LOCKED"
+      )
+    )
+  end
+
+  defp mark_signal_timeout_resolved(run_id, %{timeout_timer_id: timer_id}) do
+    mark_timer_resolved(run_id, timer_id, nil)
+  end
+
+  defp mark_signal_timeout_resolved(_run_id, _event), do: :ok
+
+  defp timer_winner(run_id, timer_id) do
+    events = load_events(run_id)
+
+    case Enum.find(events, &timer_owner?(&1, timer_id)) do
+      nil ->
+        :not_found
+
+      timer_event ->
+        winner_seq = timer_event.seq + 1
+
+        case Enum.find(events, &(&1.seq == winner_seq)) do
+          nil ->
+            {:pending, timer_event, winner_seq}
+
+          %{type: :timer_fired, timer_id: ^timer_id} = winner_event ->
+            {:already_fired, winner_event}
+
+          %{type: :signal_received} = winner_event when timer_event.type == :signal_awaited ->
+            {:already_resolved, winner_event}
+
+          _other ->
+            :mismatch
+        end
+    end
+  end
+
+  defp timer_owner?(%{type: :timer_started, timer_id: event_timer_id}, timer_id)
+       when event_timer_id == timer_id,
+       do: true
+
+  defp timer_owner?(%{type: :signal_awaited, timeout_timer_id: event_timer_id}, timer_id)
+       when event_timer_id == timer_id,
+       do: true
+
+  defp timer_owner?(_event, _timer_id), do: false
+
+  defp event_at(run_id, seq) do
+    repo().one(
+      from(e in Event,
+        where: e.run_id == ^run_id and e.seq == ^seq
+      )
+    )
+    |> case do
+      nil -> nil
+      event -> decode_event(event)
+    end
+  end
+
+  defp load_events(run_id) do
+    repo().all(
+      from(e in Event,
+        where: e.run_id == ^run_id,
+        order_by: [asc: e.seq]
+      )
+    )
+    |> Enum.map(&decode_event/1)
+  end
+
+  defp insert_event!(run_id, event) do
+    {event_type, payload} = encode_event(event)
+
+    changeset =
+      %Event{}
+      |> Ecto.Changeset.change(%{
+        run_id: run_id,
+        seq: event.seq,
+        event_type: event_type,
+        payload: payload,
+        inserted_at: DateTime.utc_now()
+      })
+
+    case repo().insert(changeset) do
+      {:ok, event_record} -> decode_event(event_record)
+      {:error, changeset} -> repo().rollback({:event_insert_failed, changeset})
+    end
+  end
+
+  defp mark_timer_resolved(run_id, timer_id, lease_token) do
+    repo().update_all(
+      from(t in Timer, where: t.run_id == ^run_id and t.id == ^timer_id),
+      set: [fired: true]
+    )
+
+    run_query =
+      case lease_token do
+        nil -> from(r in Run, where: r.id == ^run_id)
+        token -> leased_run_query(run_id, token)
+      end
+
+    repo().update_all(run_query, set: [next_wakeup_at: nil])
+    :ok
   end
 
   @impl true

@@ -239,10 +239,7 @@ defmodule Continuum.Test do
       %Timer{} = timer ->
         lease_token = repo().one(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
 
-        :ok =
-          Journal.Postgres.append!(run_id, %{type: :timer_fired, timer_id: timer.id}, lease_token)
-
-        repo().update_all(from(t in Timer, where: t.id == ^timer.id), set: [fired: true])
+        :ok = Journal.Postgres.fire_timer!(run_id, timer.id, lease_token)
         Engine.wake(run_id)
         :ok
     end

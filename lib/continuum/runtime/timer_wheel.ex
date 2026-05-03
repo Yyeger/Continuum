@@ -96,14 +96,7 @@ defmodule Continuum.Runtime.TimerWheel do
   defp fire_timer(timer) do
     lease_token = run_lease_token(timer.run_id)
 
-    event = %{
-      type: :timer_fired,
-      timer_id: timer.id,
-      seq: nil
-    }
-
-    :ok = Journal.Postgres.append!(timer.run_id, event, lease_token)
-    :ok = Journal.Postgres.clear_next_wakeup!(timer.run_id, lease_token)
+    :ok = Journal.Postgres.fire_timer!(timer.run_id, timer.id, lease_token)
     Engine.wake(timer.run_id)
 
     Telemetry.execute([:continuum, :timer, :fired], %{}, %{
