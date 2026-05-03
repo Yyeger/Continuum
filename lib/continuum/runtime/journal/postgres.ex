@@ -171,6 +171,86 @@ defmodule Continuum.Runtime.Journal.Postgres do
     )
   end
 
+  def retry_activity_task!(task, error, retry_at, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_active_run!(task.run_id, lease_token)
+        lock_and_validate_activity_task!(task)
+
+        case repo().update_all(
+               from(t in ActivityTask,
+                 where:
+                   t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
+                     t.lease_owner == ^task.lease_owner
+               ),
+               set: [
+                 state: "available",
+                 attempt: task.attempt + 1,
+                 available_at: retry_at,
+                 lease_owner: nil,
+                 lease_expires_at: nil,
+                 error: encode_term(error)
+               ]
+             ) do
+          {1, _} -> :ok
+          {0, _} -> repo().rollback({:activity_task_retry_failed, :task_lease_mismatch})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres activity task retry failed: #{inspect(reason)}"
+    end
+  end
+
+  def cancel_run!(run_id, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_active_run!(run_id, lease_token)
+
+        repo().update_all(
+          from(t in ActivityTask,
+            where: t.run_id == ^run_id and t.state in ["available", "leased"]
+          ),
+          set: [
+            state: "discarded",
+            lease_owner: nil,
+            lease_expires_at: nil,
+            error: encode_term(:cancelled)
+          ]
+        )
+
+        repo().update_all(
+          from(t in Timer, where: t.run_id == ^run_id and t.fired == false),
+          set: [fired: true]
+        )
+
+        case repo().update_all(
+               leased_run_query(run_id, lease_token),
+               set: [
+                 state: "failed",
+                 error: encode_term(:cancelled),
+                 completed_at: DateTime.utc_now(),
+                 next_wakeup_at: nil
+               ]
+             ) do
+          {1, _} -> :ok
+          {0, _} -> repo().rollback({:cancel_failed, :lease_mismatch})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres cancel_run! failed: #{inspect(reason)}"
+    end
+  end
+
   def schedule_timer!(run_id, event, timer, lease_token) do
     {event_type, payload} = encode_event(event)
 

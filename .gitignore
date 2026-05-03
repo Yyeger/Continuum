@@ -8,3 +8,7 @@ erl_crash.dump
 continuum-*.tar
 /tmp/
 .elixir_ls/
+CLAUDE.md
+ROADMAP.md
+V0_1_COMPLETION_PLAN.txt
+V0_1_REVIEW_FINDINGS.txt

@@ -5,10 +5,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
 
   use GenServer
 
-  import Ecto.Query
-
   alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
-  alias Continuum.Schema.ActivityTask
 
   @doc false
   def start_link(task) do
@@ -103,18 +100,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
 
   defp retry(task, error, started_at) do
     retry_at = retry_at(task)
-
-    repo().update_all(
-      from(t in ActivityTask, where: t.id == ^task.id),
-      set: [
-        state: "available",
-        attempt: task.attempt + 1,
-        available_at: retry_at,
-        lease_owner: nil,
-        lease_expires_at: nil,
-        error: encode_term(error)
-      ]
-    )
+    :ok = Journal.Postgres.retry_activity_task!(task, error, retry_at, task.run_lease_token)
 
     Telemetry.execute(
       [:continuum, :activity, :retried],
@@ -160,12 +146,5 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
       :exponential -> trunc(base_ms * :math.pow(2, max(attempt - 1, 0)))
       _ -> base_ms
     end
-  end
-
-  defp encode_term(nil), do: nil
-  defp encode_term(term), do: %{__term__: Base.encode64(:erlang.term_to_binary(term))}
-
-  defp repo do
-    Application.fetch_env!(:continuum, :repo)
   end
 end

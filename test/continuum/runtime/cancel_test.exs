@@ -1,0 +1,164 @@
+defmodule Continuum.Runtime.CancelTest do
+  use Continuum.Test.DataCase, async: false
+
+  alias Continuum.Runtime.ActivityWorker.Dispatcher
+  alias Continuum.Runtime.Journal.Postgres
+  alias Continuum.Runtime.TimerWheel
+  alias Continuum.Schema.{ActivityTask, Event, Run, Timer}
+
+  defmodule CancelActivity do
+    use Continuum.Activity, retry: [max_attempts: 2, backoff: :constant, base_ms: 1]
+
+    def run(value), do: {:ok, value}
+  end
+
+  defmodule ActivityFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      activity(CancelActivity.run(input.value))
+    end
+  end
+
+  defmodule TimerFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      timer(input.ms)
+      {:ok, :fired}
+    end
+  end
+
+  test "cancel discards pending activity tasks" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{value: 10}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    assert :ok = Continuum.cancel(run_id)
+
+    assert {:error, %{state: :failed, error: :cancelled}} =
+             Continuum.await(run_id, 25, journal: Postgres)
+
+    task = Repo.one!(ActivityTask)
+    assert task.state == "discarded"
+    assert task.lease_owner == nil
+    assert task.lease_expires_at == nil
+
+    assert {:ok, 0} = Dispatcher.dispatch_once(owner: "cancel-test", batch_size: 1)
+    assert event_types(run_id) == ["activity_scheduled"]
+  end
+
+  test "cancel marks pending timers fired so TimerWheel cannot complete the run later" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(Timer, :count) == 1
+    end)
+
+    assert :ok = Continuum.cancel(run_id)
+
+    assert {:error, %{state: :failed, error: :cancelled}} =
+             Continuum.await(run_id, 25, journal: Postgres)
+
+    timer = Repo.one!(Timer)
+    assert timer.fired == true
+
+    run = Repo.one!(from(r in Run, where: r.id == ^run_id))
+    assert run.state == "failed"
+    assert run.next_wakeup_at == nil
+
+    force_due(timer.id)
+    assert {:ok, 0} = TimerWheel.fire_due_once(batch_size: 1)
+    assert event_types(run_id) == ["timer_started"]
+  end
+
+  test "cancelled leased activity tasks cannot be retried back to available" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{value: 10}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+    run = Repo.one!(from(r in Run, where: r.id == ^run_id))
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [state: "leased", lease_owner: "worker-a", lease_expires_at: future_time()]
+    )
+
+    claimed_task =
+      task.mfa
+      |> decode_term()
+      |> Map.merge(%{
+        id: task.id,
+        run_id: task.run_id,
+        seq: task.seq,
+        attempt: task.attempt,
+        lease_owner: "worker-a"
+      })
+
+    assert :ok = Continuum.cancel(run_id)
+
+    assert_raise RuntimeError, ~r/run_not_active/, fn ->
+      Postgres.retry_activity_task!(
+        claimed_task,
+        :boom,
+        DateTime.utc_now(),
+        run.lease_token
+      )
+    end
+
+    assert Repo.one!(ActivityTask).state == "discarded"
+  end
+
+  defp force_due(timer_id) do
+    due_at =
+      DateTime.utc_now()
+      |> DateTime.add(-1, :second)
+      |> DateTime.truncate(:microsecond)
+
+    Repo.update_all(
+      from(t in Timer, where: t.id == ^timer_id),
+      set: [fires_at: due_at]
+    )
+  end
+
+  defp future_time do
+    DateTime.utc_now()
+    |> DateTime.add(60, :second)
+    |> DateTime.truncate(:microsecond)
+  end
+
+  defp decode_term(%{"__term__" => encoded}) when is_binary(encoded) do
+    :erlang.binary_to_term(Base.decode64!(encoded))
+  end
+
+  defp event_types(run_id) do
+    Repo.all(
+      from(e in Event,
+        where: e.run_id == ^run_id,
+        order_by: [asc: e.seq],
+        select: e.event_type
+      )
+    )
+  end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      assert true
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
+end

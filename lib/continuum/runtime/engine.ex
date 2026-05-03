@@ -186,7 +186,7 @@ defmodule Continuum.Runtime.Engine do
 
   @impl true
   def handle_call(:cancel, _from, state) do
-    :ok = state.journal.fail!(state.run_id, :cancelled, state.lease_token)
+    :ok = cancel_run(state)
     state = %{state | status: :cancelled, error: :cancelled}
 
     Telemetry.execute([:continuum, :run, :cancelled], %{}, %{
@@ -294,6 +294,14 @@ defmodule Continuum.Runtime.Engine do
   rescue
     error ->
       if lease_lost?(:error, error), do: lease_lost(state), else: reraise(error, __STACKTRACE__)
+  end
+
+  defp cancel_run(%{journal: Continuum.Runtime.Journal.Postgres} = state) do
+    Continuum.Runtime.Journal.Postgres.cancel_run!(state.run_id, state.lease_token)
+  end
+
+  defp cancel_run(state) do
+    state.journal.fail!(state.run_id, :cancelled, state.lease_token)
   end
 
   defp finalize(%{status: :suspended} = state), do: {:noreply, state}
