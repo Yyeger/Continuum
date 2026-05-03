@@ -1,5 +1,7 @@
 # Continuum
 
+**English** | [简体中文](./README.zh-CN.md)
+
 OTP-native durable execution engine for Elixir — Postgres-backed, deterministic
 replay, single dependency. Write a multi-step business process as straight-line
 Elixir code. Failures, restarts, and node death cause the workflow to resume
