@@ -93,10 +93,31 @@ defmodule Continuum.Runtime.Engine do
   def await(run_id, timeout, opts \\ []) do
     deadline = System.monotonic_time(:millisecond) + timeout
     journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.default())
-    poll_until(run_id, deadline, journal)
+
+    case subscribe_run(run_id) do
+      :ok ->
+        try do
+          case poll_once(run_id, journal) do
+            :pending -> await_run_finished(run_id, deadline, journal)
+            result -> result
+          end
+        after
+          unsubscribe_run(run_id)
+        end
+
+      :error ->
+        poll_until(run_id, deadline, journal)
+    end
   end
 
   defp poll_until(run_id, deadline, journal) do
+    case poll_once(run_id, journal) do
+      :pending -> poll_pending(run_id, deadline, journal)
+      result -> result
+    end
+  end
+
+  defp poll_once(run_id, journal) do
     case journal.get_run(run_id) do
       nil ->
         {:error, :not_found}
@@ -111,10 +132,22 @@ defmodule Continuum.Runtime.Engine do
         {:error, %{run_id: run_id, state: :cancelled}}
 
       %{state: :running} ->
-        poll_pending(run_id, deadline, journal)
+        :pending
 
       %{state: :suspended} ->
-        poll_pending(run_id, deadline, journal)
+        :pending
+    end
+  end
+
+  defp await_run_finished(run_id, deadline, journal) do
+    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:run_finished, ^run_id, state, payload} ->
+        await_result(run_id, state, payload)
+    after
+      timeout ->
+        poll_until(run_id, deadline, journal)
     end
   end
 
@@ -125,6 +158,46 @@ defmodule Continuum.Runtime.Engine do
       Process.sleep(5)
       poll_until(run_id, deadline, journal)
     end
+  end
+
+  defp await_result(run_id, :completed, result) do
+    {:ok, %{run_id: run_id, state: :completed, result: result}}
+  end
+
+  defp await_result(run_id, :failed, error) do
+    {:error, %{run_id: run_id, state: :failed, error: error}}
+  end
+
+  defp await_result(run_id, :cancelled, payload) do
+    {:error, %{run_id: run_id, state: :cancelled, error: payload}}
+  end
+
+  defp run_topic(run_id), do: "continuum:run:#{run_id}"
+
+  defp subscribe_run(run_id) do
+    if Process.whereis(Continuum.PubSub) do
+      Phoenix.PubSub.subscribe(Continuum.PubSub, run_topic(run_id))
+    else
+      :error
+    end
+  end
+
+  defp unsubscribe_run(run_id) do
+    if Process.whereis(Continuum.PubSub) do
+      Phoenix.PubSub.unsubscribe(Continuum.PubSub, run_topic(run_id))
+    end
+  end
+
+  def broadcast_run_finished(run_id, state, payload) do
+    if Process.whereis(Continuum.PubSub) do
+      Phoenix.PubSub.broadcast(
+        Continuum.PubSub,
+        run_topic(run_id),
+        {:run_finished, run_id, state, payload}
+      )
+    end
+
+    :ok
   end
 
   @doc false
@@ -250,6 +323,7 @@ defmodule Continuum.Runtime.Engine do
 
   defp complete_run(state, result) do
     :ok = state.journal.complete!(state.run_id, result, state.lease_token)
+    :ok = broadcast_run_finished(state.run_id, :completed, result)
 
     Telemetry.execute([:continuum, :run, :completed], %{}, %{
       run_id: state.run_id,
@@ -282,6 +356,7 @@ defmodule Continuum.Runtime.Engine do
 
   defp fail_run(state, journal_error, state_error) do
     :ok = state.journal.fail!(state.run_id, journal_error, state.lease_token)
+    :ok = broadcast_run_finished(state.run_id, :failed, state_error)
 
     Telemetry.execute([:continuum, :run, :failed], %{}, %{
       run_id: state.run_id,

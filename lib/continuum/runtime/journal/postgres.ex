@@ -246,6 +246,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case result do
       {:ok, :ok} ->
+        Continuum.Runtime.Engine.broadcast_run_finished(run_id, :failed, :cancelled)
         :ok
 
       {:error, reason} ->
@@ -829,20 +830,26 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   @impl true
   def complete!(run_id, result, lease_token) do
-    cas_update_run(run_id, lease_token, %{
-      state: "completed",
-      result: encode_term(result),
-      completed_at: DateTime.utc_now()
-    })
+    :ok =
+      cas_update_run(run_id, lease_token, %{
+        state: "completed",
+        result: encode_term(result),
+        completed_at: DateTime.utc_now()
+      })
+
+    Continuum.Runtime.Engine.broadcast_run_finished(run_id, :completed, result)
   end
 
   @impl true
   def fail!(run_id, error, lease_token) do
-    cas_update_run(run_id, lease_token, %{
-      state: "failed",
-      error: encode_term(error),
-      completed_at: DateTime.utc_now()
-    })
+    :ok =
+      cas_update_run(run_id, lease_token, %{
+        state: "failed",
+        error: encode_term(error),
+        completed_at: DateTime.utc_now()
+      })
+
+    broadcast_failed(run_id, error)
   end
 
   @impl true
@@ -994,6 +1001,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp decode_term(nil), do: nil
   defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
   defp decode_term(other), do: other
+
+  defp broadcast_failed(_run_id, {_kind, _reason, stacktrace}) when is_list(stacktrace), do: :ok
+
+  defp broadcast_failed(run_id, error) do
+    Continuum.Runtime.Engine.broadcast_run_finished(run_id, :failed, error)
+  end
 
   defp repo do
     Application.fetch_env!(:continuum, :repo)

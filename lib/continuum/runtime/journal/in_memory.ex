@@ -115,6 +115,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
         %{run | state: :completed, result: result}
       end)
 
+    :ok = Continuum.Runtime.Engine.broadcast_run_finished(run_id, :completed, result)
     {:reply, :ok, state}
   end
 
@@ -124,6 +125,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
         %{run | state: :failed, error: error}
       end)
 
+    broadcast_failed(run_id, error)
     {:reply, :ok, state}
   end
 
@@ -141,5 +143,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
       result: nil,
       error: nil
     }
+  end
+
+  defp broadcast_failed(_run_id, {_kind, _reason, stacktrace}) when is_list(stacktrace), do: :ok
+
+  defp broadcast_failed(run_id, error) do
+    Continuum.Runtime.Engine.broadcast_run_finished(run_id, :failed, error)
   end
 end
