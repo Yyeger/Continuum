@@ -17,6 +17,7 @@ defmodule Continuum.WorkflowCompileTest do
       assert meta.version == 1
       assert is_binary(meta.version_hash)
       assert byte_size(meta.version_hash) == 64
+      refute function_exported?(CleanFlow, :child_spec, 1)
     end
 
     test "a workflow that calls DateTime.utc_now refuses to compile" do

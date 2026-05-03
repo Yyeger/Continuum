@@ -188,14 +188,6 @@ defmodule Continuum.Workflow.BeforeCompile do
           version_hash: unquote(hash)
         }
       end
-
-      def child_spec(opts) do
-        %{
-          id: __MODULE__,
-          start: {Continuum.Runtime.Engine, :start_link, [{__MODULE__, opts}]},
-          restart: :transient
-        }
-      end
     end
   end
 
