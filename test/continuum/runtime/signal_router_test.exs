@@ -5,6 +5,11 @@ defmodule Continuum.Runtime.SignalRouterTest do
   alias Continuum.Runtime.TimerWheel
   alias Continuum.Schema.{Event, Run, Signal, Timer}
 
+  setup do
+    start_supervised!({Continuum.Runtime.SignalRouter, listen?: false})
+    :ok
+  end
+
   defmodule DurableSignalFlow do
     use Continuum.Workflow, version: 1
 

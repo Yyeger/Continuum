@@ -58,6 +58,17 @@ mix continuum.gen.migration --repo MyApp.Repo
 mix ecto.migrate
 ```
 
+Add Continuum's runtime children after your repo in your application's
+supervision tree:
+
+```elixir
+children =
+  [
+    MyApp.Repo,
+    {Phoenix.PubSub, name: MyApp.PubSub}
+  ] ++ Continuum.children()
+```
+
 The engine persists every effect in `continuum_events`. If the BEAM process
 dies, the dispatcher re-leases suspended work and replays the history through
 the same workflow module.

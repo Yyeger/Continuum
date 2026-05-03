@@ -4,6 +4,10 @@ Minimal Phoenix example app for the Continuum v0.1 smoke test. It starts an
 order checkout workflow, waits for a fraud-review signal, then ships or rejects
 the order.
 
+The application supervises `Continuum.children()` after
+`ContinuumExampleOrders.Repo`, matching the required startup order for
+Postgres-backed runtime pollers.
+
 ## Setup
 
 ```bash

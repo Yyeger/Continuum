@@ -12,6 +12,7 @@ defmodule Continuum do
 
   ## Public API
 
+    * `children/1` — Postgres runtime child specs for host supervision trees
     * `start/3` — start a new workflow run
     * `signal/3` — deliver an external signal to a running workflow
     * `cancel/2` — cancel a running workflow
@@ -26,6 +27,38 @@ defmodule Continuum do
   @type run_id :: binary()
   @type workflow_module :: module()
   @type input :: term()
+
+  @doc """
+  Returns the Postgres runtime child specs for a host application's
+  supervision tree.
+
+  Place these children after your configured Ecto repo so pollers and
+  listeners cannot query before the repo is started:
+
+      children =
+        [
+          MyApp.Repo,
+          {Phoenix.PubSub, name: MyApp.PubSub}
+        ] ++ Continuum.children()
+
+  Child-specific options may be passed with `:recovery`, `:dispatcher`,
+  `:activity_dispatcher`, `:timer_wheel`, and `:signal_router`.
+  Passing `false` for a child omits it from the returned list.
+  """
+  @spec children(keyword()) :: [Supervisor.child_spec()]
+  def children(opts \\ []) do
+    [
+      child(Continuum.Runtime.Recovery, Keyword.get(opts, :recovery, [])),
+      child(Continuum.Runtime.Dispatcher, Keyword.get(opts, :dispatcher, [])),
+      child(
+        Continuum.Runtime.ActivityWorker.Dispatcher,
+        Keyword.get(opts, :activity_dispatcher, [])
+      ),
+      child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, [])),
+      child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []))
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
 
   @doc """
   Start a new workflow run.
@@ -131,6 +164,10 @@ defmodule Continuum do
   def patched?(_patch_name), do: false
 
   # ---------------------------------------------------------------------------
+
+  defp child(_module, false), do: nil
+  defp child(module, true), do: module
+  defp child(module, opts), do: {module, opts}
 
   defp generate_uuid4 do
     <<u0::48, _::4, u1::12, _::2, u2::62>> = :crypto.strong_rand_bytes(16)

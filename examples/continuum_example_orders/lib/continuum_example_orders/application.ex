@@ -5,11 +5,15 @@ defmodule ContinuumExampleOrders.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      ContinuumExampleOrders.Repo,
-      {Phoenix.PubSub, name: ContinuumExampleOrders.PubSub},
-      ContinuumExampleOrdersWeb.Endpoint
-    ]
+    children =
+      [
+        ContinuumExampleOrders.Repo,
+        {Phoenix.PubSub, name: ContinuumExampleOrders.PubSub}
+      ] ++
+        Continuum.children() ++
+        [
+          ContinuumExampleOrdersWeb.Endpoint
+        ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: ContinuumExampleOrders.Supervisor)
   end

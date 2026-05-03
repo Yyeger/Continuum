@@ -26,6 +26,8 @@ end
 
 See `lib/continuum.ex` for the public facade; `Continuum.Workflow` for the DSL; `Continuum.Activity` for activities.
 
+For Postgres-backed execution, add `Continuum.children()` to your application's supervision tree after your Ecto repo.
+
 ## Generators
 
 ```bash
