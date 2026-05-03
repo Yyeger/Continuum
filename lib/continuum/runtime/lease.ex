@@ -23,9 +23,9 @@ defmodule Continuum.Runtime.Lease do
   @doc """
   Build the owner string used in lease rows.
   """
-  @spec owner(pid()) :: binary()
-  def owner(pid \\ self()) do
-    "#{node()}:#{inspect(pid)}"
+  @spec owner() :: binary()
+  def owner do
+    "#{node()}/#{System.unique_integer([:positive, :monotonic])}"
   end
 
   @doc """
