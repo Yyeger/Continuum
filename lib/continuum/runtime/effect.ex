@@ -178,6 +178,34 @@ defmodule Continuum.Runtime.Effect do
     throw({:continuum_suspend, {:timer_pending, timer_id}})
   end
 
+  defp live_tail!(ctx, {:timer, ms}, _live_compute) do
+    timer_id = Ecto.UUID.generate()
+
+    fires_at =
+      DateTime.utc_now()
+      |> DateTime.add(ms, :millisecond)
+      |> DateTime.truncate(:microsecond)
+
+    event = %{
+      type: :timer_started,
+      timer_id: timer_id,
+      duration_ms: ms,
+      fires_at: fires_at,
+      seq: ctx.cursor
+    }
+
+    :ok = apply(ctx.journal, :append!, [ctx.run_id, event, ctx.lease_token])
+
+    Telemetry.execute([:continuum, :timer, :scheduled], %{duration_ms: ms}, %{
+      run_id: ctx.run_id,
+      timer_id: timer_id,
+      fires_at: fires_at,
+      seq: ctx.cursor
+    })
+
+    throw({:continuum_suspend, {:timer_pending, timer_id}})
+  end
+
   defp live_tail!(
          %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
          {:await_signal, name, opts},

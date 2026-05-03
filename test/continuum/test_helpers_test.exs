@@ -10,6 +10,15 @@ defmodule Continuum.TestHelpersTest do
     end
   end
 
+  defmodule TimerFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      timer(input.ms)
+      {:ok, :fired}
+    end
+  end
+
   test "loads history and asserts golden replay" do
     Continuum.Test.reset_in_memory!()
 
@@ -39,4 +48,33 @@ defmodule Continuum.TestHelpersTest do
   test "patched? is a v0.1 false stub" do
     refute Continuum.patched?(:future_change)
   end
+
+  test "fires in-memory timers injected through test helpers" do
+    Continuum.Test.reset_in_memory!()
+
+    {:ok, run_id} = Continuum.Test.start_in_memory(TimerFlow, %{ms: 60_000})
+
+    assert_eventually(fn ->
+      match?([%{type: :timer_started}], Continuum.Test.history(run_id))
+    end)
+
+    assert {:error, :timeout} = Continuum.await(run_id, 25)
+    assert :ok = Continuum.Test.fire_timer(run_id)
+
+    assert {:ok, %{state: :completed, result: {:ok, :fired}}} =
+             Continuum.await(run_id, 1_000)
+  end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    if fun.() do
+      assert true
+    else
+      Process.sleep(10)
+      assert_eventually(fun, attempts - 1)
+    end
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
 end

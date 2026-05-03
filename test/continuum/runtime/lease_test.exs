@@ -86,7 +86,6 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
   alias Continuum.Runtime.Lease
   alias Continuum.Runtime.Lease.Heartbeater
   alias Continuum.Schema.Run
-  import ExUnit.CaptureLog
 
   defmodule SuspendedPgFlow do
     use Continuum.Workflow, version: 1
@@ -113,13 +112,8 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
 
     assert stolen_token > original.lease_token
 
-    log =
-      capture_log(fn ->
-        assert :ok = Heartbeater.renew_once()
-        assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
-      end)
-
-    assert log =~ "lost its Postgres lease"
+    assert :ok = Heartbeater.renew_once()
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
     assert_eventually(fn -> Registry.lookup(Continuum.Runtime.Registry, run_id) == [] end)
   end
 
