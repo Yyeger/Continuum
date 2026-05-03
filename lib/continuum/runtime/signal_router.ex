@@ -52,7 +52,8 @@ defmodule Continuum.Runtime.SignalRouter do
   defp deliver_local(run_id, name, payload) do
     case Registry.lookup(Continuum.Runtime.Registry, run_id) do
       [{_pid, _value}] ->
-        Engine.deliver_signal(run_id, name, payload)
+        append_in_memory_signal!(run_id, name, payload)
+        Engine.wake(run_id)
 
         Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
           run_id: run_id,
@@ -65,6 +66,14 @@ defmodule Continuum.Runtime.SignalRouter do
       [] ->
         {:error, :not_found}
     end
+  end
+
+  defp append_in_memory_signal!(run_id, name, payload) do
+    Journal.InMemory.append!(
+      run_id,
+      %{type: :signal_received, name: name, payload: payload, seq: nil},
+      nil
+    )
   end
 
   defp route(run_id) do

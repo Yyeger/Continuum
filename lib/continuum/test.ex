@@ -156,21 +156,18 @@ defmodule Continuum.Test do
         Engine.wake(run_id)
         :ok
 
-      _ ->
-        case Engine.deliver_signal(run_id, name, payload) do
-          :ok ->
-            :ok
+      Journal.InMemory ->
+        journal.append!(
+          run_id,
+          %{type: :signal_received, name: name, payload: payload, seq: nil},
+          nil
+        )
 
-          {:error, :not_found} ->
-            journal.append!(
-              run_id,
-              %{type: :signal_received, name: name, payload: payload, seq: nil},
-              nil
-            )
+        Engine.wake(run_id)
+        :ok
 
-          {:error, reason} ->
-            {:error, reason}
-        end
+      other ->
+        {:error, {:unsupported_signal_injection_journal, other}}
     end
   end
 

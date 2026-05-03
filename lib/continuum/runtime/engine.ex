@@ -127,17 +127,6 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
-  @doc """
-  Deliver a signal to a running workflow's mailbox. Used by the
-  signal router.
-  """
-  def deliver_signal(run_id, name, payload) do
-    case GenServer.whereis(via(run_id)) do
-      nil -> {:error, :not_found}
-      pid -> GenServer.cast(pid, {:signal, name, payload})
-    end
-  end
-
   @doc false
   def wake(run_id) do
     case GenServer.whereis(via(run_id)) do
@@ -191,27 +180,6 @@ defmodule Continuum.Runtime.Engine do
   end
 
   @impl true
-  def handle_cast({:signal, name, payload}, state) do
-    # In v0.1 in-memory, signals immediately journal a `signal_received`
-    # event and resume the workflow.
-    event = %{
-      type: :signal_received,
-      name: name,
-      payload: payload,
-      seq: nil
-    }
-
-    :ok = state.journal.append!(state.run_id, event, state.lease_token)
-
-    Telemetry.execute([:continuum, :signal, :received], %{}, %{
-      run_id: state.run_id,
-      signal_name: name,
-      journal: state.journal
-    })
-
-    {:noreply, state, {:continue, :run}}
-  end
-
   def handle_cast(:wake, state) do
     {:noreply, state, {:continue, :run}}
   end

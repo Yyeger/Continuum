@@ -19,6 +19,14 @@ defmodule Continuum.TestHelpersTest do
     end
   end
 
+  defmodule SignalFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(_input) do
+      {:ok, await(signal(:decision))}
+    end
+  end
+
   test "loads history and asserts golden replay" do
     Continuum.Test.reset_in_memory!()
 
@@ -62,6 +70,19 @@ defmodule Continuum.TestHelpersTest do
     assert :ok = Continuum.Test.fire_timer(run_id)
 
     assert {:ok, %{state: :completed, result: {:ok, :fired}}} =
+             Continuum.await(run_id, 1_000)
+  end
+
+  test "injects in-memory signals without using an engine signal cast" do
+    Continuum.Test.reset_in_memory!()
+
+    refute function_exported?(Continuum.Runtime.Engine, :deliver_signal, 3)
+
+    {:ok, run_id} = Continuum.Test.start_in_memory(SignalFlow, %{})
+    assert {:error, :timeout} = Continuum.await(run_id, 25)
+    assert :ok = Continuum.Test.inject_signal(run_id, :decision, :go)
+
+    assert {:ok, %{state: :completed, result: {:ok, :go}}} =
              Continuum.await(run_id, 1_000)
   end
 
