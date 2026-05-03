@@ -14,7 +14,11 @@ defmodule Continuum.Application do
           Continuum.Runtime.Journal.InMemory,
           Continuum.Runtime.Lease.Heartbeater,
           Continuum.Runtime.RunSupervisor,
+          Continuum.Runtime.Recovery,
           Continuum.Runtime.Dispatcher,
+          Continuum.Runtime.ActivityWorker.Supervisor,
+          Continuum.Runtime.ActivityWorker.Dispatcher,
+          Continuum.Runtime.TimerWheel,
           Continuum.Runtime.SignalRouter
         ]
 

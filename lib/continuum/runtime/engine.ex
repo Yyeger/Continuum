@@ -138,6 +138,14 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
+  @doc false
+  def wake(run_id) do
+    case GenServer.whereis(via(run_id)) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.cast(pid, :wake)
+    end
+  end
+
   defp via(run_id), do: {:via, Registry, {Continuum.Runtime.Registry, run_id}}
 
   # ---------------------------------------------------------------------------
@@ -189,6 +197,10 @@ defmodule Continuum.Runtime.Engine do
     {:noreply, state, {:continue, :run}}
   end
 
+  def handle_cast(:wake, state) do
+    {:noreply, state, {:continue, :run}}
+  end
+
   @impl true
   def handle_call(:cancel, _from, state) do
     :ok = state.journal.fail!(state.run_id, :cancelled, state.lease_token)
@@ -228,24 +240,55 @@ defmodule Continuum.Runtime.Engine do
 
     try do
       result = state.workflow_module.run(state.input)
-      :ok = state.journal.complete!(state.run_id, result, state.lease_token)
-      %{state | status: :completed, result: result}
+      complete_run(state, result)
     catch
       {:continuum_suspend, reason} ->
-        Logger.debug("Workflow #{state.run_id} suspended: #{inspect(reason)}")
-        :ok = state.journal.suspend!(state.run_id, state.lease_token)
-        %{state | status: :suspended}
+        suspend_run(state, reason)
 
       kind, reason ->
         stacktrace = __STACKTRACE__
-        :ok = state.journal.fail!(state.run_id, {kind, reason, stacktrace}, state.lease_token)
-        %{state | status: :failed, error: {kind, reason}}
+
+        if lease_lost?(kind, reason) do
+          lease_lost(state)
+        else
+          fail_run(state, {kind, reason, stacktrace}, {kind, reason})
+        end
     after
       Context.clear()
     end
   end
 
+  defp complete_run(state, result) do
+    :ok = state.journal.complete!(state.run_id, result, state.lease_token)
+    %{state | status: :completed, result: result}
+  rescue
+    error ->
+      if lease_lost?(:error, error), do: lease_lost(state), else: reraise(error, __STACKTRACE__)
+  end
+
+  defp suspend_run(state, reason) do
+    Logger.debug("Workflow #{state.run_id} suspended: #{inspect(reason)}")
+    :ok = state.journal.suspend!(state.run_id, state.lease_token)
+    %{state | status: :suspended}
+  rescue
+    error ->
+      if lease_lost?(:error, error), do: lease_lost(state), else: reraise(error, __STACKTRACE__)
+  end
+
+  defp fail_run(state, journal_error, state_error) do
+    :ok = state.journal.fail!(state.run_id, journal_error, state.lease_token)
+    %{state | status: :failed, error: state_error}
+  rescue
+    error ->
+      if lease_lost?(:error, error), do: lease_lost(state), else: reraise(error, __STACKTRACE__)
+  end
+
   defp finalize(%{status: :suspended} = state), do: {:noreply, state}
+
+  defp finalize(%{status: :lease_lost} = state) do
+    untrack_lease(state)
+    {:stop, :normal, state}
+  end
 
   defp finalize(state) do
     untrack_lease(state)
@@ -285,4 +328,16 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp untrack_lease(_state), do: :ok
+
+  defp lease_lost(state) do
+    Logger.warning("Workflow #{state.run_id} lost its Postgres lease; stopping stale engine")
+    %{state | status: :lease_lost}
+  end
+
+  defp lease_lost?(:error, %RuntimeError{message: message}) do
+    String.contains?(message, "lease token mismatch") or
+      String.contains?(message, "lease_mismatch")
+  end
+
+  defp lease_lost?(_kind, _reason), do: false
 end

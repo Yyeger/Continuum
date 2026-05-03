@@ -4,6 +4,10 @@ config :continuum,
   repo: Continuum.Test.Repo,
   ecto_repos: [Continuum.Test.Repo],
   dispatcher: false,
+  activity_worker: false,
+  timer_wheel: false,
+  signal_router: [listen?: false],
+  recovery: false,
   determinism_violations: :error
 
 config :continuum, Continuum.Test.Repo,

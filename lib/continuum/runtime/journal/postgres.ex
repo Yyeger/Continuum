@@ -16,7 +16,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   import Ecto.Query
 
-  alias Continuum.Schema.{Run, Event}
+  alias Continuum.Schema.{ActivityTask, Event, Run, Signal, Timer}
 
   @impl true
   def start_run(run_id, workflow, input) do
@@ -49,18 +49,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     result =
       repo().transaction(fn ->
-        run =
-          repo().one(
-            from(r in Run,
-              where: r.id == ^run_id,
-              lock: "FOR UPDATE"
-            )
-          )
-
-        case run do
-          nil -> repo().rollback({:run_not_found, run_id})
-          %Run{} = run -> validate_lease!(run, lease_token)
-        end
+        lock_and_validate_run!(run_id, lease_token)
 
         seq = event[:seq] || next_seq(run_id)
 
@@ -100,6 +89,240 @@ defmodule Continuum.Runtime.Journal.Postgres do
       )
 
     Enum.map(events, &decode_event/1)
+  end
+
+  def schedule_activity!(run_id, event, task, lease_token) do
+    {event_type, payload} = encode_event(event)
+
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+        now = DateTime.utc_now()
+
+        event_changeset =
+          %Event{}
+          |> Ecto.Changeset.change(%{
+            run_id: run_id,
+            seq: event.seq,
+            event_type: event_type,
+            payload: payload,
+            inserted_at: now
+          })
+
+        task_changeset =
+          %ActivityTask{}
+          |> Ecto.Changeset.change(%{
+            id: task.id,
+            run_id: run_id,
+            seq: task.seq,
+            mfa: encode_term(task),
+            attempt: 1,
+            state: "available"
+          })
+
+        with {:ok, _event} <- repo().insert(event_changeset),
+             {:ok, _task} <- repo().insert(task_changeset) do
+          :ok
+        else
+          {:error, changeset} -> repo().rollback({:activity_schedule_failed, changeset})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres schedule_activity! failed: #{inspect(reason)}"
+    end
+  end
+
+  def schedule_timer!(run_id, event, timer, lease_token) do
+    {event_type, payload} = encode_event(event)
+
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+
+        event_changeset =
+          %Event{}
+          |> Ecto.Changeset.change(%{
+            run_id: run_id,
+            seq: event.seq,
+            event_type: event_type,
+            payload: payload,
+            inserted_at: DateTime.utc_now()
+          })
+
+        timer_changeset =
+          %Timer{}
+          |> Ecto.Changeset.change(%{
+            id: timer.id,
+            run_id: run_id,
+            fires_at: timer.fires_at,
+            fired: false
+          })
+
+        with {:ok, _event} <- repo().insert(event_changeset),
+             {:ok, _timer} <- repo().insert(timer_changeset),
+             {1, _} <-
+               repo().update_all(
+                 leased_run_query(run_id, lease_token),
+                 set: [next_wakeup_at: timer.fires_at]
+               ) do
+          :ok
+        else
+          {0, _} -> repo().rollback({:timer_schedule_failed, :lease_mismatch})
+          {:error, changeset} -> repo().rollback({:timer_schedule_failed, changeset})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres schedule_timer! failed: #{inspect(reason)}"
+    end
+  end
+
+  def schedule_signal_await!(run_id, event, lease_token) do
+    {event_type, payload} = encode_event(event)
+
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+
+        changeset =
+          %Event{}
+          |> Ecto.Changeset.change(%{
+            run_id: run_id,
+            seq: event.seq,
+            event_type: event_type,
+            payload: payload,
+            inserted_at: DateTime.utc_now()
+          })
+
+        case repo().insert(changeset) do
+          {:ok, _event} -> :ok
+          {:error, changeset} -> repo().rollback({:signal_await_failed, changeset})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres schedule_signal_await! failed: #{inspect(reason)}"
+    end
+  end
+
+  def deliver_signal!(run_id, name, payload) do
+    signal_name = Atom.to_string(name)
+    now = DateTime.utc_now()
+
+    result =
+      repo().transaction(fn ->
+        changeset =
+          %Signal{}
+          |> Ecto.Changeset.change(%{
+            run_id: run_id,
+            name: signal_name,
+            payload: encode_term(payload),
+            delivered: false,
+            inserted_at: now
+          })
+
+        with {:ok, _signal} <- repo().insert(changeset),
+             {_count, _} <-
+               repo().update_all(
+                 from(r in Run, where: r.id == ^run_id),
+                 set: [next_wakeup_at: now]
+               ),
+             {:ok, _} <- repo().query("SELECT pg_notify('continuum_signal', $1)", [run_id]) do
+          :ok
+        else
+          {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres deliver_signal! failed: #{inspect(reason)}"
+    end
+  end
+
+  def consume_signal(run_id, name, lease_token) do
+    signal_name = Atom.to_string(name)
+
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+
+        signal =
+          repo().one(
+            from(s in Signal,
+              where: s.run_id == ^run_id and s.name == ^signal_name and s.delivered == false,
+              order_by: [asc: s.inserted_at, asc: s.id],
+              limit: 1,
+              lock: "FOR UPDATE SKIP LOCKED"
+            )
+          )
+
+        case signal do
+          nil ->
+            :none
+
+          %Signal{} = signal ->
+            payload = decode_term(signal.payload)
+
+            event = %{
+              type: :signal_received,
+              name: name,
+              payload: payload,
+              seq: next_seq(run_id)
+            }
+
+            {event_type, event_payload} = encode_event(event)
+
+            with {:ok, _event} <-
+                   %Event{}
+                   |> Ecto.Changeset.change(%{
+                     run_id: run_id,
+                     seq: event.seq,
+                     event_type: event_type,
+                     payload: event_payload,
+                     inserted_at: DateTime.utc_now()
+                   })
+                   |> repo().insert(),
+                 {1, _} <-
+                   repo().update_all(
+                     from(s in Signal, where: s.id == ^signal.id),
+                     set: [delivered: true]
+                   ) do
+              {:ok, payload}
+            else
+              {0, _} -> repo().rollback({:signal_consume_failed, :already_delivered})
+              {:error, changeset} -> repo().rollback({:signal_consume_failed, changeset})
+            end
+        end
+      end)
+
+    case result do
+      {:ok, value} ->
+        value
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres consume_signal failed: #{inspect(reason)}"
+    end
+  end
+
+  def clear_next_wakeup!(run_id, lease_token) do
+    cas_update_run(run_id, lease_token, %{next_wakeup_at: nil})
   end
 
   @impl true
@@ -155,6 +378,21 @@ defmodule Continuum.Runtime.Journal.Postgres do
        expected: lease_token,
        actual: %{lease_owner: run.lease_owner, lease_token: run.lease_token}}
     )
+  end
+
+  defp lock_and_validate_run!(run_id, lease_token) do
+    run =
+      repo().one(
+        from(r in Run,
+          where: r.id == ^run_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    case run do
+      nil -> repo().rollback({:run_not_found, run_id})
+      %Run{} = run -> validate_lease!(run, lease_token)
+    end
   end
 
   defp leased_run_query(run_id, nil) do

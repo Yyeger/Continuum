@@ -63,10 +63,7 @@ defmodule Continuum.Runtime.Effect do
 
     case Enum.at(ctx.history, ctx.cursor) do
       nil ->
-        # Live tail: compute, journal, return.
-        result = live_compute.()
-        journal_live!(ctx, effect, result)
-        result
+        live_tail!(ctx, effect, live_compute)
 
       event ->
         # Replay: validate and return.
@@ -79,10 +76,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp compute_live({:activity, {_mod, _fun, _args}, _opts}) do
-    # In-process synchronous activity execution for v0.1 in-memory engine.
-    # The Postgres-backed engine schedules this on the activity worker
-    # pool and suspends instead.
-    throw({:continuum_suspend, {:activity_pending, :scheduled}})
+    raise "Continuum.Runtime.Effect.run/2 invoked for activity without scheduler"
   end
 
   defp compute_live({:await_signal, _name, _opts}) do
@@ -101,11 +95,128 @@ defmodule Continuum.Runtime.Effect do
     apply(ctx.journal, :append!, [ctx.run_id, event, ctx.lease_token])
   end
 
+  defp live_tail!(
+         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         {:activity, {mod, fun, args}, opts},
+         _live_compute
+       ) do
+    task_id = Ecto.UUID.generate()
+
+    event = %{
+      type: :activity_scheduled,
+      task_id: task_id,
+      mfa: {mod, fun, args},
+      opts: opts,
+      seq: ctx.cursor
+    }
+
+    task = %{
+      id: task_id,
+      seq: ctx.cursor,
+      mfa: {mod, fun, args},
+      opts: opts,
+      retry: retry_policy(mod, opts),
+      timeout_ms: timeout_ms(mod, opts),
+      idempotency_key: idempotency_key(mod, args, opts)
+    }
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.schedule_activity!(
+        ctx.run_id,
+        event,
+        task,
+        ctx.lease_token
+      )
+
+    throw({:continuum_suspend, {:activity_pending, task_id}})
+  end
+
+  defp live_tail!(
+         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         {:timer, ms},
+         _live_compute
+       ) do
+    timer_id = Ecto.UUID.generate()
+
+    fires_at =
+      DateTime.utc_now()
+      |> DateTime.add(ms, :millisecond)
+      |> DateTime.truncate(:microsecond)
+
+    event = %{
+      type: :timer_started,
+      timer_id: timer_id,
+      duration_ms: ms,
+      fires_at: fires_at,
+      seq: ctx.cursor
+    }
+
+    timer = %{id: timer_id, fires_at: fires_at}
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.schedule_timer!(
+        ctx.run_id,
+        event,
+        timer,
+        ctx.lease_token
+      )
+
+    throw({:continuum_suspend, {:timer_pending, timer_id}})
+  end
+
+  defp live_tail!(
+         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         {:await_signal, name, opts},
+         _live_compute
+       ) do
+    event = %{
+      type: :signal_awaited,
+      name: name,
+      opts: opts,
+      seq: ctx.cursor
+    }
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.schedule_signal_await!(
+        ctx.run_id,
+        event,
+        ctx.lease_token
+      )
+
+    case Continuum.Runtime.Journal.Postgres.consume_signal(ctx.run_id, name, ctx.lease_token) do
+      {:ok, payload} ->
+        Context.put(%{ctx | cursor: ctx.cursor + 2})
+        payload
+
+      :none ->
+        throw({:continuum_suspend, {:awaiting_signal, name}})
+    end
+  end
+
+  defp live_tail!(ctx, {:activity, {mod, fun, args}, _opts} = effect, _live_compute) do
+    result = apply(mod, fun, args)
+    journal_live!(ctx, effect, result)
+    result
+  end
+
+  defp live_tail!(ctx, effect, live_compute) do
+    result = live_compute.()
+    journal_live!(ctx, effect, result)
+    result
+  end
+
   defp replay_event!(ctx, event, effect) do
-    case match_event(event, effect) do
+    case match_event(ctx, event, effect) do
       {:ok, result} ->
         Context.put(%{ctx | cursor: ctx.cursor + 1})
         result
+
+      {:ok, result, advance_by} ->
+        Context.put(%{ctx | cursor: ctx.cursor + advance_by})
+        result
+
+      :pending ->
+        throw({:continuum_suspend, pending_reason(event)})
 
       :mismatch ->
         raise Continuum.ReplayDriftError,
@@ -138,6 +249,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp match_event(
+         _ctx,
          %{type: :side_effect, kind: ek, payload: payload},
          {:side_effect, ek}
        )
@@ -145,6 +257,28 @@ defmodule Continuum.Runtime.Effect do
        do: {:ok, payload}
 
   defp match_event(
+         ctx,
+         %{type: :activity_scheduled, mfa: {emod, efun, _ja}} = event,
+         {:activity, {lmod, lfun, _la}, _opts}
+       )
+       when emod == lmod and efun == lfun do
+    case Enum.at(ctx.history, ctx.cursor + 1) do
+      %{type: :activity_completed, mfa: {^emod, ^efun, _}, payload: payload} ->
+        {:ok, payload, 2}
+
+      %{type: :activity_failed, mfa: {^emod, ^efun, _}, error: error} ->
+        {:ok, {:error, error}, 2}
+
+      nil ->
+        :pending
+
+      _other ->
+        if Map.has_key?(event, :task_id), do: :pending, else: :mismatch
+    end
+  end
+
+  defp match_event(
+         _ctx,
          %{type: :activity_completed, mfa: {emod, efun, _ja}, payload: payload},
          {:activity, {lmod, lfun, _la}, _opts}
        )
@@ -152,15 +286,86 @@ defmodule Continuum.Runtime.Effect do
        do: {:ok, payload}
 
   defp match_event(
+         _ctx,
          %{type: :signal_received, name: ename, payload: payload},
          {:await_signal, lname, _opts}
        )
        when ename == lname,
        do: {:ok, payload}
 
-  defp match_event(%{type: :timer_fired}, {:timer, _ms}), do: {:ok, :ok}
+  defp match_event(ctx, %{type: :signal_awaited, name: name}, {:await_signal, name, _opts}) do
+    case Enum.at(ctx.history, ctx.cursor + 1) do
+      %{type: :signal_received, name: ^name, payload: payload} ->
+        {:ok, payload, 2}
 
-  defp match_event(_, _), do: :mismatch
+      nil ->
+        case Continuum.Runtime.Journal.Postgres.consume_signal(ctx.run_id, name, ctx.lease_token) do
+          {:ok, payload} -> {:ok, payload, 2}
+          :none -> :pending
+        end
+
+      _other ->
+        :mismatch
+    end
+  end
+
+  defp match_event(ctx, %{type: :timer_started, timer_id: timer_id}, {:timer, _ms}) do
+    case Enum.at(ctx.history, ctx.cursor + 1) do
+      %{type: :timer_fired, timer_id: ^timer_id} ->
+        {:ok, :ok, 2}
+
+      nil ->
+        :pending
+
+      _other ->
+        :mismatch
+    end
+  end
+
+  defp match_event(_ctx, %{type: :timer_fired}, {:timer, _ms}), do: {:ok, :ok}
+
+  defp match_event(_ctx, _, _), do: :mismatch
+
+  defp retry_policy(mod, opts) do
+    Keyword.get(opts, :retry) || activity_metadata(mod)[:retry] || [max_attempts: 1]
+  end
+
+  defp timeout_ms(mod, opts) do
+    opts
+    |> Keyword.get(:timeout, activity_metadata(mod)[:timeout] || {:seconds, 30})
+    |> duration_to_ms()
+  end
+
+  defp idempotency_key(mod, args, opts) do
+    Keyword.get_lazy(opts, :idempotency_key, fn ->
+      if function_exported?(mod, :idempotency_key, 1), do: mod.idempotency_key(args), else: nil
+    end)
+  end
+
+  defp activity_metadata(mod) do
+    if function_exported?(mod, :__continuum_activity__, 0),
+      do: mod.__continuum_activity__(),
+      else: %{}
+  end
+
+  defp duration_to_ms({:seconds, n}), do: n * 1_000
+  defp duration_to_ms({:minutes, n}), do: n * 60 * 1_000
+  defp duration_to_ms({:hours, n}), do: n * 60 * 60 * 1_000
+  defp duration_to_ms(ms) when is_integer(ms), do: ms
+
+  defp pending_reason(%{type: :activity_scheduled} = event) do
+    {:activity_pending, Map.get(event, :task_id)}
+  end
+
+  defp pending_reason(%{type: :timer_started} = event) do
+    {:timer_pending, Map.get(event, :timer_id)}
+  end
+
+  defp pending_reason(%{type: :signal_awaited} = event) do
+    {:awaiting_signal, Map.get(event, :name)}
+  end
+
+  defp pending_reason(event), do: {:pending, Map.get(event, :type)}
 
   defp raise_not_in_workflow(effect) do
     raise Continuum.NotInWorkflowError,
