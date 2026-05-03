@@ -67,7 +67,7 @@ defmodule Continuum.Runtime.Engine do
     %{
       id: __MODULE__,
       start: {__MODULE__, :start_link, [args]},
-      restart: :transient,
+      restart: :temporary,
       type: :worker
     }
   end

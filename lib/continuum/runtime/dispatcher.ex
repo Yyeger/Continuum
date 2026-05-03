@@ -81,8 +81,8 @@ defmodule Continuum.Runtime.Dispatcher do
     WITH candidates AS (
       SELECT id
       FROM continuum_runs
-      WHERE state = 'suspended'
-        AND (next_wakeup_at IS NULL OR next_wakeup_at <= now())
+      WHERE state IN ('running', 'suspended')
+        AND (state = 'running' OR next_wakeup_at IS NULL OR next_wakeup_at <= now())
         AND (lease_owner IS NULL OR lease_expires_at < now())
       ORDER BY next_wakeup_at NULLS FIRST, started_at
       FOR UPDATE SKIP LOCKED
