@@ -15,6 +15,29 @@ defmodule Continuum.ReplayPropertyTest do
     end
   end
 
+  defmodule PropertyActivity do
+    def run(acc, step), do: acc + step
+  end
+
+  defmodule MixedOperationFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      result =
+        input.ops
+        |> Enum.with_index(1)
+        |> Enum.reduce(0, fn
+          {{:side_effect, step}, _index}, acc ->
+            Continuum.side_effect(fn -> acc + step end)
+
+          {{:activity, step}, index}, acc ->
+            activity(PropertyActivity.run(acc, step + index))
+        end)
+
+      {:ok, result}
+    end
+  end
+
   property "side-effect histories replay to the same result" do
     check all(steps <- list_of(integer(-100..100), max_length: 20), max_runs: 50) do
       Continuum.Test.reset_in_memory!()
@@ -30,5 +53,41 @@ defmodule Continuum.ReplayPropertyTest do
       assert Continuum.Test.assert_replays(SideEffectChainFlow, %{steps: steps}, history) ==
                expected
     end
+  end
+
+  property "mixed activity and side-effect histories replay to the same result" do
+    op =
+      bind(member_of([:activity, :side_effect]), fn kind ->
+        map(integer(-100..100), &{kind, &1})
+      end)
+
+    check all(ops <- list_of(op, max_length: 20), max_runs: 50) do
+      Continuum.Test.reset_in_memory!()
+
+      {:ok, run_id} = Continuum.Test.start_synchronous(MixedOperationFlow, %{ops: ops})
+      expected = {:ok, expected_mixed_result(ops)}
+
+      assert {:ok, %{state: :completed, result: ^expected}} = Continuum.await(run_id, 1_000)
+
+      history = Continuum.Test.history(run_id)
+      assert length(history) == length(ops)
+
+      assert Enum.map(history, & &1.type) ==
+               Enum.map(ops, fn
+                 {:activity, _step} -> :activity_completed
+                 {:side_effect, _step} -> :side_effect
+               end)
+
+      assert Continuum.Test.assert_replays(MixedOperationFlow, %{ops: ops}, history) == expected
+    end
+  end
+
+  defp expected_mixed_result(ops) do
+    ops
+    |> Enum.with_index(1)
+    |> Enum.reduce(0, fn
+      {{:side_effect, step}, _index}, acc -> acc + step
+      {{:activity, step}, index}, acc -> acc + step + index
+    end)
   end
 end
