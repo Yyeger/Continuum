@@ -5,7 +5,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
   alias Continuum.Runtime.ActivityWorker.Dispatcher
   alias Continuum.Runtime.Journal.Postgres
-  alias Continuum.Schema.ActivityTask
+  alias Continuum.Schema.{ActivityTask, Event, Run}
 
   defmodule DoubleActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
@@ -114,6 +114,42 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
   end
 
+  test "activity completion rejects stale task authority before appending an event" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 5}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [state: "leased", lease_owner: "worker-b", lease_expires_at: future_time()]
+    )
+
+    stale_task =
+      task.mfa
+      |> decode_term()
+      |> Map.merge(%{
+        id: task.id,
+        run_id: task.run_id,
+        seq: task.seq,
+        attempt: task.attempt,
+        lease_owner: "worker-a"
+      })
+
+    lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+
+    assert_raise RuntimeError, ~r/activity_task_lease_mismatch/, fn ->
+      Postgres.complete_activity_task!(stale_task, {:ok, 10}, lease_token)
+    end
+
+    assert ["activity_scheduled"] = event_types(run_id)
+    assert Repo.one!(ActivityTask).state == "leased"
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do
@@ -129,5 +165,21 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
   defp decode_term(%{"__term__" => encoded}) when is_binary(encoded) do
     :erlang.binary_to_term(Base.decode64!(encoded))
+  end
+
+  defp event_types(run_id) do
+    Repo.all(
+      from(e in Event,
+        where: e.run_id == ^run_id,
+        order_by: [asc: e.seq],
+        select: e.event_type
+      )
+    )
+  end
+
+  defp future_time do
+    DateTime.utc_now()
+    |> DateTime.add(60, :second)
+    |> DateTime.truncate(:microsecond)
   end
 end

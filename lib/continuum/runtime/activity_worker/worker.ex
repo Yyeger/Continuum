@@ -8,7 +8,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   import Ecto.Query
 
   alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
-  alias Continuum.Schema.{ActivityTask, Run}
+  alias Continuum.Schema.ActivityTask
 
   @doc false
   def start_link(task) do
@@ -83,20 +83,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp complete(task, result, started_at) do
-    event = %{
-      type: :activity_completed,
-      mfa: task.mfa,
-      payload: result,
-      seq: nil
-    }
-
-    :ok = Journal.Postgres.append!(task.run_id, event, run_lease_token(task.run_id))
-
-    repo().update_all(
-      from(t in ActivityTask, where: t.id == ^task.id),
-      set: [state: "completed", result: encode_term(result)]
-    )
-
+    :ok = Journal.Postgres.complete_activity_task!(task, result, run_lease_token(task.run_id))
     Engine.wake(task.run_id)
 
     Telemetry.execute(
@@ -145,21 +132,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp fail(task, error, started_at) do
-    event = %{
-      type: :activity_failed,
-      mfa: task.mfa,
-      error: error,
-      attempt: task.attempt,
-      seq: nil
-    }
-
-    :ok = Journal.Postgres.append!(task.run_id, event, run_lease_token(task.run_id))
-
-    repo().update_all(
-      from(t in ActivityTask, where: t.id == ^task.id),
-      set: [state: "discarded", error: encode_term(error)]
-    )
-
+    :ok = Journal.Postgres.fail_activity_task!(task, error, run_lease_token(task.run_id))
     Engine.wake(task.run_id)
 
     Telemetry.execute(
@@ -190,7 +163,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp run_lease_token(run_id) do
-    repo().one(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+    repo().one(from(r in Continuum.Schema.Run, where: r.id == ^run_id, select: r.lease_token))
   end
 
   defp encode_term(nil), do: nil

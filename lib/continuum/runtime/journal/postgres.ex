@@ -138,6 +138,39 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  def complete_activity_task!(task, result, lease_token) do
+    event = %{
+      type: :activity_completed,
+      mfa: task.mfa,
+      payload: result,
+      seq: task.seq + 1
+    }
+
+    activity_task_result!(
+      task,
+      event,
+      [state: "completed", result: encode_term(result)],
+      lease_token
+    )
+  end
+
+  def fail_activity_task!(task, error, lease_token) do
+    event = %{
+      type: :activity_failed,
+      mfa: task.mfa,
+      error: error,
+      attempt: task.attempt,
+      seq: task.seq + 1
+    }
+
+    activity_task_result!(
+      task,
+      event,
+      [state: "discarded", error: encode_term(error)],
+      lease_token
+    )
+  end
+
   def schedule_timer!(run_id, event, timer, lease_token) do
     {event_type, payload} = encode_event(event)
 
@@ -392,6 +425,93 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   def clear_next_wakeup!(run_id, lease_token) do
     cas_update_run(run_id, lease_token, %{next_wakeup_at: nil})
+  end
+
+  defp activity_task_result!(task, event, task_updates, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_active_run!(task.run_id, lease_token)
+        lock_and_validate_activity_task!(task)
+
+        with %{} <- insert_event!(task.run_id, event),
+             {1, _} <-
+               repo().update_all(
+                 from(t in ActivityTask,
+                   where:
+                     t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
+                       t.lease_owner == ^task.lease_owner
+                 ),
+                 set: task_updates
+               ) do
+          :ok
+        else
+          {0, _} -> repo().rollback({:activity_task_result_failed, :task_lease_mismatch})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres activity task result failed: #{inspect(reason)}"
+    end
+  end
+
+  defp lock_and_validate_active_run!(run_id, lease_token) do
+    run =
+      repo().one(
+        from(r in Run,
+          where: r.id == ^run_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    case run do
+      nil ->
+        repo().rollback({:run_not_found, run_id})
+
+      %Run{state: state} = run when state in ["running", "suspended"] ->
+        validate_lease!(run, lease_token)
+
+      %Run{state: state} ->
+        repo().rollback({:run_not_active, state})
+    end
+  end
+
+  defp lock_and_validate_activity_task!(task) do
+    db_task =
+      repo().one(
+        from(t in ActivityTask,
+          where: t.id == ^task.id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    cond do
+      is_nil(db_task) ->
+        repo().rollback({:activity_task_not_found, task.id})
+
+      db_task.run_id != task.run_id ->
+        repo().rollback({:activity_task_run_mismatch, task.id})
+
+      db_task.state != "leased" ->
+        repo().rollback({:activity_task_not_leased, db_task.state})
+
+      db_task.lease_owner != task.lease_owner ->
+        repo().rollback(
+          {:activity_task_lease_mismatch, expected: task.lease_owner, actual: db_task.lease_owner}
+        )
+
+      is_nil(db_task.lease_expires_at) ->
+        repo().rollback({:activity_task_lease_missing_expiry, task.id})
+
+      DateTime.compare(db_task.lease_expires_at, DateTime.utc_now()) == :lt ->
+        repo().rollback({:activity_task_lease_expired, task.id})
+
+      true ->
+        :ok
+    end
   end
 
   defp maybe_insert_signal_timeout_timer(run_id, %{
