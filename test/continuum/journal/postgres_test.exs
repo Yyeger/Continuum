@@ -10,6 +10,7 @@ defmodule Continuum.Journal.PostgresTest do
   use Continuum.Test.DataCase, async: true
 
   alias Continuum.Runtime.Journal.Postgres
+  alias Continuum.Schema.{Event, Run}
 
   describe "start_run/3 and get_run/1" do
     test "creates a run row and retrieves it" do
@@ -215,6 +216,22 @@ defmodule Continuum.Journal.PostgresTest do
   end
 
   describe "encoding fidelity" do
+    test "stores opaque terms as bytea, not JSON wrappers" do
+      run_id = generate_uuid()
+      :ok = Postgres.start_run(run_id, SomeWorkflow, %{foo: :bar})
+
+      event = %{type: :side_effect, kind: :user, payload: {:ok, 42}, seq: 0}
+      :ok = Postgres.append!(run_id, event, nil)
+
+      raw_input = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.input))
+      raw_payload = Repo.one!(from(e in Event, where: e.run_id == ^run_id, select: e.payload))
+
+      assert is_binary(raw_input)
+      assert is_binary(raw_payload)
+      assert :erlang.binary_to_term(raw_input) == %{foo: :bar}
+      assert :erlang.binary_to_term(raw_payload).payload == {:ok, 42}
+    end
+
     test "round-trips atom values through encode/decode" do
       run_id = generate_uuid()
       :ok = Postgres.start_run(run_id, SomeWorkflow, %{})

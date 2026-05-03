@@ -66,6 +66,29 @@ defmodule Continuum.Runtime.LeaseTest do
     end
   end
 
+  describe "journal fencing" do
+    test "rejects stale journal writes after another owner steals the lease" do
+      run_id = Ecto.UUID.generate()
+      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      assert {:ok, %Lease{token: stale_token}} = Lease.acquire(run_id, owner: "node-a")
+
+      expire_lease(run_id)
+
+      assert {:ok, %Lease{token: current_token}} = Lease.acquire(run_id, owner: "node-b")
+      assert current_token > stale_token
+
+      assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+        Postgres.append!(
+          run_id,
+          %{type: :side_effect, kind: :user, payload: :stale_write, seq: nil},
+          stale_token
+        )
+      end
+
+      assert Postgres.load(run_id) == []
+    end
+  end
+
   defp expire_lease(run_id) do
     expired_at =
       DateTime.utc_now()

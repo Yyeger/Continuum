@@ -34,6 +34,8 @@ defmodule Continuum.ReplayTest do
       events = InMemory.load(run_id)
       assert length(events) == 2
       assert Enum.all?(events, &(&1.type == :side_effect))
+      assert Enum.all?(events, &(is_tuple(&1.command_id) and tuple_size(&1.command_id) >= 5))
+      assert Enum.uniq_by(events, & &1.command_id) == events
 
       # Manually replay against a fresh context.
       ctx = %Continuum.Runtime.Context{
@@ -129,6 +131,38 @@ defmodule Continuum.ReplayTest do
       end
     end
 
+    defmodule BuiltinCommandSourceFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(_input) do
+        Continuum.now()
+      end
+    end
+
+    defmodule BuiltinCommandChangedFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(_input) do
+        Continuum.now()
+      end
+    end
+
+    defmodule CommandIdSourceFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(_input) do
+        Continuum.side_effect(fn -> :original end)
+      end
+    end
+
+    defmodule CommandIdChangedFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(_input) do
+        Continuum.side_effect(fn -> :changed end)
+      end
+    end
+
     test "raises ReplayDriftError when journaled type doesn't match the requested effect" do
       # Forge a journal where the first event is a signal — but the workflow
       # asks for a side_effect. This simulates an incompatible code change.
@@ -179,6 +213,61 @@ defmodule Continuum.ReplayTest do
       try do
         assert_raise Continuum.ReplayDriftError, fn ->
           ActivityDriftFlow.run(%{value: 1})
+        end
+      after
+        Continuum.Runtime.Context.clear()
+      end
+    end
+
+    test "raises ReplayDriftError when command identity changes but event shape still matches" do
+      {:ok, run_id} = Continuum.start(CommandIdSourceFlow, %{})
+      {:ok, _} = Continuum.await(run_id, 1_000)
+      events = InMemory.load(run_id)
+
+      ctx = %Continuum.Runtime.Context{
+        run_id: "command-id-drift",
+        history: events,
+        cursor: 0,
+        workflow_module: CommandIdChangedFlow,
+        lease_token: nil,
+        journal: InMemory
+      }
+
+      Continuum.Runtime.Context.put(ctx)
+
+      try do
+        assert_raise Continuum.ReplayDriftError, fn ->
+          CommandIdChangedFlow.run(%{})
+        end
+      after
+        Continuum.Runtime.Context.clear()
+      end
+    end
+
+    test "raises ReplayDriftError when builtin primitive command identity changes" do
+      {:ok, run_id} = Continuum.start(BuiltinCommandSourceFlow, %{})
+      {:ok, _} = Continuum.await(run_id, 1_000)
+      events = InMemory.load(run_id)
+
+      assert [%{type: :side_effect, kind: :now, command_id: command_id}] = events
+
+      assert {:side_effect, BuiltinCommandSourceFlow, {:run, 1}, _line, _shape_hash, 0} =
+               command_id
+
+      ctx = %Continuum.Runtime.Context{
+        run_id: "builtin-command-id-drift",
+        history: events,
+        cursor: 0,
+        workflow_module: BuiltinCommandChangedFlow,
+        lease_token: nil,
+        journal: InMemory
+      }
+
+      Continuum.Runtime.Context.put(ctx)
+
+      try do
+        assert_raise Continuum.ReplayDriftError, fn ->
+          BuiltinCommandChangedFlow.run(%{})
         end
       after
         Continuum.Runtime.Context.clear()

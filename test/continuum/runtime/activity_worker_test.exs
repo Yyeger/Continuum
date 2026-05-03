@@ -247,9 +247,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
   defp assert_eventually(_fun, 0), do: flunk("condition did not become true")
 
-  defp decode_term(%{"__term__" => encoded}) when is_binary(encoded) do
-    :erlang.binary_to_term(Base.decode64!(encoded))
-  end
+  defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
 
   defp event_types(run_id) do
     Repo.all(
