@@ -240,6 +240,58 @@ defmodule Continuum.Runtime.Effect do
          _live_compute,
          command_id
        ) do
+    case Continuum.Runtime.Journal.Postgres.consume_pending_signal!(
+           ctx.instance,
+           ctx.run_id,
+           name,
+           command_id,
+           ctx.cursor,
+           ctx.lease_token
+         ) do
+      {:ok, payload, winner_event} ->
+        Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 1})
+
+        Telemetry.execute([:continuum, :signal, :received], %{}, %{
+          run_id: ctx.run_id,
+          signal_name: name
+        })
+
+        payload
+
+      :none ->
+        schedule_signal_await!(ctx, name, opts, command_id)
+    end
+  end
+
+  defp live_tail!(
+         ctx,
+         {:activity, {mod, fun, args}, _opts} = effect,
+         _live_compute,
+         command_id
+       ) do
+    Telemetry.execute([:continuum, :activity, :started], %{}, %{
+      run_id: ctx.run_id,
+      mfa: {mod, fun, args}
+    })
+
+    result = apply(mod, fun, args)
+    journal_live!(ctx, effect, result, command_id)
+
+    Telemetry.execute([:continuum, :activity, :completed], %{}, %{
+      run_id: ctx.run_id,
+      mfa: {mod, fun, args}
+    })
+
+    result
+  end
+
+  defp live_tail!(ctx, effect, live_compute, command_id) do
+    result = live_compute.()
+    journal_live!(ctx, effect, result, command_id)
+    result
+  end
+
+  defp schedule_signal_await!(ctx, name, opts, command_id) do
     event =
       %{
         type: :signal_awaited,
@@ -287,34 +339,6 @@ defmodule Continuum.Runtime.Effect do
       :none ->
         throw({:continuum_suspend, {:awaiting_signal, name}})
     end
-  end
-
-  defp live_tail!(
-         ctx,
-         {:activity, {mod, fun, args}, _opts} = effect,
-         _live_compute,
-         command_id
-       ) do
-    Telemetry.execute([:continuum, :activity, :started], %{}, %{
-      run_id: ctx.run_id,
-      mfa: {mod, fun, args}
-    })
-
-    result = apply(mod, fun, args)
-    journal_live!(ctx, effect, result, command_id)
-
-    Telemetry.execute([:continuum, :activity, :completed], %{}, %{
-      run_id: ctx.run_id,
-      mfa: {mod, fun, args}
-    })
-
-    result
-  end
-
-  defp live_tail!(ctx, effect, live_compute, command_id) do
-    result = live_compute.()
-    journal_live!(ctx, effect, result, command_id)
-    result
   end
 
   defp replay_event!(ctx, event, effect, command_id) do

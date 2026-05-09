@@ -65,6 +65,61 @@ defmodule Continuum.Runtime.SignalRouterTest do
     assert signal.delivered == true
   end
 
+  test "already-pending signal journals signal_received without signal_awaited" do
+    run_id = Ecto.UUID.generate()
+    :ok = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
+
+    {:ok, ^run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{},
+        journal: Postgres,
+        run_id: run_id
+      )
+
+    assert {:ok, %{state: :completed, result: {:ok, :went}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert ["signal_received"] = event_types(run_id)
+
+    signal = Repo.one!(from(s in Signal, where: s.run_id == ^run_id))
+    assert signal.delivered == true
+  end
+
+  test "already-pending signal with timeout skips timeout timer creation" do
+    run_id = Ecto.UUID.generate()
+    :ok = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
+
+    {:ok, ^run_id} =
+      Continuum.Runtime.Engine.start_run(SignalTimeoutFlow, %{timeout_ms: 60_000},
+        journal: Postgres,
+        run_id: run_id
+      )
+
+    assert {:ok, %{state: :completed, result: {:ok, :go}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert ["signal_received"] = event_types(run_id)
+    assert Repo.aggregate(from(t in Timer, where: t.run_id == ^run_id), :count) == 0
+    assert Repo.one!(from(r in Run, where: r.id == ^run_id)).next_wakeup_at == nil
+  end
+
+  test "already-pending signal fast-path replays without drift" do
+    run_id = Ecto.UUID.generate()
+    :ok = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
+
+    {:ok, ^run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{},
+        journal: Postgres,
+        run_id: run_id
+      )
+
+    assert {:ok, %{state: :completed, result: {:ok, :went}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    history = Continuum.Test.history(run_id, journal: Postgres)
+    assert [%{type: :signal_received}] = history
+    assert {:ok, {:ok, :went}} = Continuum.Test.replay(DurableSignalFlow, %{}, history)
+  end
+
   test "wakes a suspended local engine from a Postgres notification" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)

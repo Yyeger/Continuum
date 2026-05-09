@@ -16,6 +16,9 @@
   Upgraders with existing helper-module calls should add `use Continuum.Pure`
   to audited pure helpers or list externally audited modules in
   `:trusted_modules`.
+- Added a Postgres signal-await fast-path: when a signal is already pending in
+  the durable mailbox, `await signal(...)` journals `signal_received` directly
+  and skips `signal_awaited` plus timeout timer creation.
 
 ## v0.1 — "It survives a crash"
 

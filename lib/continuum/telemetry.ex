@@ -38,6 +38,11 @@ defmodule Continuum.Telemetry do
   Measurements are intentionally small and conventional: most events emit
   `%{count: n}` or `%{duration_ms: n}` when there is a meaningful number,
   otherwise `%{}`.
+
+  When a Postgres-backed `await signal(...)` consumes a signal that was already
+  pending in the durable mailbox, Continuum emits `[:continuum, :signal,
+  :received]` without a preceding `[:continuum, :signal, :awaited]`; there was
+  no suspended await period to bracket.
   """
 
   @events [

@@ -437,6 +437,33 @@ defmodule Continuum.Runtime.Journal.Postgres do
     with_repo(instance, fn -> resolve_signal_await_with_repo(run_id, await_event, lease_token) end)
   end
 
+  @doc false
+  def consume_pending_signal!(%Instance{} = instance, run_id, name, command_id, seq, lease_token) do
+    with_repo(instance, fn ->
+      consume_pending_signal_with_repo!(run_id, name, command_id, seq, lease_token)
+    end)
+  end
+
+  defp consume_pending_signal_with_repo!(run_id, name, command_id, seq, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+
+        case pending_signal(run_id, name) do
+          nil -> :none
+          %Signal{} = signal -> consume_signal_row!(run_id, name, signal, command_id, seq)
+        end
+      end)
+
+    case result do
+      {:ok, value} ->
+        value
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres consume_pending_signal! failed: #{inspect(reason)}"
+    end
+  end
+
   defp resolve_signal_await_with_repo(run_id, await_event, lease_token) do
     result =
       repo().transaction(fn ->
@@ -826,27 +853,40 @@ defmodule Continuum.Runtime.Journal.Postgres do
         maybe_timeout_signal_await(run_id, await_event)
 
       %Signal{} = signal ->
-        payload = decode_term(signal.payload)
+        {:ok, payload, winner_event} =
+          consume_signal_row!(
+            run_id,
+            await_event.name,
+            signal,
+            Map.get(await_event, :command_id),
+            await_event.seq + 1
+          )
 
-        winner_event =
-          insert_event!(run_id, %{
-            type: :signal_received,
-            name: await_event.name,
-            payload: payload,
-            command_id: Map.get(await_event, :command_id),
-            seq: await_event.seq + 1
-          })
+        mark_signal_timeout_resolved(run_id, await_event)
+        {:ok, payload, winner_event}
+    end
+  end
 
-        with {1, _} <-
-               repo().update_all(
-                 from(s in Signal, where: s.id == ^signal.id),
-                 set: [delivered: true]
-               ) do
-          mark_signal_timeout_resolved(run_id, await_event)
-          {:ok, payload, winner_event}
-        else
-          {0, _} -> repo().rollback({:signal_consume_failed, :already_delivered})
-        end
+  defp consume_signal_row!(run_id, name, %Signal{} = signal, command_id, seq) do
+    payload = decode_term(signal.payload)
+
+    winner_event =
+      insert_event!(run_id, %{
+        type: :signal_received,
+        name: name,
+        payload: payload,
+        command_id: command_id,
+        seq: seq
+      })
+
+    with {1, _} <-
+           repo().update_all(
+             from(s in Signal, where: s.id == ^signal.id and s.delivered == false),
+             set: [delivered: true]
+           ) do
+      {:ok, payload, winner_event}
+    else
+      {0, _} -> repo().rollback({:signal_consume_failed, :already_delivered})
     end
   end
 
