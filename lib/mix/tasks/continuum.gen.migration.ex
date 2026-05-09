@@ -6,8 +6,9 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
 
   Writes a single migration file under `priv/repo/migrations/` (or whatever
   is configured for your repo) that creates: `continuum_runs`,
-  `continuum_events`, `continuum_signals`, `continuum_timers`,
-  `continuum_activity_tasks`, and the `continuum_lease_token_seq` sequence.
+  monthly-partitioned `continuum_events`, `continuum_signals`,
+  `continuum_timers`, `continuum_activity_tasks`, and the
+  `continuum_lease_token_seq` sequence.
   """
   use Mix.Task
 
@@ -100,17 +101,18 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           WHERE lease_owner IS NOT NULL
         \"\"\"
 
-        # Events: append-only history.
-        # In production, consider partitioning by month — see plan.
-        create table(:continuum_events, primary_key: false) do
-          add :run_id, :uuid, null: false
-          add :seq, :bigint, null: false
-          add :event_type, :text, null: false
-          add :payload, :bytea, null: false
-          add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
-        end
+        execute \"\"\"
+        CREATE TABLE continuum_events (
+          run_id uuid NOT NULL,
+          seq bigint NOT NULL,
+          event_type text NOT NULL,
+          payload bytea NOT NULL,
+          inserted_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (run_id, seq, inserted_at)
+        ) PARTITION BY RANGE (inserted_at)
+        \"\"\"
 
-        execute "ALTER TABLE continuum_events ADD PRIMARY KEY (run_id, seq)"
+        create_initial_event_partitions()
 
         create table(:continuum_signals) do
           add :run_id, :uuid, null: false
@@ -169,6 +171,33 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         drop_if_exists table(:continuum_runs)
         execute "DROP SEQUENCE IF EXISTS continuum_lease_token_seq"
       end
+
+      defp create_initial_event_partitions do
+        today = Date.utc_today()
+        month = Date.new!(today.year, today.month, 1)
+
+        for offset <- 0..3 do
+          create_event_partition(Date.add(month, offset * 32) |> Date.beginning_of_month())
+        end
+      end
+
+      defp create_event_partition(month) do
+        next_month = month |> Date.add(32) |> Date.beginning_of_month()
+
+        execute \"\"\"
+        CREATE TABLE IF NOT EXISTS \#{event_partition_name(month)}
+        PARTITION OF continuum_events
+        FOR VALUES FROM ('\#{Date.to_iso8601(month)} 00:00:00+00')
+        TO ('\#{Date.to_iso8601(next_month)} 00:00:00+00')
+        \"\"\"
+      end
+
+      defp event_partition_name(%Date{year: year, month: month}) do
+        "continuum_events_y\#{year}_m\#{pad2(month)}"
+      end
+
+      defp pad2(month) when month < 10, do: "0\#{month}"
+      defp pad2(month), do: "\#{month}"
     end
     """
   end

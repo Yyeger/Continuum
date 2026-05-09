@@ -10,6 +10,6 @@ defmodule Continuum.Schema.Event do
     field(:seq, :integer, primary_key: true)
     field(:event_type, :string)
     field(:payload, :binary)
-    field(:inserted_at, :utc_datetime_usec)
+    field(:inserted_at, :utc_datetime_usec, primary_key: true)
   end
 end
