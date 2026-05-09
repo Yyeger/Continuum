@@ -11,6 +11,12 @@ defmodule Continuum.AstCheck do
   curated denylist and allowlist. Users can extend the allowlist via:
 
       config :continuum, trusted_modules: [Decimal, Money]
+
+  Calls from workflow code into helper modules that are not stdlib-trusted,
+  allowlisted, or marked with `use Continuum.Pure` emit warnings by default.
+  Use `config :continuum, untrusted_call_severity: :error` to make those
+  diagnostics fail compilation. Error mode raises on the first untrusted
+  helper module found in the current definition.
   """
 
   @typedoc "A `{module, function}` pair."
@@ -22,6 +28,15 @@ defmodule Continuum.AstCheck do
           line: pos_integer() | nil,
           file: String.t() | nil,
           hint: String.t()
+        }
+
+  @typedoc "An untrusted external helper call found during AST scan."
+  @type helper_call :: %{
+          module: module(),
+          function: atom(),
+          arity: non_neg_integer(),
+          line: pos_integer() | nil,
+          file: String.t() | nil
         }
 
   @forbidden %{
@@ -130,7 +145,140 @@ defmodule Continuum.AstCheck do
     |> Enum.join("\n\n")
   end
 
+  @doc """
+  Emit or raise diagnostics for external helper modules that are not trusted.
+
+  Activity calls are skipped because their side effects are deliberately routed
+  through the DSL and journal. Same-module calls are also skipped; their bodies
+  are scanned by the workflow compiler hook.
+  """
+  @spec check_helper_calls(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
+  def check_helper_calls(ast, env, caller_fun, caller_arity) do
+    calls =
+      ast
+      |> external_calls(env)
+      |> Enum.reject(&(&1.module == env.module))
+      |> Enum.reject(&trusted_helper_module?/1)
+      |> Enum.uniq_by(& &1.module)
+
+    case {untrusted_call_severity(), calls} do
+      {_, []} ->
+        :ok
+
+      {:warn, calls} ->
+        Enum.each(calls, &warn_helper_call(&1, env, caller_fun, caller_arity))
+
+      {:error, [call | _]} ->
+        raise CompileError,
+          file: call.file || env.file,
+          line: call.line || env.line,
+          description: helper_call_message(call, env, caller_fun, caller_arity)
+    end
+  end
+
   # ---------------------------------------------------------------------------
+
+  defp external_calls(ast, env) do
+    {_, calls} =
+      Macro.prewalk(ast, [], fn
+        {:activity, meta, args}, acc when is_list(args) ->
+          {{:__continuum_skipped_activity__, meta, []}, acc}
+
+        node, acc ->
+          collect_external_call(node, acc, env)
+      end)
+
+    Enum.reverse(calls)
+  end
+
+  defp collect_external_call(
+         {{:., _, [module_ast, fun]}, meta, args} = node,
+         acc,
+         env
+       )
+       when is_atom(fun) and is_list(args) do
+    case static_module(module_ast, env) do
+      module when is_atom(module) and module not in [nil, true, false] ->
+        call = %{
+          module: module,
+          function: fun,
+          arity: length(args),
+          line: Keyword.get(meta, :line),
+          file: env.file
+        }
+
+        {node, [call | acc]}
+
+      _ ->
+        {node, acc}
+    end
+  end
+
+  defp collect_external_call(node, acc, _env), do: {node, acc}
+
+  defp static_module({:__aliases__, _, _} = alias_ast, env), do: Macro.expand(alias_ast, env)
+  defp static_module({:__MODULE__, _, _}, env), do: env.module
+  defp static_module(module, _env) when is_atom(module), do: module
+  defp static_module(_module, _env), do: nil
+
+  defp trusted_helper_module?(%{module: module}) do
+    module in [Continuum, Continuum.Workflow] or
+      MapSet.member?(@trusted_stdlib, module) or
+      module in trusted_modules() or
+      pure_module?(module)
+  end
+
+  defp trusted_modules do
+    :continuum
+    |> Application.get_env(:trusted_modules, [])
+    |> List.wrap()
+  end
+
+  defp pure_module?(module) do
+    case Code.ensure_compiled(module) do
+      {:module, ^module} -> function_exported?(module, :__continuum_pure__, 0)
+      _ -> false
+    end
+  end
+
+  defp untrusted_call_severity do
+    case Application.get_env(:continuum, :untrusted_call_severity, :warn) do
+      :error -> :error
+      _ -> :warn
+    end
+  end
+
+  defp warn_helper_call(call, env, caller_fun, caller_arity) do
+    IO.warn(
+      helper_call_message(call, env, caller_fun, caller_arity),
+      [
+        {env.module, caller_fun, caller_arity,
+         [file: to_charlist(call.file || env.file || "nofile"), line: call.line || env.line || 0]}
+      ]
+    )
+  end
+
+  defp helper_call_message(call, env, caller_fun, caller_arity) do
+    location =
+      case {call.file || env.file, call.line || env.line} do
+        {nil, nil} -> ""
+        {nil, line} -> "line #{line}\n\n"
+        {file, nil} -> "#{file}\n\n"
+        {file, line} -> "#{file}:#{line}\n\n"
+      end
+
+    """
+    Continuum cannot determine whether #{inspect(call.module)} is deterministic.
+
+    #{location}Called from #{inspect(env.module)}.#{caller_fun}/#{caller_arity}:
+        #{inspect(call.module)}.#{call.function}/#{call.arity}
+
+    - If the module is pure helpers, add `use Continuum.Pure` at the top of #{inspect(call.module)}.
+    - If the module performs side effects, wrap the call in `activity/2`.
+    - If you've audited it externally, list it in `config :continuum, trusted_modules: [#{inspect(call.module)}, ...]`.
+    """
+    |> String.trim_trailing()
+  end
 
   defp check_node({{:., _, [{:__aliases__, _, alias_parts}, fun]}, meta, args} = node, acc, file)
        when is_atom(fun) and is_list(args) do

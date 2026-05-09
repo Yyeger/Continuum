@@ -191,6 +191,8 @@ defmodule Continuum.Workflow.OnDef do
             "Determinism violation in #{inspect(env.module)}.#{name}/#{arity}:\n\n" <>
               Continuum.AstCheck.format(violations)
     end
+
+    Continuum.AstCheck.check_helper_calls(body, env, name, length(args || []))
   end
 
   def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok

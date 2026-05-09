@@ -18,6 +18,8 @@ defmodule Continuum.Pure do
   defmacro __using__(_opts) do
     quote do
       @on_definition Continuum.Pure
+
+      def __continuum_pure__, do: true
     end
   end
 

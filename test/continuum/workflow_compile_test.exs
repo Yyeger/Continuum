@@ -1,5 +1,7 @@
 defmodule Continuum.WorkflowCompileTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
+
+  import ExUnit.CaptureIO
 
   describe "compile-time determinism enforcement" do
     test "a clean workflow compiles" do
@@ -107,6 +109,123 @@ defmodule Continuum.WorkflowCompileTest do
     end
   end
 
+  describe "helper-module trust warnings" do
+    test "warns when workflow code calls an unmarked helper module" do
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            compile_helper_workflow("UntrustedHelper", "def classify(input), do: input", """
+            def run(input) do
+              Helper.classify(input)
+            end
+            """)
+          end)
+
+        assert output =~ "Continuum cannot determine whether"
+        assert output =~ ".Helper is deterministic"
+        assert output =~ "use Continuum.Pure"
+        assert output =~ "activity/2"
+        assert output =~ "trusted_modules"
+      end)
+    end
+
+    test "raises when untrusted helper severity is configured as error" do
+      with_continuum_env([untrusted_call_severity: :error, trusted_modules: []], fn ->
+        assert_raise CompileError, ~r/cannot determine whether/, fn ->
+          compile_helper_workflow("UntrustedHelperError", "def classify(input), do: input", """
+          def run(input) do
+            Helper.classify(input)
+          end
+          """)
+        end
+      end)
+    end
+
+    test "does not warn for helpers marked with Continuum.Pure" do
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            compile_helper_workflow(
+              "PureHelper",
+              "use Continuum.Pure\n  def classify(input), do: input",
+              """
+              def run(input) do
+                Helper.classify(input)
+              end
+              """
+            )
+          end)
+
+        refute output =~ "cannot determine whether"
+      end)
+    end
+
+    test "does not warn for trusted stdlib modules" do
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            compile_workflow("TrustedStdlib", """
+            def run(input) do
+              Enum.map(input, & &1)
+            end
+            """)
+          end)
+
+        refute output =~ "cannot determine whether"
+      end)
+    end
+
+    test "does not warn for configured trusted modules" do
+      suffix = unique_suffix("TrustedConfig")
+      helper = Module.concat([__MODULE__, suffix, Helper])
+
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: [helper]], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            compile_helper_workflow(suffix, "def classify(input), do: input", """
+            def run(input) do
+              Helper.classify(input)
+            end
+            """)
+          end)
+
+        refute output =~ "cannot determine whether"
+      end)
+    end
+
+    test "does not warn for activity module calls" do
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            compile_helper_workflow("ActivityCall", "def classify(input), do: input", """
+            def run(input) do
+              activity Helper.classify(input)
+            end
+            """)
+          end)
+
+        refute output =~ "cannot determine whether"
+      end)
+    end
+
+    test "does not warn for explicit same-module helper calls" do
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            compile_workflow("SameModuleHelper", """
+            def run(input) do
+              __MODULE__.classify(input)
+            end
+
+            def classify(input), do: input
+            """)
+          end)
+
+        refute output =~ "cannot determine whether"
+      end)
+    end
+  end
+
   defp compile_and_get_hash(module_suffix, body) do
     src = """
     defmodule Continuum.WorkflowCompileTest.#{module_suffix} do
@@ -117,5 +236,65 @@ defmodule Continuum.WorkflowCompileTest do
 
     [{mod, _}] = Code.compile_string(src)
     mod.__continuum_workflow__().version_hash
+  end
+
+  defp compile_helper_workflow(module_suffix, helper_body, workflow_body) do
+    suffix =
+      if is_atom(module_suffix) do
+        module_suffix
+      else
+        unique_suffix(module_suffix)
+      end
+
+    src = """
+    defmodule #{inspect(Module.concat([__MODULE__, suffix, Helper]))} do
+      #{helper_body}
+    end
+
+    defmodule #{inspect(Module.concat([__MODULE__, suffix, Flow]))} do
+      use Continuum.Workflow, version: 1
+      alias #{inspect(Module.concat([__MODULE__, suffix, Helper]))}, as: Helper
+
+      #{workflow_body}
+    end
+    """
+
+    Code.compile_string(src)
+  end
+
+  defp compile_workflow(module_suffix, workflow_body) do
+    suffix = unique_suffix(module_suffix)
+
+    src = """
+    defmodule #{inspect(Module.concat([__MODULE__, suffix, Flow]))} do
+      use Continuum.Workflow, version: 1
+
+      #{workflow_body}
+    end
+    """
+
+    Code.compile_string(src)
+  end
+
+  defp unique_suffix(prefix), do: :"#{prefix}#{System.unique_integer([:positive])}"
+
+  defp with_continuum_env(config, fun) do
+    originals =
+      Enum.map(config, fn {key, _value} ->
+        {key, Application.fetch_env(:continuum, key)}
+      end)
+
+    Enum.each(config, fn {key, value} ->
+      Application.put_env(:continuum, key, value)
+    end)
+
+    try do
+      fun.()
+    after
+      Enum.each(originals, fn
+        {key, {:ok, value}} -> Application.put_env(:continuum, key, value)
+        {key, :error} -> Application.delete_env(:continuum, key)
+      end)
+    end
   end
 end

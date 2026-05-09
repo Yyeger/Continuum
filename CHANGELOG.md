@@ -10,6 +10,12 @@
   runs, without re-running the activity body.
 - Added nullable `continuum_runs.trace_context` persistence so future OTel
   run-attempt spans can link resumes back to the original trace.
+- Added compile-time warnings for workflow calls into helper modules that are
+  not stdlib-trusted, marked with `use Continuum.Pure`, or allowlisted through
+  `config :continuum, trusted_modules: [...]`.
+  Upgraders with existing helper-module calls should add `use Continuum.Pure`
+  to audited pure helpers or list externally audited modules in
+  `:trusted_modules`.
 
 ## v0.1 — "It survives a crash"
 
