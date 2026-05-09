@@ -127,17 +127,19 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
   end
 
   defp create_activity_results_fixture(run_id) do
-    Repo.query!("""
-    CREATE TABLE continuum_activity_results (
-      activity_module text NOT NULL,
-      idempotency_key text NOT NULL,
-      run_id uuid NOT NULL,
-      seq bigint NOT NULL,
-      result bytea NOT NULL,
-      completed_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (activity_module, idempotency_key)
-    )
-    """)
+    unless table_exists?("continuum_activity_results") do
+      Repo.query!("""
+      CREATE TABLE continuum_activity_results (
+        activity_module text NOT NULL,
+        idempotency_key text NOT NULL,
+        run_id uuid NOT NULL,
+        seq bigint NOT NULL,
+        result bytea NOT NULL,
+        completed_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (activity_module, idempotency_key)
+      )
+      """)
+    end
 
     Repo.query!(
       """
@@ -147,6 +149,11 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
       """,
       [dump_uuid(run_id), :erlang.term_to_binary(:ok)]
     )
+  end
+
+  defp table_exists?(table) do
+    %{rows: [[exists?]]} = Repo.query!("SELECT to_regclass($1) IS NOT NULL", [table])
+    exists?
   end
 
   defp activity_results_count do

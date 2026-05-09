@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### v0.2 in progress
+- Added monthly partitioning support for `continuum_events`, including
+  operator Mix tasks for creating, listing, and dropping expired partitions.
+- Added enforced activity idempotency through `continuum_activity_results`.
+  Committed results are reused per activity module and idempotency key, across
+  runs, without re-running the activity body.
+
 ## v0.1 — "It survives a crash"
 
 The full v0.1 surface from `ROADMAP.md` is implemented, exercised by 97 tests + 2

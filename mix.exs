@@ -57,6 +57,7 @@ defmodule Continuum.MixProject do
         "README.md",
         "guides/your-first-workflow.md",
         "guides/activities-retries-idempotency.md",
+        "guides/idempotency.md",
         "guides/determinism-rules.md"
       ],
       groups_for_extras: [

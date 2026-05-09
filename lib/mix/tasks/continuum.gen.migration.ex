@@ -7,8 +7,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
   Writes a single migration file under `priv/repo/migrations/` (or whatever
   is configured for your repo) that creates: `continuum_runs`,
   monthly-partitioned `continuum_events`, `continuum_signals`,
-  `continuum_timers`, `continuum_activity_tasks`, and the
-  `continuum_lease_token_seq` sequence.
+  `continuum_timers`, `continuum_activity_tasks`,
+  `continuum_activity_results`, and the `continuum_lease_token_seq` sequence.
   """
   use Mix.Task
 
@@ -161,9 +161,24 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           ON continuum_activity_tasks (available_at)
           WHERE state = 'available'
         \"\"\"
+
+        create table(:continuum_activity_results, primary_key: false) do
+          add :activity_module, :text, null: false
+          add :idempotency_key, :text, null: false
+          add :run_id, :uuid, null: false
+          add :seq, :bigint, null: false
+          add :result, :bytea, null: false
+          add :completed_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        execute \"\"\"
+        ALTER TABLE continuum_activity_results
+          ADD PRIMARY KEY (activity_module, idempotency_key)
+        \"\"\"
       end
 
       def down do
+        drop_if_exists table(:continuum_activity_results)
         drop_if_exists table(:continuum_activity_tasks)
         drop_if_exists table(:continuum_timers)
         drop_if_exists table(:continuum_signals)

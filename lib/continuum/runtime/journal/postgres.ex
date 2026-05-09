@@ -17,7 +17,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   import Ecto.Query
 
   alias Continuum.Runtime.Instance
-  alias Continuum.Schema.{ActivityTask, Event, Run, Signal, Timer}
+  alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Timer}
   alias Continuum.Telemetry
 
   @impl true
@@ -155,25 +155,74 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def complete_activity_task!(%Instance{} = instance, task, result, lease_token) do
-    with_repo(instance, fn -> complete_activity_task_with_repo!(task, result, lease_token) end)
+  def get_activity_result(%Instance{} = instance, activity_module, idempotency_key) do
+    with_repo(instance, fn -> get_activity_result_with_repo(activity_module, idempotency_key) end)
   end
 
-  defp complete_activity_task_with_repo!(task, result, lease_token) do
-    event = %{
+  defp get_activity_result_with_repo(activity_module, idempotency_key) do
+    activity_module = activity_module_key(activity_module)
+
+    case repo().one(
+           from(r in ActivityResult,
+             where:
+               r.activity_module == ^activity_module and r.idempotency_key == ^idempotency_key
+           )
+         ) do
+      nil -> :miss
+      %ActivityResult{} = result -> {:ok, decode_term(result.result)}
+    end
+  end
+
+  def complete_activity_task!(%Instance{} = instance, task, result, lease_token, opts \\ []) do
+    with_repo(instance, fn ->
+      complete_activity_task_with_repo!(task, result, lease_token, opts)
+    end)
+  end
+
+  defp complete_activity_task_with_repo!(task, result, lease_token, opts) do
+    idempotency = Keyword.get(opts, :idempotency)
+
+    tx_result =
+      repo().transaction(fn ->
+        lock_and_validate_active_run!(task.run_id, lease_token)
+        lock_and_validate_activity_task!(task)
+
+        committed_result = maybe_commit_idempotency_result(task, result, idempotency)
+        event = activity_completed_event(task, committed_result)
+
+        with %{} <- insert_event!(task.run_id, event),
+             {1, _} <-
+               repo().update_all(
+                 from(t in ActivityTask,
+                   where:
+                     t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
+                       t.lease_owner == ^task.lease_owner
+                 ),
+                 set: [state: "completed", result: encode_term(committed_result)]
+               ) do
+          :ok
+        else
+          {0, _} -> repo().rollback({:activity_task_result_failed, :task_lease_mismatch})
+        end
+      end)
+
+    case tx_result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres activity task result failed: #{inspect(reason)}"
+    end
+  end
+
+  defp activity_completed_event(task, result) do
+    %{
       type: :activity_completed,
       mfa: task.mfa,
       payload: result,
       command_id: Map.get(task, :command_id),
       seq: task.seq + 1
     }
-
-    activity_task_result!(
-      task,
-      event,
-      [state: "completed", result: encode_term(result)],
-      lease_token
-    )
   end
 
   def fail_activity_task!(%Instance{} = instance, task, error, lease_token) do
@@ -609,6 +658,54 @@ defmodule Continuum.Runtime.Journal.Postgres do
         raise "Continuum.Runtime.Journal.Postgres activity task result failed: #{inspect(reason)}"
     end
   end
+
+  defp maybe_commit_idempotency_result(_task, result, nil), do: result
+
+  defp maybe_commit_idempotency_result(task, result, idempotency) do
+    activity_module = activity_module_key(Keyword.fetch!(idempotency, :module))
+    idempotency_key = Keyword.fetch!(idempotency, :key)
+    now = DateTime.utc_now()
+
+    {count, _} =
+      repo().insert_all(
+        ActivityResult,
+        [
+          %{
+            activity_module: activity_module,
+            idempotency_key: idempotency_key,
+            run_id: task.run_id,
+            seq: task.seq + 1,
+            result: encode_term(result),
+            completed_at: now
+          }
+        ],
+        on_conflict: :nothing,
+        conflict_target: [:activity_module, :idempotency_key]
+      )
+
+    case count do
+      1 -> result
+      0 -> fetch_activity_result!(activity_module, idempotency_key)
+    end
+  end
+
+  defp fetch_activity_result!(activity_module, idempotency_key) do
+    case repo().one(
+           from(r in ActivityResult,
+             where:
+               r.activity_module == ^activity_module and r.idempotency_key == ^idempotency_key
+           )
+         ) do
+      %ActivityResult{} = result ->
+        decode_term(result.result)
+
+      nil ->
+        repo().rollback({:activity_result_conflict_failed, {activity_module, idempotency_key}})
+    end
+  end
+
+  defp activity_module_key(module) when is_atom(module), do: Atom.to_string(module)
+  defp activity_module_key(module) when is_binary(module), do: module
 
   defp lock_and_validate_active_run!(run_id, lease_token) do
     run =

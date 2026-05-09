@@ -44,9 +44,14 @@ Retry policy is resolved in this order:
 `backoff: :exponential` uses `base_ms * 2 ^ (attempt - 1)`. Any other backoff
 value uses constant delay.
 
-Idempotency keys are carried in the durable task payload in v0.1, but they are
-not enforced yet. Activities that perform externally visible writes, such as
-payments, emails, or third-party API mutations, should still pass their own
-idempotency key to the external system. The first release preserves the
-Continuum-side plumbing; v0.2 can add a result side-table without changing
-workflow code.
+Idempotency keys are enforced by the Postgres runtime. Once an activity result
+is committed for an activity module and key, another task with the same module
+and key journals that committed result without running the activity body again.
+
+This guarantee starts after Continuum commits success. Activities that perform
+externally visible writes, such as payments, emails, or third-party API
+mutations, should still pass their own idempotency key to the external system.
+That closes the remaining window where a worker can crash after the external
+write succeeds but before Continuum commits the result.
+
+See `guides/idempotency.md` for the exact scope.

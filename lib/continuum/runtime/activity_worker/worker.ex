@@ -38,12 +38,31 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
       attempt: task.attempt
     })
 
-    case run_activity(task) do
-      {:ok, result} -> complete(task, result, started_at)
-      {:error, error} -> fail_or_retry(task, error, started_at)
+    case idempotency_hit(task) do
+      {:hit, result} ->
+        complete(task, result, started_at, idempotency_hit?: true)
+
+      :miss ->
+        case run_activity(task) do
+          {:ok, result} -> complete(task, result, started_at)
+          {:error, error} -> fail_or_retry(task, error, started_at)
+        end
     end
 
     {:stop, :normal, task}
+  end
+
+  defp idempotency_hit(task) do
+    case idempotency(task) do
+      nil ->
+        :miss
+
+      [module: module, key: key] ->
+        case Journal.Postgres.get_activity_result(task.instance, module, key) do
+          {:ok, result} -> {:hit, result}
+          :miss -> :miss
+        end
+    end
   end
 
   defp run_activity(%{mfa: {mod, fun, args}, timeout_ms: timeout_ms}) do
@@ -79,11 +98,29 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
     end
   end
 
-  defp complete(task, result, started_at) do
+  defp complete(task, result, started_at, opts \\ []) do
+    idempotency = idempotency(task)
+
     :ok =
-      Journal.Postgres.complete_activity_task!(task.instance, task, result, task.run_lease_token)
+      Journal.Postgres.complete_activity_task!(
+        task.instance,
+        task,
+        result,
+        task.run_lease_token,
+        idempotency_opts(idempotency)
+      )
 
     Engine.wake(task.instance, task.run_id)
+
+    if Keyword.get(opts, :idempotency_hit?, false) do
+      Telemetry.execute([:continuum, :activity, :idempotency_hit], %{}, %{
+        run_id: task.run_id,
+        task_id: task.id,
+        mfa: task.mfa,
+        attempt: task.attempt,
+        idempotency_key: Keyword.fetch!(idempotency, :key)
+      })
+    end
 
     Telemetry.execute(
       [:continuum, :activity, :completed],
@@ -141,6 +178,17 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   defp max_attempts(retry) do
     Keyword.get(retry || [], :max_attempts, 1)
   end
+
+  defp idempotency(%{idempotency_key: nil}), do: nil
+
+  defp idempotency(%{idempotency_key: key, mfa: {module, _fun, _args}}) do
+    [module: module, key: key]
+  end
+
+  defp idempotency(_task), do: nil
+
+  defp idempotency_opts(nil), do: []
+  defp idempotency_opts(idempotency), do: [idempotency: idempotency]
 
   defp retry_at(task) do
     DateTime.utc_now()

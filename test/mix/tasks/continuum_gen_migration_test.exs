@@ -11,6 +11,8 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "PARTITION BY RANGE (inserted_at)"
       assert source =~ "PRIMARY KEY (run_id, seq, inserted_at)"
       assert source =~ "create_initial_event_partitions()"
+      assert source =~ "create table(:continuum_activity_results"
+      assert source =~ "PRIMARY KEY (activity_module, idempotency_key)"
     end)
   end
 

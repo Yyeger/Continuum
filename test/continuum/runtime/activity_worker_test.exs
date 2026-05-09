@@ -5,7 +5,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
   alias Continuum.Runtime.ActivityWorker.Dispatcher
   alias Continuum.Runtime.Journal.Postgres
-  alias Continuum.Schema.{ActivityTask, Event, Run}
+  alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run}
 
   defmodule DoubleActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
@@ -21,6 +21,46 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     def run(input) do
       {:ok, value} = activity(DoubleActivity.run(input.seed))
       {:ok, value + 1}
+    end
+  end
+
+  defmodule IdempotentActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(n) do
+      Agent.update(__MODULE__, &(&1 + 1))
+      {:ok, {:live, n}}
+    end
+
+    def idempotency_key([n]), do: "idempotent:#{n}"
+  end
+
+  defmodule IdempotentFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      {:ok, value} = activity(IdempotentActivity.run(input.seed))
+      {:ok, value}
+    end
+  end
+
+  defmodule NilKeyActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(n) do
+      Agent.update(__MODULE__, &(&1 + 1))
+      {:ok, n}
+    end
+
+    def idempotency_key([_n]), do: nil
+  end
+
+  defmodule NilKeyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      {:ok, value} = activity(NilKeyActivity.run(input.seed))
+      {:ok, value}
     end
   end
 
@@ -79,6 +119,16 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
       start: {Agent, :start_link, [fn -> 0 end, [name: FlakyActivity]]}
     })
 
+    start_supervised!(%{
+      id: IdempotentActivity,
+      start: {Agent, :start_link, [fn -> 0 end, [name: IdempotentActivity]]}
+    })
+
+    start_supervised!(%{
+      id: NilKeyActivity,
+      start: {Agent, :start_link, [fn -> 0 end, [name: NilKeyActivity]]}
+    })
+
     :ok
   end
 
@@ -102,6 +152,129 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
 
     assert Repo.one!(ActivityTask).state == "completed"
+  end
+
+  test "activity idempotency hit skips the MFA and journals the committed result" do
+    committed_result = {:ok, {:cached, 5}}
+    insert_activity_result(IdempotentActivity, "idempotent:5", committed_result)
+
+    handler_id = "activity-idempotency-hit-#{System.unique_integer()}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:continuum, :activity, :idempotency_hit],
+        fn event, measurements, metadata, test_pid ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(IdempotentFlow, %{seed: 5}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "activity-test", batch_size: 1)
+
+    assert {:ok, %{state: :completed, result: {:ok, {:cached, 5}}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Agent.get(IdempotentActivity, & &1) == 0
+    assert_received {:telemetry, [:continuum, :activity, :idempotency_hit], %{}, metadata}
+    assert metadata.idempotency_key == "idempotent:5"
+
+    [%{type: :activity_scheduled}, %{type: :activity_completed, payload: ^committed_result}] =
+      Postgres.load(Continuum.Runtime.Instance.default(), run_id)
+  end
+
+  test "activity completion uses the side-table winner when the idempotency insert conflicts" do
+    committed_result = {:ok, {:winner, 7}}
+    insert_activity_result(IdempotentActivity, "idempotent:7", committed_result)
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(IdempotentFlow, %{seed: 7}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [state: "leased", lease_owner: "worker-a", lease_expires_at: future_time()]
+    )
+
+    claimed_task =
+      task.mfa
+      |> decode_term()
+      |> Map.merge(%{
+        id: task.id,
+        run_id: task.run_id,
+        instance: Continuum.Runtime.Instance.default(),
+        seq: task.seq,
+        attempt: task.attempt,
+        lease_owner: "worker-a"
+      })
+
+    lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+
+    assert :ok =
+             Postgres.complete_activity_task!(
+               Continuum.Runtime.Instance.default(),
+               claimed_task,
+               {:ok, {:loser, 7}},
+               lease_token,
+               idempotency: [module: IdempotentActivity, key: "idempotent:7"]
+             )
+
+    [%{type: :activity_scheduled}, %{type: :activity_completed, payload: ^committed_result}] =
+      Postgres.load(Continuum.Runtime.Instance.default(), run_id)
+
+    assert Repo.one!(ActivityTask).result |> decode_term() == committed_result
+    assert Repo.aggregate(ActivityResult, :count) == 1
+  end
+
+  test "nil idempotency keys do not write activity_results rows" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(NilKeyFlow, %{seed: 11}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "activity-test", batch_size: 1)
+
+    assert {:ok, %{state: :completed, result: {:ok, 11}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Agent.get(NilKeyActivity, & &1) == 1
+    assert Repo.aggregate(ActivityResult, :count) == 0
+  end
+
+  test "replay of an idempotent activity reads the journal, not the side table" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(IdempotentFlow, %{seed: 9}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "activity-test", batch_size: 1)
+
+    assert {:ok, %{state: :completed, result: {:ok, {:live, 9}}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    history = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
+    Repo.delete_all(ActivityResult)
+
+    assert {:ok, {:ok, {:live, 9}}} =
+             Continuum.Test.replay(IdempotentFlow, %{seed: 9}, history, journal: Postgres)
   end
 
   test "retries failed activities with backoff" do
@@ -273,5 +446,16 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     DateTime.utc_now()
     |> DateTime.add(60, :second)
     |> DateTime.truncate(:microsecond)
+  end
+
+  defp insert_activity_result(module, key, result) do
+    Repo.insert!(%ActivityResult{
+      activity_module: Atom.to_string(module),
+      idempotency_key: key,
+      run_id: Ecto.UUID.generate(),
+      seq: 1,
+      result: :erlang.term_to_binary(result),
+      completed_at: DateTime.utc_now()
+    })
   end
 end

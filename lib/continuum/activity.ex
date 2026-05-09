@@ -18,15 +18,24 @@ defmodule Continuum.Activity do
   on first success and replayed on workflow resume.
 
   Implementing the optional `c:idempotency_key/1` callback stores the key in
-  the durable task payload. v0.1 preserves this metadata for future
-  exactly-once-ish execution, but it does not yet deduplicate duplicate
-  activity execution with a side table.
+  the durable task payload. Once an activity result has been committed,
+  another task for the same activity module and key reuses that committed
+  result without running the activity body again. This suppresses duplicate
+  execution after Continuum has recorded success; external systems should
+  still receive the same key because a worker can crash after the side effect
+  succeeds but before Continuum commits the result.
   """
 
   @type retry_policy :: keyword()
   @type duration :: {:seconds | :minutes | :hours, pos_integer()}
 
   @callback run(any()) :: {:ok, term()} | {:error, term()}
+  @doc """
+  Returns a stable idempotency key for a scheduled activity call, or `nil`.
+
+  Keys are scoped by activity module, not by run. Any run invoking the same
+  activity module with the same key receives the same committed result.
+  """
   @callback idempotency_key(any()) :: binary() | nil
 
   @optional_callbacks [run: 1, idempotency_key: 1]
