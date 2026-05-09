@@ -21,11 +21,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
   alias Continuum.Telemetry
 
   @impl true
-  def start_run(%Instance{} = instance, run_id, workflow, input) do
-    with_repo(instance, fn -> start_run_with_repo(run_id, workflow, input) end)
+  def start_run(%Instance{} = instance, run_id, workflow, input, opts \\ []) do
+    with_repo(instance, fn -> start_run_with_repo(run_id, workflow, input, opts) end)
   end
 
-  defp start_run_with_repo(run_id, workflow, input) do
+  defp start_run_with_repo(run_id, workflow, input, opts) do
     version_hash =
       try do
         workflow.__continuum_workflow__().version_hash
@@ -40,7 +40,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
         workflow: inspect(workflow),
         version_hash: version_hash,
         state: "running",
-        input: encode_term(input)
+        input: encode_term(input),
+        trace_context: Keyword.get(opts, :trace_context)
       })
 
     case repo().insert(changeset) do
@@ -1163,7 +1164,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
       state: String.to_atom(run.state),
       result: decode_term(run.result),
       error: decode_term(run.error),
-      input: decode_term(run.input)
+      input: decode_term(run.input),
+      trace_context: run.trace_context
     }
   end
 

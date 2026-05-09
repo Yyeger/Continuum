@@ -31,6 +31,28 @@ defmodule Continuum.Journal.PostgresTest do
     test "returns nil for unknown run_id" do
       assert Postgres.get_run(Continuum.Runtime.Instance.default(), generate_uuid()) == nil
     end
+
+    test "stores trace_context as opaque binary" do
+      run_id = generate_uuid()
+      trace_context = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+      :ok =
+        Postgres.start_run(
+          Continuum.Runtime.Instance.default(),
+          run_id,
+          SomeWorkflow,
+          %{foo: :bar},
+          trace_context: trace_context
+        )
+
+      raw_trace_context =
+        Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.trace_context))
+
+      assert raw_trace_context == trace_context
+
+      assert Postgres.get_run(Continuum.Runtime.Instance.default(), run_id).trace_context ==
+               trace_context
+    end
   end
 
   describe "append!/3 and load/1" do

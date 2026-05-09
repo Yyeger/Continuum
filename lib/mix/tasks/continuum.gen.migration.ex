@@ -80,6 +80,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :input, :bytea, null: false
           add :result, :bytea
           add :error, :bytea
+          add :trace_context, :bytea
           add :started_at, :utc_datetime_usec, null: false, default: fragment("now()")
           add :completed_at, :utc_datetime_usec
           add :lease_owner, :text

@@ -8,6 +8,8 @@
 - Added enforced activity idempotency through `continuum_activity_results`.
   Committed results are reused per activity module and idempotency key, across
   runs, without re-running the activity body.
+- Added nullable `continuum_runs.trace_context` persistence so future OTel
+  run-attempt spans can link resumes back to the original trace.
 
 ## v0.1 — "It survives a crash"
 

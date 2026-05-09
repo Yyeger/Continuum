@@ -23,6 +23,7 @@ defmodule Continuum.Runtime.Engine do
     :journal,
     :lease_owner,
     :lease_token,
+    :trace_context,
     :status,
     :result,
     :error
@@ -230,12 +231,14 @@ defmodule Continuum.Runtime.Engine do
   def init({workflow_module, input, run_id, opts}) do
     journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.InMemory)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    trace_context = initial_trace_context(opts)
 
     unless Keyword.get(opts, :resume, false) do
-      :ok = journal.start_run(instance, run_id, workflow_module, input)
+      :ok = start_run(journal, instance, run_id, workflow_module, input, trace_context)
     end
 
     {lease_owner, lease_token} = acquire_lease(instance, journal, run_id, opts)
+    trace_context = resume_trace_context(journal, instance, run_id, trace_context, opts)
 
     state = %__MODULE__{
       run_id: run_id,
@@ -245,19 +248,20 @@ defmodule Continuum.Runtime.Engine do
       journal: journal,
       lease_owner: lease_owner,
       lease_token: lease_token,
+      trace_context: trace_context,
       status: :running,
       result: nil,
       error: nil
     }
 
-    Telemetry.execute([:continuum, :run, :started], %{}, %{
-      instance: instance.name,
-      run_id: run_id,
-      workflow: workflow_module,
-      resumed?: Keyword.get(opts, :resume, false),
-      lease_owner: lease_owner,
-      lease_token: lease_token
-    })
+    Telemetry.execute(
+      [:continuum, :run, :started],
+      %{},
+      run_metadata(state, %{
+        resumed?: Keyword.get(opts, :resume, false),
+        lease_owner: lease_owner
+      })
+    )
 
     {:ok, state, {:continue, :run}}
   end
@@ -277,12 +281,7 @@ defmodule Continuum.Runtime.Engine do
     :ok = cancel_run(state)
     state = %{state | status: :cancelled, error: :cancelled}
 
-    Telemetry.execute([:continuum, :run, :cancelled], %{}, %{
-      instance: state.instance.name,
-      run_id: state.run_id,
-      workflow: state.workflow_module,
-      lease_token: state.lease_token
-    })
+    Telemetry.execute([:continuum, :run, :cancelled], %{}, run_metadata(state))
 
     :ok = broadcast_run_finished(state.instance, state.run_id, :cancelled, :cancelled)
     untrack_lease(state)
@@ -313,6 +312,7 @@ defmodule Continuum.Runtime.Engine do
       cursor: 0,
       workflow_module: state.workflow_module,
       lease_token: state.lease_token,
+      trace_context: state.trace_context,
       instance: state.instance,
       journal: state.journal
     }
@@ -343,12 +343,7 @@ defmodule Continuum.Runtime.Engine do
     :ok = state.journal.complete!(state.instance, state.run_id, result, state.lease_token)
     :ok = broadcast_run_finished(state.instance, state.run_id, :completed, result)
 
-    Telemetry.execute([:continuum, :run, :completed], %{}, %{
-      instance: state.instance.name,
-      run_id: state.run_id,
-      workflow: state.workflow_module,
-      lease_token: state.lease_token
-    })
+    Telemetry.execute([:continuum, :run, :completed], %{}, run_metadata(state))
 
     %{state | status: :completed, result: result}
   rescue
@@ -360,13 +355,7 @@ defmodule Continuum.Runtime.Engine do
     Logger.debug("Workflow #{state.run_id} suspended: #{inspect(reason)}")
     :ok = state.journal.suspend!(state.instance, state.run_id, state.lease_token)
 
-    Telemetry.execute([:continuum, :run, :suspended], %{}, %{
-      instance: state.instance.name,
-      run_id: state.run_id,
-      workflow: state.workflow_module,
-      reason: reason,
-      lease_token: state.lease_token
-    })
+    Telemetry.execute([:continuum, :run, :suspended], %{}, run_metadata(state, %{reason: reason}))
 
     %{state | status: :suspended}
   rescue
@@ -378,13 +367,11 @@ defmodule Continuum.Runtime.Engine do
     :ok = state.journal.fail!(state.instance, state.run_id, journal_error, state.lease_token)
     :ok = broadcast_run_finished(state.instance, state.run_id, :failed, state_error)
 
-    Telemetry.execute([:continuum, :run, :failed], %{}, %{
-      instance: state.instance.name,
-      run_id: state.run_id,
-      workflow: state.workflow_module,
-      error: state_error,
-      lease_token: state.lease_token
-    })
+    Telemetry.execute(
+      [:continuum, :run, :failed],
+      %{},
+      run_metadata(state, %{error: state_error})
+    )
 
     %{state | status: :failed, error: state_error}
   rescue
@@ -482,14 +469,83 @@ defmodule Continuum.Runtime.Engine do
   defp lease_lost(state) do
     Logger.warning("Workflow #{state.run_id} lost its Postgres lease; stopping stale engine")
 
-    Telemetry.execute([:continuum, :run, :lease_lost], %{}, %{
+    Telemetry.execute([:continuum, :run, :lease_lost], %{}, run_metadata(state))
+
+    %{state | status: :lease_lost}
+  end
+
+  defp start_run(journal, instance, run_id, workflow_module, input, trace_context) do
+    if function_exported?(journal, :start_run, 5) do
+      journal.start_run(instance, run_id, workflow_module, input, trace_context: trace_context)
+    else
+      journal.start_run(instance, run_id, workflow_module, input)
+    end
+  end
+
+  defp initial_trace_context(opts) do
+    case Keyword.fetch(opts, :trace_context) do
+      {:ok, trace_context} -> normalize_trace_context(trace_context)
+      :error -> current_trace_context()
+    end
+  end
+
+  defp resume_trace_context(journal, instance, run_id, trace_context, opts) do
+    if Keyword.get(opts, :resume, false) and is_nil(trace_context) and
+         function_exported?(journal, :get_run, 2) do
+      case journal.get_run(instance, run_id) do
+        %{trace_context: loaded_trace_context} -> loaded_trace_context
+        _ -> nil
+      end
+    else
+      trace_context
+    end
+  end
+
+  defp normalize_trace_context(nil), do: nil
+  defp normalize_trace_context(trace_context) when is_binary(trace_context), do: trace_context
+
+  defp normalize_trace_context(other) do
+    raise ArgumentError, "expected :trace_context to be a binary or nil, got: #{inspect(other)}"
+  end
+
+  defp current_trace_context do
+    Process.get(:continuum_trace_context) || otel_traceparent()
+  end
+
+  defp otel_traceparent do
+    if Code.ensure_loaded?(:otel_propagator_text_map) and
+         function_exported?(:otel_propagator_text_map, :inject, 1) do
+      :otel_propagator_text_map
+      |> apply(:inject, [%{}])
+      |> extract_traceparent()
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp extract_traceparent(%{} = carrier) do
+    carrier["traceparent"] || carrier[:traceparent]
+  end
+
+  defp extract_traceparent(carrier) when is_list(carrier) do
+    Enum.find_value(carrier, fn
+      {"traceparent", value} -> value
+      {:traceparent, value} -> value
+      _ -> nil
+    end)
+  end
+
+  defp extract_traceparent(_carrier), do: nil
+
+  defp run_metadata(state, extra \\ %{}) do
+    %{
       instance: state.instance.name,
       run_id: state.run_id,
       workflow: state.workflow_module,
-      lease_token: state.lease_token
-    })
-
-    %{state | status: :lease_lost}
+      lease_token: state.lease_token,
+      trace_context: state.trace_context
+    }
+    |> Map.merge(extra)
   end
 
   defp lease_lost?(:error, %RuntimeError{message: message}) do

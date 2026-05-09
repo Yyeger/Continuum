@@ -17,6 +17,7 @@ defmodule Continuum.Runtime.Context do
     :cursor,
     :workflow_module,
     :lease_token,
+    :trace_context,
     :instance,
     :journal,
     command_counts: %{}
@@ -28,6 +29,7 @@ defmodule Continuum.Runtime.Context do
           cursor: non_neg_integer(),
           workflow_module: module(),
           lease_token: integer() | nil,
+          trace_context: binary() | nil,
           instance: Continuum.Runtime.Instance.t() | nil,
           journal: module(),
           command_counts: map()

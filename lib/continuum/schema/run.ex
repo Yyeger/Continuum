@@ -12,6 +12,7 @@ defmodule Continuum.Schema.Run do
     field(:input, :binary)
     field(:result, :binary)
     field(:error, :binary)
+    field(:trace_context, :binary)
     field(:started_at, :utc_datetime_usec)
     field(:completed_at, :utc_datetime_usec)
     field(:lease_owner, :string)

@@ -94,6 +94,10 @@ defmodule Continuum do
 
   @doc """
   Start a new workflow run.
+
+  Options include `:instance` for selecting a named Continuum instance and
+  `:trace_context` for persisting an opaque W3C traceparent binary that
+  observability integrations can use to link resumed run attempts.
   """
   @spec start(workflow_module(), input(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def start(workflow_module, input, opts \\ []) do

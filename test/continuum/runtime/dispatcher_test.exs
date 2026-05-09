@@ -41,13 +41,38 @@ defmodule Continuum.Runtime.DispatcherTest do
 
   test "dispatch_once leases an unowned run and starts an engine" do
     run_id = Ecto.UUID.generate()
+    trace_context = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"
 
     :ok =
-      Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, DispatchFlow, %{seed: 7})
+      Postgres.start_run(
+        Continuum.Runtime.Instance.default(),
+        run_id,
+        DispatchFlow,
+        %{seed: 7},
+        trace_context: trace_context
+      )
 
     :ok = Postgres.suspend!(Continuum.Runtime.Instance.default(), run_id, nil)
 
+    handler_id = "dispatcher-trace-context-#{System.unique_integer()}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:continuum, :run, :started],
+        fn event, measurements, metadata, test_pid ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "dispatcher-test", batch_size: 1)
+
+    assert_receive {:telemetry, [:continuum, :run, :started], %{},
+                    %{resumed?: true, trace_context: ^trace_context}},
+                   1_000
 
     assert {:ok, %{state: :completed, result: {:ok, 21}}} =
              Continuum.await(run_id, 1_000, journal: Postgres)

@@ -13,6 +13,7 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "create_initial_event_partitions()"
       assert source =~ "create table(:continuum_activity_results"
       assert source =~ "PRIMARY KEY (activity_module, idempotency_key)"
+      assert source =~ "add :trace_context, :bytea"
     end)
   end
 
