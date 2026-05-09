@@ -25,7 +25,11 @@ defmodule Continuum.Runtime.Lease do
   """
   @spec owner() :: binary()
   def owner do
-    "#{node()}/#{System.unique_integer([:positive, :monotonic])}"
+    owner(Continuum)
+  end
+
+  def owner(instance_name) do
+    "#{node()}/#{instance_name}/#{System.unique_integer([:positive, :monotonic])}"
   end
 
   @doc """
@@ -49,7 +53,7 @@ defmodule Continuum.Runtime.Lease do
     RETURNING lease_token
     """
 
-    case repo().query(sql, [owner, ttl_seconds, run_id]) do
+    case repo(opts).query(sql, [owner, ttl_seconds, run_id]) do
       {:ok, %{rows: [[token]]}} ->
         Telemetry.execute([:continuum, :lease, :acquired], %{}, %{
           run_id: run_id,
@@ -99,7 +103,7 @@ defmodule Continuum.Runtime.Lease do
     RETURNING id
     """
 
-    case repo().query(sql, [run_id, owner, token, ttl_seconds]) do
+    case repo(opts).query(sql, [run_id, owner, token, ttl_seconds]) do
       {:ok, %{rows: [[_run_id]]}} ->
         Telemetry.execute([:continuum, :lease, :renewed], %{}, %{
           run_id: run_id,
@@ -123,7 +127,7 @@ defmodule Continuum.Runtime.Lease do
     end
   end
 
-  defp repo do
-    Application.fetch_env!(:continuum, :repo)
+  defp repo(opts) do
+    Keyword.get(opts, :repo) || Application.fetch_env!(:continuum, :repo)
   end
 end

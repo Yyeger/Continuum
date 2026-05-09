@@ -17,24 +17,23 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
 
   @doc false
   def start_link(opts \\ []) do
-    name = Keyword.get(opts, :name, __MODULE__)
+    instance = Continuum.Runtime.Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    name = Keyword.get(opts, :name, instance.heartbeater)
     GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   @doc """
   Track a lease for periodic renewal.
   """
-  @spec track(Lease.t(), pid()) :: :ok
-  def track(%Lease{} = lease, pid \\ self()) do
-    GenServer.call(__MODULE__, {:track, lease, pid})
+  def track(instance, %Lease{} = lease, pid) do
+    GenServer.call(instance.heartbeater, {:track, lease, pid})
   end
 
   @doc """
   Stop tracking a run's lease.
   """
-  @spec untrack(binary()) :: :ok
-  def untrack(run_id) do
-    GenServer.call(__MODULE__, {:untrack, run_id})
+  def untrack(instance, run_id) do
+    GenServer.call(instance.heartbeater, {:untrack, run_id})
   end
 
   @doc """
@@ -42,16 +41,18 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
 
   This is mainly useful for deterministic tests and shutdown paths.
   """
-  @spec renew_once() :: :ok
-  def renew_once do
-    GenServer.call(__MODULE__, :renew_once)
+  def renew_once(instance) do
+    GenServer.call(instance.heartbeater, :renew_once)
   end
 
   @impl true
   def init(opts) do
+    instance = Continuum.Runtime.Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
     state = %{
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
       ttl_seconds: Keyword.get(opts, :ttl_seconds, @default_ttl_seconds),
+      repo: instance.repo,
       leases: %{},
       refs: %{}
     }
@@ -105,7 +106,10 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
 
   defp renew_all(state) do
     Enum.reduce(state.leases, state, fn {run_id, entry}, acc ->
-      case Lease.renew(run_id, entry.owner, entry.token, ttl_seconds: acc.ttl_seconds) do
+      case Lease.renew(run_id, entry.owner, entry.token,
+             ttl_seconds: acc.ttl_seconds,
+             repo: acc.repo
+           ) do
         :ok ->
           acc
 

@@ -15,25 +15,47 @@ defmodule Continuum.Runtime.Journal do
   to unleased rows.
   """
 
-  @callback start_run(run_id :: binary(), workflow :: module(), input :: term()) ::
-              :ok | {:error, term()}
+  @callback start_run(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              workflow :: module(),
+              input :: term()
+            ) :: :ok | {:error, term()}
 
-  @callback append!(run_id :: binary(), event :: map(), lease_token :: integer() | nil) :: :ok
+  @callback append!(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              event :: map(),
+              lease_token :: integer() | nil
+            ) :: :ok
 
-  @callback load(run_id :: binary()) :: [map()]
+  @callback load(instance :: Continuum.Runtime.Instance.t(), run_id :: binary()) :: [map()]
 
-  @callback suspend!(run_id :: binary(), lease_token :: integer() | nil) :: :ok
+  @callback suspend!(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              lease_token :: integer() | nil
+            ) :: :ok
 
-  @callback complete!(run_id :: binary(), result :: term(), lease_token :: integer() | nil) ::
-              :ok
+  @callback complete!(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              result :: term(),
+              lease_token :: integer() | nil
+            ) :: :ok
 
-  @callback fail!(run_id :: binary(), error :: term(), lease_token :: integer() | nil) :: :ok
+  @callback fail!(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              error :: term(),
+              lease_token :: integer() | nil
+            ) :: :ok
 
   @doc """
   Look up the run record. Returns `nil` if no such run, or a map with at
   least `:state`, `:result`, `:error` keys (atoms / terms — already decoded).
   """
-  @callback get_run(run_id :: binary()) :: nil | map()
+  @callback get_run(instance :: Continuum.Runtime.Instance.t(), run_id :: binary()) :: nil | map()
 
   @doc "Returns the configured default journal adapter."
   def default do

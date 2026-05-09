@@ -31,7 +31,7 @@ defmodule Continuum.Runtime.LeaseTest do
   describe "acquire/2" do
     test "claims an unleased run and returns a fencing token" do
       run_id = Ecto.UUID.generate()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       assert {:ok, %Lease{owner: "node-a", token: token}} =
                Lease.acquire(run_id, owner: "node-a")
@@ -46,7 +46,7 @@ defmodule Continuum.Runtime.LeaseTest do
 
     test "does not claim a run with an active lease" do
       run_id = Ecto.UUID.generate()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
       assert {:ok, %Lease{}} = Lease.acquire(run_id, owner: "node-a")
 
       assert {:error, :not_acquired} = Lease.acquire(run_id, owner: "node-b")
@@ -54,7 +54,7 @@ defmodule Continuum.Runtime.LeaseTest do
 
     test "claims a run whose lease expired and increments the fencing token" do
       run_id = Ecto.UUID.generate()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
       assert {:ok, %Lease{token: token_a}} = Lease.acquire(run_id, owner: "node-a")
 
       expire_lease(run_id)
@@ -69,7 +69,7 @@ defmodule Continuum.Runtime.LeaseTest do
   describe "renew/4" do
     test "renews only when owner and token still match" do
       run_id = Ecto.UUID.generate()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
       assert {:ok, %Lease{owner: owner, token: token}} = Lease.acquire(run_id, owner: "node-a")
 
       assert :ok = Lease.renew(run_id, owner, token)
@@ -79,7 +79,7 @@ defmodule Continuum.Runtime.LeaseTest do
 
     test "reports lost after another owner steals an expired lease" do
       run_id = Ecto.UUID.generate()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
       assert {:ok, %Lease{owner: owner, token: token}} = Lease.acquire(run_id, owner: "node-a")
 
       expire_lease(run_id)
@@ -92,7 +92,7 @@ defmodule Continuum.Runtime.LeaseTest do
   describe "journal fencing" do
     test "rejects stale journal writes after another owner steals the lease" do
       run_id = Ecto.UUID.generate()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
       assert {:ok, %Lease{token: stale_token}} = Lease.acquire(run_id, owner: "node-a")
 
       expire_lease(run_id)
@@ -102,18 +102,19 @@ defmodule Continuum.Runtime.LeaseTest do
 
       assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
         Postgres.append!(
+          Continuum.Runtime.Instance.default(),
           run_id,
           %{type: :side_effect, kind: :user, payload: :stale_write, seq: nil},
           stale_token
         )
       end
 
-      assert Postgres.load(run_id) == []
+      assert Postgres.load(Continuum.Runtime.Instance.default(), run_id) == []
     end
 
     test "rejects stale cancel_run! after another owner steals the lease" do
       run_id = Ecto.UUID.generate()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
       assert {:ok, %Lease{token: stale_token}} = Lease.acquire(run_id, owner: "node-a")
 
       expire_lease(run_id)
@@ -122,7 +123,7 @@ defmodule Continuum.Runtime.LeaseTest do
       assert current_token > stale_token
 
       assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
-        Postgres.cancel_run!(run_id, stale_token)
+        Postgres.cancel_run!(Continuum.Runtime.Instance.default(), run_id, stale_token)
       end
 
       run = Repo.one!(from(r in Run, where: r.id == ^run_id))
@@ -163,7 +164,12 @@ defmodule Continuum.Runtime.LeaseTest do
       assert current_token > run.lease_token
 
       assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
-        Postgres.complete_activity_task!(claimed_task, {:ok, 10}, run.lease_token)
+        Postgres.complete_activity_task!(
+          Continuum.Runtime.Instance.default(),
+          claimed_task,
+          {:ok, 10},
+          run.lease_token
+        )
       end
 
       assert ["activity_scheduled"] = event_types(run_id)
@@ -248,7 +254,7 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
 
     assert stolen_token > original.lease_token
 
-    assert :ok = Heartbeater.renew_once()
+    assert :ok = Heartbeater.renew_once(Continuum.Runtime.Instance.default())
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
     assert_eventually(fn -> Registry.lookup(Continuum.Runtime.Registry, run_id) == [] end)
   end

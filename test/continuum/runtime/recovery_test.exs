@@ -52,9 +52,12 @@ defmodule Continuum.Runtime.RecoveryTest do
 
   test "clears orphaned run leases so the dispatcher can resume them" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.start_run(run_id, RecoverFlow, %{seed: 4})
+
+    :ok =
+      Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, RecoverFlow, %{seed: 4})
+
     assert {:ok, %Lease{token: token}} = Lease.acquire(run_id, owner: "dead-node")
-    :ok = Postgres.suspend!(run_id, token)
+    :ok = Postgres.suspend!(Continuum.Runtime.Instance.default(), run_id, token)
 
     Repo.update_all(
       from(r in Run, where: r.id == ^run_id),
@@ -76,9 +79,12 @@ defmodule Continuum.Runtime.RecoveryTest do
 
   test "does not clear another node's live run lease" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.start_run(run_id, RecoverFlow, %{seed: 4})
+
+    :ok =
+      Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, RecoverFlow, %{seed: 4})
+
     assert {:ok, %Lease{token: token}} = Lease.acquire(run_id, owner: "live-node")
-    :ok = Postgres.suspend!(run_id, token)
+    :ok = Postgres.suspend!(Continuum.Runtime.Instance.default(), run_id, token)
 
     assert {:ok, %{runs: 0}} = Recovery.recover_once()
 

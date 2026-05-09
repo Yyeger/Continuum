@@ -41,8 +41,11 @@ defmodule Continuum.Runtime.DispatcherTest do
 
   test "dispatch_once leases an unowned run and starts an engine" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.start_run(run_id, DispatchFlow, %{seed: 7})
-    :ok = Postgres.suspend!(run_id, nil)
+
+    :ok =
+      Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, DispatchFlow, %{seed: 7})
+
+    :ok = Postgres.suspend!(Continuum.Runtime.Instance.default(), run_id, nil)
 
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "dispatcher-test", batch_size: 1)
 
@@ -56,8 +59,11 @@ defmodule Continuum.Runtime.DispatcherTest do
 
   test "dispatch_once skips rows scheduled for the future" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.start_run(run_id, DispatchFlow, %{seed: 7})
-    :ok = Postgres.suspend!(run_id, nil)
+
+    :ok =
+      Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, DispatchFlow, %{seed: 7})
+
+    :ok = Postgres.suspend!(Continuum.Runtime.Instance.default(), run_id, nil)
 
     future =
       DateTime.utc_now()
@@ -75,9 +81,12 @@ defmodule Continuum.Runtime.DispatcherTest do
 
   test "dispatch_once steals an expired lease and resumes the run" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.start_run(run_id, DispatchFlow, %{seed: 4})
+
+    :ok =
+      Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, DispatchFlow, %{seed: 4})
+
     assert {:ok, %Lease{token: stale_token}} = Lease.acquire(run_id, owner: "old-owner")
-    :ok = Postgres.suspend!(run_id, stale_token)
+    :ok = Postgres.suspend!(Continuum.Runtime.Instance.default(), run_id, stale_token)
 
     expire_lease(run_id)
 

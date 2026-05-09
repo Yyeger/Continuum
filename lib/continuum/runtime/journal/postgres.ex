@@ -16,11 +16,16 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   import Ecto.Query
 
+  alias Continuum.Runtime.Instance
   alias Continuum.Schema.{ActivityTask, Event, Run, Signal, Timer}
   alias Continuum.Telemetry
 
   @impl true
-  def start_run(run_id, workflow, input) do
+  def start_run(%Instance{} = instance, run_id, workflow, input) do
+    with_repo(instance, fn -> start_run_with_repo(run_id, workflow, input) end)
+  end
+
+  defp start_run_with_repo(run_id, workflow, input) do
     version_hash =
       try do
         workflow.__continuum_workflow__().version_hash
@@ -45,7 +50,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   @impl true
-  def append!(run_id, event, lease_token) do
+  def append!(%Instance{} = instance, run_id, event, lease_token) do
+    with_repo(instance, fn -> append_with_repo!(run_id, event, lease_token) end)
+  end
+
+  defp append_with_repo!(run_id, event, lease_token) do
     {event_type, payload} = encode_event(event)
 
     result =
@@ -80,7 +89,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   @impl true
-  def load(run_id) do
+  def load(%Instance{} = instance, run_id) do
+    with_repo(instance, fn -> load_with_repo(run_id) end)
+  end
+
+  defp load_with_repo(run_id) do
     events =
       repo().all(
         from(e in Event,
@@ -92,7 +105,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     Enum.map(events, &decode_event/1)
   end
 
-  def schedule_activity!(run_id, event, task, lease_token) do
+  def schedule_activity!(%Instance{} = instance, run_id, event, task, lease_token) do
+    with_repo(instance, fn -> schedule_activity_with_repo!(run_id, event, task, lease_token) end)
+  end
+
+  defp schedule_activity_with_repo!(run_id, event, task, lease_token) do
     {event_type, payload} = encode_event(event)
 
     result =
@@ -138,7 +155,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def complete_activity_task!(task, result, lease_token) do
+  def complete_activity_task!(%Instance{} = instance, task, result, lease_token) do
+    with_repo(instance, fn -> complete_activity_task_with_repo!(task, result, lease_token) end)
+  end
+
+  defp complete_activity_task_with_repo!(task, result, lease_token) do
     event = %{
       type: :activity_completed,
       mfa: task.mfa,
@@ -155,7 +176,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     )
   end
 
-  def fail_activity_task!(task, error, lease_token) do
+  def fail_activity_task!(%Instance{} = instance, task, error, lease_token) do
+    with_repo(instance, fn -> fail_activity_task_with_repo!(task, error, lease_token) end)
+  end
+
+  defp fail_activity_task_with_repo!(task, error, lease_token) do
     event = %{
       type: :activity_failed,
       mfa: task.mfa,
@@ -173,7 +198,13 @@ defmodule Continuum.Runtime.Journal.Postgres do
     )
   end
 
-  def retry_activity_task!(task, error, retry_at, lease_token) do
+  def retry_activity_task!(%Instance{} = instance, task, error, retry_at, lease_token) do
+    with_repo(instance, fn ->
+      retry_activity_task_with_repo!(task, error, retry_at, lease_token)
+    end)
+  end
+
+  defp retry_activity_task_with_repo!(task, error, retry_at, lease_token) do
     result =
       repo().transaction(fn ->
         lock_and_validate_active_run!(task.run_id, lease_token)
@@ -208,7 +239,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def cancel_run!(run_id, lease_token) do
+  def cancel_run!(%Instance{} = instance, run_id, lease_token) do
+    with_repo(instance, fn -> cancel_run_with_instance!(run_id, lease_token, instance) end)
+  end
+
+  defp cancel_run_with_instance!(run_id, lease_token, instance) do
     result =
       repo().transaction(fn ->
         lock_and_validate_active_run!(run_id, lease_token)
@@ -246,7 +281,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case result do
       {:ok, :ok} ->
-        Continuum.Runtime.Engine.broadcast_run_finished(run_id, :failed, :cancelled)
+        Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :failed, :cancelled)
         :ok
 
       {:error, reason} ->
@@ -254,7 +289,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def schedule_timer!(run_id, event, timer, lease_token) do
+  def schedule_timer!(%Instance{} = instance, run_id, event, timer, lease_token) do
+    with_repo(instance, fn -> schedule_timer_with_repo!(run_id, event, timer, lease_token) end)
+  end
+
+  defp schedule_timer_with_repo!(run_id, event, timer, lease_token) do
     {event_type, payload} = encode_event(event)
 
     result =
@@ -303,7 +342,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def schedule_signal_await!(run_id, event, lease_token) do
+  def schedule_signal_await!(%Instance{} = instance, run_id, event, lease_token) do
+    with_repo(instance, fn -> schedule_signal_await_with_repo!(run_id, event, lease_token) end)
+  end
+
+  defp schedule_signal_await_with_repo!(run_id, event, lease_token) do
     {event_type, payload} = encode_event(event)
 
     result =
@@ -340,7 +383,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def resolve_signal_await(run_id, await_event, lease_token) do
+  def resolve_signal_await(%Instance{} = instance, run_id, await_event, lease_token) do
+    with_repo(instance, fn -> resolve_signal_await_with_repo(run_id, await_event, lease_token) end)
+  end
+
+  defp resolve_signal_await_with_repo(run_id, await_event, lease_token) do
     result =
       repo().transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
@@ -360,7 +407,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def deliver_signal!(run_id, name, payload) do
+  def deliver_signal!(%Instance{} = instance, run_id, name, payload) do
+    with_repo(instance, fn -> deliver_signal_with_repo!(run_id, name, payload) end)
+  end
+
+  defp deliver_signal_with_repo!(run_id, name, payload) do
     signal_name = Atom.to_string(name)
     now = DateTime.utc_now()
 
@@ -404,7 +455,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def consume_signal(run_id, name, lease_token) do
+  def consume_signal(%Instance{} = instance, run_id, name, lease_token) do
+    with_repo(instance, fn -> consume_signal_with_repo(run_id, name, lease_token) end)
+  end
+
+  defp consume_signal_with_repo(run_id, name, lease_token) do
     signal_name = Atom.to_string(name)
 
     result =
@@ -469,7 +524,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def fire_timer!(run_id, timer_id, lease_token) do
+  def fire_timer!(%Instance{} = instance, run_id, timer_id, lease_token) do
+    with_repo(instance, fn -> fire_timer_with_repo!(run_id, timer_id, lease_token) end)
+  end
+
+  defp fire_timer_with_repo!(run_id, timer_id, lease_token) do
     result =
       repo().transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
@@ -512,7 +571,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  def clear_next_wakeup!(run_id, lease_token) do
+  def clear_next_wakeup!(%Instance{} = instance, run_id, lease_token) do
+    with_repo(instance, fn -> clear_next_wakeup_with_repo!(run_id, lease_token) end)
+  end
+
+  defp clear_next_wakeup_with_repo!(run_id, lease_token) do
     cas_update_run(run_id, lease_token, %{next_wakeup_at: nil})
   end
 
@@ -824,36 +887,48 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   @impl true
-  def suspend!(run_id, lease_token) do
+  def suspend!(%Instance{} = instance, run_id, lease_token) do
+    with_repo(instance, fn -> suspend_with_repo!(run_id, lease_token) end)
+  end
+
+  defp suspend_with_repo!(run_id, lease_token) do
     cas_update_run(run_id, lease_token, %{state: "suspended"})
   end
 
   @impl true
-  def complete!(run_id, result, lease_token) do
-    :ok =
-      cas_update_run(run_id, lease_token, %{
-        state: "completed",
-        result: encode_term(result),
-        completed_at: DateTime.utc_now()
-      })
+  def complete!(%Instance{} = instance, run_id, result, lease_token) do
+    with_repo(instance, fn ->
+      :ok =
+        cas_update_run(run_id, lease_token, %{
+          state: "completed",
+          result: encode_term(result),
+          completed_at: DateTime.utc_now()
+        })
 
-    Continuum.Runtime.Engine.broadcast_run_finished(run_id, :completed, result)
+      Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
+    end)
   end
 
   @impl true
-  def fail!(run_id, error, lease_token) do
-    :ok =
-      cas_update_run(run_id, lease_token, %{
-        state: "failed",
-        error: encode_term(error),
-        completed_at: DateTime.utc_now()
-      })
+  def fail!(%Instance{} = instance, run_id, error, lease_token) do
+    with_repo(instance, fn ->
+      :ok =
+        cas_update_run(run_id, lease_token, %{
+          state: "failed",
+          error: encode_term(error),
+          completed_at: DateTime.utc_now()
+        })
 
-    broadcast_failed(run_id, error)
+      broadcast_failed(instance, run_id, error)
+    end)
   end
 
   @impl true
-  def get_run(run_id) do
+  def get_run(%Instance{} = instance, run_id) do
+    with_repo(instance, fn -> get_run_with_repo(run_id) end)
+  end
+
+  defp get_run_with_repo(run_id) do
     case repo().one(from(r in Run, where: r.id == ^run_id)) do
       nil -> nil
       run -> decode_run(run)
@@ -1002,13 +1077,28 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
   defp decode_term(other), do: other
 
-  defp broadcast_failed(_run_id, {_kind, _reason, stacktrace}) when is_list(stacktrace), do: :ok
+  defp broadcast_failed(_instance, _run_id, {_kind, _reason, stacktrace})
+       when is_list(stacktrace),
+       do: :ok
 
-  defp broadcast_failed(run_id, error) do
-    Continuum.Runtime.Engine.broadcast_run_finished(run_id, :failed, error)
+  defp broadcast_failed(instance, run_id, error) do
+    Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :failed, error)
+  end
+
+  defp with_repo(%Instance{} = instance, fun) do
+    previous = Process.get(:continuum_repo)
+    Process.put(:continuum_repo, instance.repo)
+
+    try do
+      fun.()
+    after
+      if is_nil(previous),
+        do: Process.delete(:continuum_repo),
+        else: Process.put(:continuum_repo, previous)
+    end
   end
 
   defp repo do
-    Application.fetch_env!(:continuum, :repo)
+    Process.get(:continuum_repo) || Application.fetch_env!(:continuum, :repo)
   end
 end

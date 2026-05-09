@@ -18,7 +18,7 @@ defmodule Continuum.Test do
   import Ecto.Query
   import ExUnit.Assertions
 
-  alias Continuum.Runtime.{Context, Engine, Journal}
+  alias Continuum.Runtime.{Context, Engine, Instance, Journal}
   alias Continuum.Schema.{Run, Timer}
 
   @type replay_result ::
@@ -58,7 +58,8 @@ defmodule Continuum.Test do
   @spec history(binary(), keyword()) :: [map()]
   def history(run_id, opts \\ []) do
     journal = Keyword.get(opts, :journal, Journal.InMemory)
-    journal.load(run_id)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    journal.load(instance, run_id)
   end
 
   @doc """
@@ -96,6 +97,7 @@ defmodule Continuum.Test do
   def replay(workflow_module, input, history, opts \\ []) do
     run_id = Keyword.get(opts, :run_id, "continuum-replay")
     journal = Keyword.get(opts, :journal, Journal.InMemory)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     ctx = %Context{
       run_id: run_id,
@@ -103,6 +105,7 @@ defmodule Continuum.Test do
       cursor: 0,
       workflow_module: workflow_module,
       lease_token: Keyword.get(opts, :lease_token),
+      instance: instance,
       journal: journal
     }
 
@@ -149,21 +152,23 @@ defmodule Continuum.Test do
   @spec inject_signal(binary(), atom(), term(), keyword()) :: :ok | {:error, term()}
   def inject_signal(run_id, name, payload, opts \\ []) do
     journal = Keyword.get(opts, :journal, Journal.InMemory)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     case journal do
       Journal.Postgres ->
-        :ok = Journal.Postgres.deliver_signal!(run_id, name, payload)
-        Engine.wake(run_id)
+        :ok = Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
+        Engine.wake(instance, run_id)
         :ok
 
       Journal.InMemory ->
         journal.append!(
+          instance,
           run_id,
           %{type: :signal_received, name: name, payload: payload, seq: nil},
           nil
         )
 
-        Engine.wake(run_id)
+        Engine.wake(instance, run_id)
         :ok
 
       other ->
@@ -177,10 +182,11 @@ defmodule Continuum.Test do
   @spec fire_timer(binary(), keyword()) :: :ok | {:error, term()}
   def fire_timer(run_id, opts \\ []) do
     journal = Keyword.get(opts, :journal, Journal.InMemory)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     case journal do
       Journal.Postgres -> fire_postgres_timer(run_id, opts)
-      _ -> fire_journal_timer(run_id, journal)
+      _ -> fire_journal_timer(instance, run_id, journal)
     end
   end
 
@@ -208,10 +214,11 @@ defmodule Continuum.Test do
            "replay consumed #{consumed} events but history has #{length(history)} events"
   end
 
-  defp fire_journal_timer(run_id, journal) do
-    with {:ok, timer_event} <- latest_pending_timer(journal.load(run_id)) do
+  defp fire_journal_timer(instance, run_id, journal) do
+    with {:ok, timer_event} <- latest_pending_timer(journal.load(instance, run_id)) do
       :ok =
         journal.append!(
+          instance,
           run_id,
           %{
             type: :timer_fired,
@@ -222,16 +229,17 @@ defmodule Continuum.Test do
           nil
         )
 
-      Engine.wake(run_id)
+      Engine.wake(instance, run_id)
       :ok
     end
   end
 
   defp fire_postgres_timer(run_id, opts) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     timer_id = Keyword.get(opts, :timer_id)
 
     timer =
-      repo().one(
+      instance.repo.one(
         from(t in Timer,
           where: t.run_id == ^run_id and t.fired == false,
           where: is_nil(^timer_id) or t.id == ^timer_id,
@@ -245,10 +253,11 @@ defmodule Continuum.Test do
         {:error, :no_pending_timer}
 
       %Timer{} = timer ->
-        lease_token = repo().one(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+        lease_token =
+          instance.repo.one(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
 
-        :ok = Journal.Postgres.fire_timer!(run_id, timer.id, lease_token)
-        Engine.wake(run_id)
+        :ok = Journal.Postgres.fire_timer!(instance, run_id, timer.id, lease_token)
+        Engine.wake(instance, run_id)
         :ok
     end
   end
@@ -268,9 +277,5 @@ defmodule Continuum.Test do
       nil -> {:error, :no_pending_timer}
       event -> {:ok, event}
     end
-  end
-
-  defp repo do
-    Application.fetch_env!(:continuum, :repo)
   end
 end

@@ -7,7 +7,8 @@ defmodule Continuum.Runtime.ActivityWorker.Supervisor do
 
   @doc false
   def start_link(opts \\ []) do
-    DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
+    instance = Continuum.Runtime.Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    DynamicSupervisor.start_link(__MODULE__, opts, name: instance.activity_supervisor)
   end
 
   @impl true

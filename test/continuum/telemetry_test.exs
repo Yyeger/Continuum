@@ -39,8 +39,12 @@ defmodule Continuum.TelemetryTest do
       {:ok, run_id} = Continuum.Test.start_synchronous(TelemetryFlow, %{value: 2})
 
       assert {:ok, %{state: :completed, result: {:ok, 3}}} = Continuum.await(run_id, 1_000)
-      assert_receive {:telemetry, [:continuum, :run, :started], %{}, %{run_id: ^run_id}}
-      assert_receive {:telemetry, [:continuum, :run, :completed], %{}, %{run_id: ^run_id}}
+
+      assert_receive {:telemetry, [:continuum, :run, :started], %{},
+                      %{instance: Continuum, run_id: ^run_id}}
+
+      assert_receive {:telemetry, [:continuum, :run, :completed], %{},
+                      %{instance: Continuum, run_id: ^run_id}}
     after
       :telemetry.detach(handler_id)
     end

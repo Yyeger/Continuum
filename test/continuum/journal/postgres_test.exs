@@ -15,9 +15,13 @@ defmodule Continuum.Journal.PostgresTest do
   describe "start_run/3 and get_run/1" do
     test "creates a run row and retrieves it" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{foo: :bar})
 
-      run = Postgres.get_run(run_id)
+      :ok =
+        Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{
+          foo: :bar
+        })
+
+      run = Postgres.get_run(Continuum.Runtime.Instance.default(), run_id)
       assert run.state == :running
       assert run.result == nil
       assert run.error == nil
@@ -25,19 +29,19 @@ defmodule Continuum.Journal.PostgresTest do
     end
 
     test "returns nil for unknown run_id" do
-      assert Postgres.get_run(generate_uuid()) == nil
+      assert Postgres.get_run(Continuum.Runtime.Instance.default(), generate_uuid()) == nil
     end
   end
 
   describe "append!/3 and load/1" do
     test "appends and loads side_effect events" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       event = %{type: :side_effect, kind: :now, payload: ~U[2026-01-01 00:00:00Z], seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
-      [loaded] = Postgres.load(run_id)
+      [loaded] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert loaded.type == :side_effect
       assert loaded.kind == :now
       assert loaded.payload == ~U[2026-01-01 00:00:00Z]
@@ -46,7 +50,7 @@ defmodule Continuum.Journal.PostgresTest do
 
     test "appends and loads activity_completed events" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       event = %{
         type: :activity_completed,
@@ -55,9 +59,9 @@ defmodule Continuum.Journal.PostgresTest do
         seq: 0
       }
 
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
-      [loaded] = Postgres.load(run_id)
+      [loaded] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert loaded.type == :activity_completed
       assert loaded.mfa == {MyApp.Worker, :run, [1, 2]}
       assert loaded.payload == {:ok, 42}
@@ -65,12 +69,12 @@ defmodule Continuum.Journal.PostgresTest do
 
     test "appends and loads signal_received events" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       event = %{type: :signal_received, name: :approved, payload: :go, seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
-      [loaded] = Postgres.load(run_id)
+      [loaded] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert loaded.type == :signal_received
       assert loaded.name == :approved
       assert loaded.payload == :go
@@ -78,53 +82,53 @@ defmodule Continuum.Journal.PostgresTest do
 
     test "appends and loads timer_fired events" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       event = %{type: :timer_fired, duration_ms: 5000, seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
-      [loaded] = Postgres.load(run_id)
+      [loaded] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert loaded.type == :timer_fired
       assert loaded.duration_ms == 5000
     end
 
     test "loads events in seq order" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       e0 = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
       e1 = %{type: :side_effect, kind: :uuid4, payload: "abc", seq: 1}
 
-      :ok = Postgres.append!(run_id, e0, nil)
-      :ok = Postgres.append!(run_id, e1, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, e0, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, e1, nil)
 
-      [l0, l1] = Postgres.load(run_id)
+      [l0, l1] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert l0.seq == 0
       assert l1.seq == 1
     end
 
     test "load returns empty list for unknown run" do
-      assert Postgres.load(generate_uuid()) == []
+      assert Postgres.load(Continuum.Runtime.Instance.default(), generate_uuid()) == []
     end
   end
 
   describe "complete!/3 and fail!/3" do
     test "marks a run as completed" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
-      :ok = Postgres.complete!(run_id, {:ok, 99}, nil)
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
+      :ok = Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, {:ok, 99}, nil)
 
-      run = Postgres.get_run(run_id)
+      run = Postgres.get_run(Continuum.Runtime.Instance.default(), run_id)
       assert run.state == :completed
       assert run.result == {:ok, 99}
     end
 
     test "marks a run as failed" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
-      :ok = Postgres.fail!(run_id, {:exit, :boom}, nil)
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
+      :ok = Postgres.fail!(Continuum.Runtime.Instance.default(), run_id, {:exit, :boom}, nil)
 
-      run = Postgres.get_run(run_id)
+      run = Postgres.get_run(Continuum.Runtime.Instance.default(), run_id)
       assert run.state == :failed
       assert run.error == {:exit, :boom}
     end
@@ -133,7 +137,7 @@ defmodule Continuum.Journal.PostgresTest do
   describe "CAS / lease token enforcement" do
     test "append! with matching lease_token succeeds" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       Repo.update_all(
         from(r in Continuum.Schema.Run, where: r.id == ^run_id),
@@ -141,13 +145,13 @@ defmodule Continuum.Journal.PostgresTest do
       )
 
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
-      :ok = Postgres.append!(run_id, event, 42)
-      assert length(Postgres.load(run_id)) == 1
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, 42)
+      assert length(Postgres.load(Continuum.Runtime.Instance.default(), run_id)) == 1
     end
 
     test "append! with mismatched lease_token raises" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       Repo.update_all(
         from(r in Continuum.Schema.Run, where: r.id == ^run_id),
@@ -157,13 +161,13 @@ defmodule Continuum.Journal.PostgresTest do
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
 
       assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
-        Postgres.append!(run_id, event, 99)
+        Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, 99)
       end
     end
 
     test "complete! with mismatched lease_token raises" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       Repo.update_all(
         from(r in Continuum.Schema.Run, where: r.id == ^run_id),
@@ -171,13 +175,13 @@ defmodule Continuum.Journal.PostgresTest do
       )
 
       assert_raise RuntimeError, ~r/CAS update failed/, fn ->
-        Postgres.complete!(run_id, {:ok, 1}, 99)
+        Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, {:ok, 1}, 99)
       end
     end
 
     test "complete! with nil lease_token raises for leased runs" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       Repo.update_all(
         from(r in Continuum.Schema.Run, where: r.id == ^run_id),
@@ -185,22 +189,22 @@ defmodule Continuum.Journal.PostgresTest do
       )
 
       assert_raise RuntimeError, ~r/CAS update failed/, fn ->
-        Postgres.complete!(run_id, {:ok, 1}, nil)
+        Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, {:ok, 1}, nil)
       end
     end
 
     test "append! with nil lease_token succeeds for unleased runs" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
-      assert length(Postgres.load(run_id)) == 1
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
+      assert length(Postgres.load(Continuum.Runtime.Instance.default(), run_id)) == 1
     end
 
     test "append! with nil lease_token raises for leased runs" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       Repo.update_all(
         from(r in Continuum.Schema.Run, where: r.id == ^run_id),
@@ -210,7 +214,7 @@ defmodule Continuum.Journal.PostgresTest do
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
 
       assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
-        Postgres.append!(run_id, event, nil)
+        Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
       end
     end
   end
@@ -218,10 +222,14 @@ defmodule Continuum.Journal.PostgresTest do
   describe "encoding fidelity" do
     test "stores opaque terms as bytea, not JSON wrappers" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{foo: :bar})
+
+      :ok =
+        Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{
+          foo: :bar
+        })
 
       event = %{type: :side_effect, kind: :user, payload: {:ok, 42}, seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
       raw_input = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.input))
       raw_payload = Repo.one!(from(e in Event, where: e.run_id == ^run_id, select: e.payload))
@@ -234,24 +242,24 @@ defmodule Continuum.Journal.PostgresTest do
 
     test "round-trips atom values through encode/decode" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       event = %{type: :side_effect, kind: :user, payload: :some_atom, seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
-      [loaded] = Postgres.load(run_id)
+      [loaded] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert loaded.payload == :some_atom
     end
 
     test "round-trips complex terms (tuples, maps, lists)" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
       complex = {:ok, %{id: 1, items: [1, 2, 3], nested: %{a: :b}}}
       event = %{type: :side_effect, kind: :user, payload: complex, seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
-      [loaded] = Postgres.load(run_id)
+      [loaded] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert loaded.payload == complex
     end
   end
@@ -274,12 +282,17 @@ defmodule Continuum.Journal.PostgresConcurrencyTest do
 
   test "implicit sequence numbers serialize concurrent appends" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+    :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
     1..20
     |> Task.async_stream(
       fn n ->
-        Postgres.append!(run_id, %{type: :side_effect, kind: :user, payload: n, seq: nil}, nil)
+        Postgres.append!(
+          Continuum.Runtime.Instance.default(),
+          run_id,
+          %{type: :side_effect, kind: :user, payload: n, seq: nil},
+          nil
+        )
       end,
       max_concurrency: 8,
       timeout: 5_000
@@ -287,8 +300,8 @@ defmodule Continuum.Journal.PostgresConcurrencyTest do
     |> Enum.each(fn result -> assert result == {:ok, :ok} end)
 
     seqs =
-      run_id
-      |> Postgres.load()
+      Continuum.Runtime.Instance.default()
+      |> Postgres.load(run_id)
       |> Enum.map(& &1.seq)
 
     assert seqs == Enum.to_list(0..19)

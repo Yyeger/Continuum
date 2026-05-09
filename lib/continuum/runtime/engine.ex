@@ -13,12 +13,13 @@ defmodule Continuum.Runtime.Engine do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.Context, Runtime.Lease, Telemetry}
+  alias Continuum.{Runtime.Context, Runtime.Instance, Runtime.Lease, Telemetry}
 
   defstruct [
     :run_id,
     :workflow_module,
     :input,
+    :instance,
     :journal,
     :lease_owner,
     :lease_token,
@@ -47,8 +48,11 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp start_child(workflow_module, input, run_id, opts) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    opts = Keyword.put(opts, :instance, instance)
+
     case DynamicSupervisor.start_child(
-           Continuum.Runtime.RunSupervisor,
+           instance.run_supervisor,
            {__MODULE__, {workflow_module, input, run_id, opts}}
          ) do
       {:ok, _pid} -> {:ok, run_id}
@@ -58,7 +62,11 @@ defmodule Continuum.Runtime.Engine do
 
   @doc false
   def start_link({workflow_module, input, run_id, opts}) do
-    GenServer.start_link(__MODULE__, {workflow_module, input, run_id, opts}, name: via(run_id))
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
+    GenServer.start_link(__MODULE__, {workflow_module, input, run_id, opts},
+      name: via(instance, run_id)
+    )
   end
 
   @doc false
@@ -74,9 +82,11 @@ defmodule Continuum.Runtime.Engine do
   @doc """
   Cancel a running workflow.
   """
-  def cancel(run_id, _opts \\ []) do
-    case GenServer.whereis(via(run_id)) do
-      nil -> {:error, :not_found}
+  def cancel(run_id, opts \\ []) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
+    case GenServer.whereis(via(instance, run_id)) do
+      nil -> durable_cancel(instance, run_id, opts)
       pid -> GenServer.call(pid, :cancel)
     end
   end
@@ -92,32 +102,33 @@ defmodule Continuum.Runtime.Engine do
   def await(run_id, timeout, opts \\ []) do
     deadline = System.monotonic_time(:millisecond) + timeout
     journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.default())
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
-    case subscribe_run(run_id) do
+    case subscribe_run(instance, run_id) do
       :ok ->
         try do
-          case poll_once(run_id, journal) do
-            :pending -> await_run_finished(run_id, deadline, journal)
+          case poll_once(instance, run_id, journal) do
+            :pending -> await_run_finished(instance, run_id, deadline, journal)
             result -> result
           end
         after
-          unsubscribe_run(run_id)
+          unsubscribe_run(instance, run_id)
         end
 
       :error ->
-        poll_until(run_id, deadline, journal)
+        poll_until(instance, run_id, deadline, journal)
     end
   end
 
-  defp poll_until(run_id, deadline, journal) do
-    case poll_once(run_id, journal) do
-      :pending -> poll_pending(run_id, deadline, journal)
+  defp poll_until(instance, run_id, deadline, journal) do
+    case poll_once(instance, run_id, journal) do
+      :pending -> poll_pending(instance, run_id, deadline, journal)
       result -> result
     end
   end
 
-  defp poll_once(run_id, journal) do
-    case journal.get_run(run_id) do
+  defp poll_once(instance, run_id, journal) do
+    case journal.get_run(instance, run_id) do
       nil ->
         {:error, :not_found}
 
@@ -138,7 +149,7 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
-  defp await_run_finished(run_id, deadline, journal) do
+  defp await_run_finished(instance, run_id, deadline, journal) do
     timeout = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
@@ -146,16 +157,16 @@ defmodule Continuum.Runtime.Engine do
         await_result(run_id, state, payload)
     after
       timeout ->
-        poll_until(run_id, deadline, journal)
+        poll_until(instance, run_id, deadline, journal)
     end
   end
 
-  defp poll_pending(run_id, deadline, journal) do
+  defp poll_pending(instance, run_id, deadline, journal) do
     if System.monotonic_time(:millisecond) >= deadline do
       {:error, :timeout}
     else
       Process.sleep(5)
-      poll_until(run_id, deadline, journal)
+      poll_until(instance, run_id, deadline, journal)
     end
   end
 
@@ -173,24 +184,24 @@ defmodule Continuum.Runtime.Engine do
 
   defp run_topic(run_id), do: "continuum:run:#{run_id}"
 
-  defp subscribe_run(run_id) do
-    if Process.whereis(Continuum.PubSub) do
-      Phoenix.PubSub.subscribe(Continuum.PubSub, run_topic(run_id))
+  defp subscribe_run(instance, run_id) do
+    if Process.whereis(instance.pubsub) do
+      Phoenix.PubSub.subscribe(instance.pubsub, run_topic(run_id))
     else
       :error
     end
   end
 
-  defp unsubscribe_run(run_id) do
-    if Process.whereis(Continuum.PubSub) do
-      Phoenix.PubSub.unsubscribe(Continuum.PubSub, run_topic(run_id))
+  defp unsubscribe_run(instance, run_id) do
+    if Process.whereis(instance.pubsub) do
+      Phoenix.PubSub.unsubscribe(instance.pubsub, run_topic(run_id))
     end
   end
 
-  def broadcast_run_finished(run_id, state, payload) do
-    if Process.whereis(Continuum.PubSub) do
+  def broadcast_run_finished(instance, run_id, state, payload) do
+    if Process.whereis(instance.pubsub) do
       Phoenix.PubSub.broadcast(
-        Continuum.PubSub,
+        instance.pubsub,
         run_topic(run_id),
         {:run_finished, run_id, state, payload}
       )
@@ -200,14 +211,16 @@ defmodule Continuum.Runtime.Engine do
   end
 
   @doc false
-  def wake(run_id) do
-    case GenServer.whereis(via(run_id)) do
+  def wake(run_id), do: wake(Instance.default(), run_id)
+
+  def wake(instance, run_id) do
+    case GenServer.whereis(via(instance, run_id)) do
       nil -> {:error, :not_found}
       pid -> GenServer.cast(pid, :wake)
     end
   end
 
-  defp via(run_id), do: {:via, Registry, {Continuum.Runtime.Registry, run_id}}
+  defp via(instance, run_id), do: {:via, Registry, {instance.registry, run_id}}
 
   # ---------------------------------------------------------------------------
   # GenServer callbacks
@@ -216,17 +229,19 @@ defmodule Continuum.Runtime.Engine do
   @impl true
   def init({workflow_module, input, run_id, opts}) do
     journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.InMemory)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     unless Keyword.get(opts, :resume, false) do
-      :ok = journal.start_run(run_id, workflow_module, input)
+      :ok = journal.start_run(instance, run_id, workflow_module, input)
     end
 
-    {lease_owner, lease_token} = acquire_lease(journal, run_id, opts)
+    {lease_owner, lease_token} = acquire_lease(instance, journal, run_id, opts)
 
     state = %__MODULE__{
       run_id: run_id,
       workflow_module: workflow_module,
       input: input,
+      instance: instance,
       journal: journal,
       lease_owner: lease_owner,
       lease_token: lease_token,
@@ -236,6 +251,7 @@ defmodule Continuum.Runtime.Engine do
     }
 
     Telemetry.execute([:continuum, :run, :started], %{}, %{
+      instance: instance.name,
       run_id: run_id,
       workflow: workflow_module,
       resumed?: Keyword.get(opts, :resume, false),
@@ -262,12 +278,13 @@ defmodule Continuum.Runtime.Engine do
     state = %{state | status: :cancelled, error: :cancelled}
 
     Telemetry.execute([:continuum, :run, :cancelled], %{}, %{
+      instance: state.instance.name,
       run_id: state.run_id,
       workflow: state.workflow_module,
       lease_token: state.lease_token
     })
 
-    :ok = broadcast_run_finished(state.run_id, :cancelled, :cancelled)
+    :ok = broadcast_run_finished(state.instance, state.run_id, :cancelled, :cancelled)
     untrack_lease(state)
     {:stop, :normal, :ok, state}
   end
@@ -288,7 +305,7 @@ defmodule Continuum.Runtime.Engine do
   # ---------------------------------------------------------------------------
 
   defp attempt_run(state) do
-    history = state.journal.load(state.run_id)
+    history = state.journal.load(state.instance, state.run_id)
 
     ctx = %Context{
       run_id: state.run_id,
@@ -296,6 +313,7 @@ defmodule Continuum.Runtime.Engine do
       cursor: 0,
       workflow_module: state.workflow_module,
       lease_token: state.lease_token,
+      instance: state.instance,
       journal: state.journal
     }
 
@@ -322,10 +340,11 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp complete_run(state, result) do
-    :ok = state.journal.complete!(state.run_id, result, state.lease_token)
-    :ok = broadcast_run_finished(state.run_id, :completed, result)
+    :ok = state.journal.complete!(state.instance, state.run_id, result, state.lease_token)
+    :ok = broadcast_run_finished(state.instance, state.run_id, :completed, result)
 
     Telemetry.execute([:continuum, :run, :completed], %{}, %{
+      instance: state.instance.name,
       run_id: state.run_id,
       workflow: state.workflow_module,
       lease_token: state.lease_token
@@ -339,9 +358,10 @@ defmodule Continuum.Runtime.Engine do
 
   defp suspend_run(state, reason) do
     Logger.debug("Workflow #{state.run_id} suspended: #{inspect(reason)}")
-    :ok = state.journal.suspend!(state.run_id, state.lease_token)
+    :ok = state.journal.suspend!(state.instance, state.run_id, state.lease_token)
 
     Telemetry.execute([:continuum, :run, :suspended], %{}, %{
+      instance: state.instance.name,
       run_id: state.run_id,
       workflow: state.workflow_module,
       reason: reason,
@@ -355,10 +375,11 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp fail_run(state, journal_error, state_error) do
-    :ok = state.journal.fail!(state.run_id, journal_error, state.lease_token)
-    :ok = broadcast_run_finished(state.run_id, :failed, state_error)
+    :ok = state.journal.fail!(state.instance, state.run_id, journal_error, state.lease_token)
+    :ok = broadcast_run_finished(state.instance, state.run_id, :failed, state_error)
 
     Telemetry.execute([:continuum, :run, :failed], %{}, %{
+      instance: state.instance.name,
       run_id: state.run_id,
       workflow: state.workflow_module,
       error: state_error,
@@ -372,11 +393,42 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp cancel_run(%{journal: Continuum.Runtime.Journal.Postgres} = state) do
-    Continuum.Runtime.Journal.Postgres.cancel_run!(state.run_id, state.lease_token)
+    Continuum.Runtime.Journal.Postgres.cancel_run!(
+      state.instance,
+      state.run_id,
+      state.lease_token
+    )
   end
 
   defp cancel_run(state) do
-    state.journal.fail!(state.run_id, :cancelled, state.lease_token)
+    state.journal.fail!(state.instance, state.run_id, :cancelled, state.lease_token)
+  end
+
+  defp durable_cancel(%Instance{repo: nil}, _run_id, _opts), do: {:error, :not_found}
+
+  defp durable_cancel(instance, run_id, opts) do
+    journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.default())
+
+    case journal do
+      Continuum.Runtime.Journal.Postgres ->
+        with {:ok, lease} <-
+               Lease.acquire(run_id,
+                 owner:
+                   Keyword.get_lazy(opts, :lease_owner, fn -> Lease.owner(instance.name) end),
+                 repo: instance.repo,
+                 ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
+               ) do
+          Continuum.Runtime.Journal.Postgres.cancel_run!(instance, run_id, lease.token)
+        else
+          {:error, :not_acquired} -> {:error, :not_found}
+          {:error, reason} -> {:error, reason}
+        end
+
+      _other ->
+        {:error, :not_found}
+    end
+  rescue
+    error -> {:error, error}
   end
 
   defp finalize(%{status: :suspended} = state), do: {:noreply, state}
@@ -391,35 +443,37 @@ defmodule Continuum.Runtime.Engine do
     {:stop, :normal, state}
   end
 
-  defp acquire_lease(Continuum.Runtime.Journal.Postgres, run_id, opts) do
+  defp acquire_lease(instance, Continuum.Runtime.Journal.Postgres, run_id, opts) do
     case {Keyword.get(opts, :lease_owner), Keyword.get(opts, :lease_token)} do
       {owner, token} when is_binary(owner) and is_integer(token) ->
-        track_lease(%Lease{run_id: run_id, owner: owner, token: token})
+        track_lease(instance, %Lease{run_id: run_id, owner: owner, token: token})
         {owner, token}
 
       _ ->
         lease =
           Lease.acquire!(run_id,
-            owner: Keyword.get_lazy(opts, :lease_owner, &Lease.owner/0),
+            owner: Keyword.get_lazy(opts, :lease_owner, fn -> Lease.owner(instance.name) end),
+            repo: instance.repo,
             ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
           )
 
-        track_lease(lease)
+        track_lease(instance, lease)
         {lease.owner, lease.token}
     end
   end
 
-  defp acquire_lease(_journal, _run_id, _opts), do: {nil, nil}
+  defp acquire_lease(_instance, _journal, _run_id, _opts), do: {nil, nil}
 
-  defp track_lease(%Lease{} = lease) do
-    if Process.whereis(Continuum.Runtime.Lease.Heartbeater) do
-      Continuum.Runtime.Lease.Heartbeater.track(lease, self())
+  defp track_lease(instance, %Lease{} = lease) do
+    if Process.whereis(instance.heartbeater) do
+      Continuum.Runtime.Lease.Heartbeater.track(instance, lease, self())
     end
   end
 
-  defp untrack_lease(%{run_id: run_id, lease_token: token}) when is_integer(token) do
-    if Process.whereis(Continuum.Runtime.Lease.Heartbeater) do
-      Continuum.Runtime.Lease.Heartbeater.untrack(run_id)
+  defp untrack_lease(%{instance: instance, run_id: run_id, lease_token: token})
+       when is_integer(token) do
+    if Process.whereis(instance.heartbeater) do
+      Continuum.Runtime.Lease.Heartbeater.untrack(instance, run_id)
     end
   end
 
@@ -429,6 +483,7 @@ defmodule Continuum.Runtime.Engine do
     Logger.warning("Workflow #{state.run_id} lost its Postgres lease; stopping stale engine")
 
     Telemetry.execute([:continuum, :run, :lease_lost], %{}, %{
+      instance: state.instance.name,
       run_id: state.run_id,
       workflow: state.workflow_module,
       lease_token: state.lease_token

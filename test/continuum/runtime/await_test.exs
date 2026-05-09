@@ -18,12 +18,12 @@ defmodule Continuum.Runtime.AwaitTest do
 
   test "await/3 wakes from an in-memory run_finished broadcast" do
     run_id = Ecto.UUID.generate()
-    :ok = InMemory.start_run(run_id, SomeWorkflow, %{})
+    :ok = InMemory.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
 
     waiter = Task.async(fn -> Continuum.await(run_id, 1_000, journal: InMemory) end)
     assert Task.yield(waiter, 25) == nil
 
-    :ok = InMemory.complete!(run_id, {:ok, 123}, nil)
+    :ok = InMemory.complete!(Continuum.Runtime.Instance.default(), run_id, {:ok, 123}, nil)
 
     assert {:ok, {:ok, %{run_id: ^run_id, state: :completed, result: {:ok, 123}}}} =
              Task.yield(waiter, 250)
@@ -31,14 +31,14 @@ defmodule Continuum.Runtime.AwaitTest do
 
   test "await/3 wakes from Postgres cancel_run!/2 broadcast" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.start_run(run_id, SomeWorkflow, %{})
+    :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
     assert {:ok, %Lease{token: token}} = Lease.acquire(run_id, owner: "await-test")
 
     waiter = Task.async(fn -> Continuum.await(run_id, 1_000, journal: Postgres) end)
     assert Task.yield(waiter, 25) == nil
 
     :ok = Phoenix.PubSub.subscribe(Continuum.PubSub, "continuum:run:#{run_id}")
-    :ok = Postgres.cancel_run!(run_id, token)
+    :ok = Postgres.cancel_run!(Continuum.Runtime.Instance.default(), run_id, token)
     assert_receive {:run_finished, ^run_id, :failed, :cancelled}, 250
 
     assert {:ok, {:error, %{run_id: ^run_id, state: :failed, error: :cancelled}}} =

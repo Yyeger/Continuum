@@ -112,7 +112,7 @@ defmodule Continuum.Runtime.Effect do
     new_history = ctx.history ++ [event]
     new_ctx = %{ctx | history: new_history, cursor: ctx.cursor + 1}
     Context.put(new_ctx)
-    apply(ctx.journal, :append!, [ctx.run_id, event, ctx.lease_token])
+    apply(ctx.journal, :append!, [ctx.instance, ctx.run_id, event, ctx.lease_token])
   end
 
   defp live_tail!(
@@ -145,6 +145,7 @@ defmodule Continuum.Runtime.Effect do
 
     :ok =
       Continuum.Runtime.Journal.Postgres.schedule_activity!(
+        ctx.instance,
         ctx.run_id,
         event,
         task,
@@ -187,6 +188,7 @@ defmodule Continuum.Runtime.Effect do
 
     :ok =
       Continuum.Runtime.Journal.Postgres.schedule_timer!(
+        ctx.instance,
         ctx.run_id,
         event,
         timer,
@@ -220,7 +222,7 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     }
 
-    :ok = apply(ctx.journal, :append!, [ctx.run_id, event, ctx.lease_token])
+    :ok = apply(ctx.journal, :append!, [ctx.instance, ctx.run_id, event, ctx.lease_token])
 
     Telemetry.execute([:continuum, :timer, :scheduled], %{duration_ms: ms}, %{
       run_id: ctx.run_id,
@@ -250,6 +252,7 @@ defmodule Continuum.Runtime.Effect do
 
     :ok =
       Continuum.Runtime.Journal.Postgres.schedule_signal_await!(
+        ctx.instance,
         ctx.run_id,
         event,
         ctx.lease_token
@@ -262,6 +265,7 @@ defmodule Continuum.Runtime.Effect do
     })
 
     case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
+           ctx.instance,
            ctx.run_id,
            event,
            ctx.lease_token
@@ -429,6 +433,7 @@ defmodule Continuum.Runtime.Effect do
 
       nil ->
         case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
+               ctx.instance,
                ctx.run_id,
                event,
                ctx.lease_token

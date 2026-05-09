@@ -11,7 +11,7 @@ defmodule Continuum.Runtime.Dispatcher do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.Engine, Runtime.Journal, Runtime.Lease, Telemetry}
+  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Runtime.Lease, Telemetry}
 
   @default_interval_ms 1_000
   @default_batch_size 10
@@ -19,7 +19,8 @@ defmodule Continuum.Runtime.Dispatcher do
 
   @doc false
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    GenServer.start_link(__MODULE__, opts, name: instance.dispatcher)
   end
 
   @doc """
@@ -27,14 +28,16 @@ defmodule Continuum.Runtime.Dispatcher do
   """
   @spec dispatch_once(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def dispatch_once(opts \\ []) do
-    owner = Keyword.get_lazy(opts, :owner, &Lease.owner/0)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    owner = Keyword.get_lazy(opts, :owner, fn -> Lease.owner(instance.name) end)
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
 
-    with {:ok, claimed} <- claim(owner, batch_size, ttl_seconds) do
-      Enum.each(claimed, &start_engine/1)
+    with {:ok, claimed} <- claim(instance, owner, batch_size, ttl_seconds) do
+      Enum.each(claimed, &start_engine(instance, &1))
 
       Telemetry.execute([:continuum, :dispatcher, :polled], %{count: length(claimed)}, %{
+        instance: instance.name,
         owner: owner,
         batch_size: batch_size
       })
@@ -45,11 +48,17 @@ defmodule Continuum.Runtime.Dispatcher do
 
   @impl true
   def init(opts) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     config = dispatcher_config()
 
     state = %{
+      instance: instance,
       enabled?:
-        Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, dispatcher_enabled?())),
+        Keyword.get(
+          opts,
+          :enabled?,
+          Keyword.get(config, :enabled?, dispatcher_enabled?(instance))
+        ),
       interval_ms:
         Keyword.get(opts, :interval_ms, Keyword.get(config, :interval_ms, @default_interval_ms)),
       batch_size:
@@ -64,7 +73,11 @@ defmodule Continuum.Runtime.Dispatcher do
 
   @impl true
   def handle_info(:poll, state) do
-    case dispatch_once(batch_size: state.batch_size, ttl_seconds: state.ttl_seconds) do
+    case dispatch_once(
+           instance: state.instance,
+           batch_size: state.batch_size,
+           ttl_seconds: state.ttl_seconds
+         ) do
       {:ok, _count} ->
         :ok
 
@@ -76,7 +89,7 @@ defmodule Continuum.Runtime.Dispatcher do
     {:noreply, state}
   end
 
-  defp claim(owner, batch_size, ttl_seconds) do
+  defp claim(instance, owner, batch_size, ttl_seconds) do
     sql = """
     WITH candidates AS (
       SELECT id
@@ -97,11 +110,12 @@ defmodule Continuum.Runtime.Dispatcher do
     RETURNING r.id::text, r.workflow, r.input, r.lease_token
     """
 
-    case repo().query(sql, [owner, batch_size, ttl_seconds]) do
+    case instance.repo.query(sql, [owner, batch_size, ttl_seconds]) do
       {:ok, %{rows: rows}} ->
         claimed = Enum.map(rows, &decode_claim(owner, &1))
 
         Telemetry.execute([:continuum, :dispatcher, :claimed], %{count: length(claimed)}, %{
+          instance: instance.name,
           owner: owner,
           batch_size: batch_size
         })
@@ -123,8 +137,9 @@ defmodule Continuum.Runtime.Dispatcher do
     }
   end
 
-  defp start_engine(claim) do
+  defp start_engine(instance, claim) do
     opts = [
+      instance: instance,
       journal: Journal.Postgres,
       lease_owner: claim.lease_owner,
       lease_token: claim.lease_token
@@ -151,17 +166,13 @@ defmodule Continuum.Runtime.Dispatcher do
     end
   end
 
-  defp dispatcher_enabled? do
-    Application.get_env(:continuum, :repo) != nil
+  defp dispatcher_enabled?(instance) do
+    instance.repo != nil
   end
 
   defp decode_term(nil), do: nil
   defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
   defp decode_term(other), do: other
-
-  defp repo do
-    Application.fetch_env!(:continuum, :repo)
-  end
 
   defp schedule_poll(interval_ms) do
     Process.send_after(self(), :poll, interval_ms)

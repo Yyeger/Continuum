@@ -80,8 +80,10 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp complete(task, result, started_at) do
-    :ok = Journal.Postgres.complete_activity_task!(task, result, task.run_lease_token)
-    Engine.wake(task.run_id)
+    :ok =
+      Journal.Postgres.complete_activity_task!(task.instance, task, result, task.run_lease_token)
+
+    Engine.wake(task.instance, task.run_id)
 
     Telemetry.execute(
       [:continuum, :activity, :completed],
@@ -100,7 +102,15 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
 
   defp retry(task, error, started_at) do
     retry_at = retry_at(task)
-    :ok = Journal.Postgres.retry_activity_task!(task, error, retry_at, task.run_lease_token)
+
+    :ok =
+      Journal.Postgres.retry_activity_task!(
+        task.instance,
+        task,
+        error,
+        retry_at,
+        task.run_lease_token
+      )
 
     Telemetry.execute(
       [:continuum, :activity, :retried],
@@ -118,8 +128,8 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp fail(task, error, started_at) do
-    :ok = Journal.Postgres.fail_activity_task!(task, error, task.run_lease_token)
-    Engine.wake(task.run_id)
+    :ok = Journal.Postgres.fail_activity_task!(task.instance, task, error, task.run_lease_token)
+    Engine.wake(task.instance, task.run_id)
 
     Telemetry.execute(
       [:continuum, :activity, :failed],

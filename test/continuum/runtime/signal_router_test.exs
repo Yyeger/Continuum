@@ -3,6 +3,7 @@ defmodule Continuum.Runtime.SignalRouterTest do
 
   alias Continuum.Runtime.Journal.Postgres
   alias Continuum.Runtime.TimerWheel
+  alias Continuum.Runtime.Instance
   alias Continuum.Schema.{Event, Run, Signal, Timer}
 
   setup do
@@ -13,7 +14,10 @@ defmodule Continuum.Runtime.SignalRouterTest do
       restore_env(:journal, previous_journal)
     end)
 
-    start_supervised!({Continuum.Runtime.SignalRouter, listen?: false})
+    unless Process.whereis(Instance.default().signal_router) do
+      start_supervised!({Continuum.Runtime.SignalRouter, listen?: false})
+    end
+
     :ok
   end
 
@@ -69,7 +73,7 @@ defmodule Continuum.Runtime.SignalRouterTest do
       event_types(run_id) == ["signal_awaited"]
     end)
 
-    :ok = Postgres.deliver_signal!(run_id, :decision, :go)
+    :ok = Postgres.deliver_signal!(Continuum.Runtime.Instance.default(), run_id, :decision, :go)
     assert {:error, :timeout} = Continuum.await(run_id, 25, journal: Postgres)
 
     send(

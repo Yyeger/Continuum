@@ -6,7 +6,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.ActivityWorker.Worker, Telemetry}
+  alias Continuum.{Runtime.ActivityWorker.Worker, Runtime.Instance, Telemetry}
 
   @default_interval_ms 1_000
   @default_batch_size 10
@@ -14,7 +14,8 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
   @doc false
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    GenServer.start_link(__MODULE__, opts, name: instance.activity_dispatcher)
   end
 
   @doc """
@@ -22,14 +23,16 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   """
   @spec dispatch_once(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def dispatch_once(opts \\ []) do
-    owner = Keyword.get_lazy(opts, :owner, &owner/0)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    owner = Keyword.get_lazy(opts, :owner, fn -> owner(instance) end)
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
 
-    with {:ok, tasks} <- claim(owner, batch_size, ttl_seconds) do
+    with {:ok, tasks} <- claim(instance, owner, batch_size, ttl_seconds) do
       Enum.each(tasks, &start_worker/1)
 
       Telemetry.execute([:continuum, :activity_dispatcher, :polled], %{count: length(tasks)}, %{
+        instance: instance.name,
         owner: owner,
         batch_size: batch_size
       })
@@ -40,10 +43,13 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
   @impl true
   def init(opts) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     config = worker_config()
 
     state = %{
-      enabled?: Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, worker_enabled?())),
+      instance: instance,
+      enabled?:
+        Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, worker_enabled?(instance))),
       interval_ms:
         Keyword.get(opts, :interval_ms, Keyword.get(config, :interval_ms, @default_interval_ms)),
       batch_size:
@@ -58,7 +64,11 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
   @impl true
   def handle_info(:poll, state) do
-    case dispatch_once(batch_size: state.batch_size, ttl_seconds: state.ttl_seconds) do
+    case dispatch_once(
+           instance: state.instance,
+           batch_size: state.batch_size,
+           ttl_seconds: state.ttl_seconds
+         ) do
       {:ok, _count} -> :ok
       {:error, reason} -> Logger.error("Activity dispatcher poll failed: #{inspect(reason)}")
     end
@@ -67,7 +77,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     {:noreply, state}
   end
 
-  defp claim(owner, batch_size, ttl_seconds) do
+  defp claim(instance, owner, batch_size, ttl_seconds) do
     sql = """
     WITH candidates AS (
       SELECT t.id, r.lease_token
@@ -93,14 +103,15 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
               candidates.lease_token
     """
 
-    case repo().query(sql, [owner, batch_size, ttl_seconds]) do
+    case instance.repo.query(sql, [owner, batch_size, ttl_seconds]) do
       {:ok, %{rows: rows}} ->
-        tasks = Enum.map(rows, &decode_claim/1)
+        tasks = Enum.map(rows, &decode_claim(instance, &1))
 
         Telemetry.execute(
           [:continuum, :activity_dispatcher, :claimed],
           %{count: length(tasks)},
           %{
+            instance: instance.name,
             owner: owner,
             batch_size: batch_size
           }
@@ -113,13 +124,22 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     end
   end
 
-  defp decode_claim([id, run_id, seq, encoded_task, attempt, lease_owner, run_lease_token]) do
+  defp decode_claim(instance, [
+         id,
+         run_id,
+         seq,
+         encoded_task,
+         attempt,
+         lease_owner,
+         run_lease_token
+       ]) do
     task =
       encoded_task
       |> decode_term()
       |> Map.merge(%{
         id: id,
         run_id: run_id,
+        instance: instance,
         seq: seq,
         attempt: attempt,
         lease_owner: lease_owner,
@@ -131,7 +151,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
   defp start_worker(task) do
     case DynamicSupervisor.start_child(
-           Continuum.Runtime.ActivityWorker.Supervisor,
+           task.instance.activity_supervisor,
            {Worker, task}
          ) do
       {:ok, _pid} ->
@@ -151,20 +171,16 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     end
   end
 
-  defp worker_enabled? do
-    Application.get_env(:continuum, :repo) != nil
+  defp worker_enabled?(instance) do
+    instance.repo != nil
   end
 
-  defp owner do
-    "#{node()}:#{inspect(self())}:activity"
+  defp owner(instance) do
+    "#{node()}/#{instance.name}/#{inspect(self())}:activity"
   end
 
   defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
   defp decode_term(other), do: other
-
-  defp repo do
-    Application.fetch_env!(:continuum, :repo)
-  end
 
   defp schedule_poll(interval_ms) do
     Process.send_after(self(), :poll, interval_ms)

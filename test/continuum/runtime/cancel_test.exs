@@ -76,6 +76,35 @@ defmodule Continuum.Runtime.CancelTest do
     assert event_types(run_id) == ["timer_started"]
   end
 
+  test "cancel can complete durable suspended run without a local engine" do
+    run_id = Ecto.UUID.generate()
+
+    :ok =
+      Postgres.start_run(
+        Continuum.Runtime.Instance.default(),
+        run_id,
+        TimerFlow,
+        %{ms: 60_000}
+      )
+
+    :ok = Postgres.suspend!(Continuum.Runtime.Instance.default(), run_id, nil)
+
+    assert Registry.lookup(Continuum.Runtime.Registry, run_id) == []
+    assert :ok = Continuum.cancel(run_id, journal: Postgres)
+
+    assert {:error, %{state: :failed, error: :cancelled}} =
+             Continuum.await(run_id, 25, journal: Postgres)
+
+    run = Repo.one!(from(r in Run, where: r.id == ^run_id))
+    assert run.state == "failed"
+    assert run.error == :erlang.term_to_binary(:cancelled)
+  end
+
+  test "cancel maps unknown durable run to not_found" do
+    assert {:error, :not_found} =
+             Continuum.cancel(Ecto.UUID.generate(), journal: Postgres)
+  end
+
   test "cancelled leased activity tasks cannot be retried back to available" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(ActivityFlow, %{value: 10}, journal: Postgres)
@@ -107,6 +136,7 @@ defmodule Continuum.Runtime.CancelTest do
 
     assert_raise RuntimeError, ~r/run_not_active/, fn ->
       Postgres.retry_activity_task!(
+        Continuum.Runtime.Instance.default(),
         claimed_task,
         :boom,
         DateTime.utc_now(),

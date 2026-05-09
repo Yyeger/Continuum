@@ -10,7 +10,7 @@ defmodule Continuum.Runtime.Recovery do
   use GenServer
   require Logger
 
-  alias Continuum.Telemetry
+  alias Continuum.{Runtime.Instance, Telemetry}
 
   @doc false
   def child_spec(opts) do
@@ -24,11 +24,16 @@ defmodule Continuum.Runtime.Recovery do
 
   @doc false
   def start_link(opts \\ []) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     config = recovery_config()
-    enabled? = Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, recovery_enabled?()))
+
+    enabled? =
+      Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, recovery_enabled?(instance)))
 
     if enabled? do
-      GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
+      GenServer.start_link(__MODULE__, Keyword.put(opts, :instance, instance),
+        name: Keyword.get(opts, :name, instance.recovery)
+      )
     else
       :ignore
     end
@@ -45,11 +50,14 @@ defmodule Continuum.Runtime.Recovery do
              timers: non_neg_integer()
            }}
           | {:error, term()}
-  def recover_once(_opts \\ []) do
-    with {:ok, runs} <- recover_runs(),
-         {:ok, activity_tasks} <- recover_activity_tasks(),
-         {:ok, timers} <- recover_due_timers() do
+  def recover_once(opts \\ []) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
+    with {:ok, runs} <- recover_runs(instance),
+         {:ok, activity_tasks} <- recover_activity_tasks(instance),
+         {:ok, timers} <- recover_due_timers(instance) do
       Telemetry.execute([:continuum, :recovery, :completed], %{}, %{
+        instance: instance.name,
         runs: runs,
         activity_tasks: activity_tasks,
         timers: timers
@@ -60,13 +68,14 @@ defmodule Continuum.Runtime.Recovery do
   end
 
   @impl true
-  def init(_opts) do
-    {:ok, %{}, {:continue, :recover}}
+  def init(opts) do
+    {:ok, %{instance: Instance.lookup(Keyword.get(opts, :instance, Continuum))},
+     {:continue, :recover}}
   end
 
   @impl true
   def handle_continue(:recover, state) do
-    case recover_once() do
+    case recover_once(instance: state.instance) do
       {:ok, counts} ->
         Logger.info("Continuum recovery completed: #{inspect(counts)}")
         {:stop, :normal, state}
@@ -77,8 +86,8 @@ defmodule Continuum.Runtime.Recovery do
     end
   end
 
-  defp recover_runs do
-    local_run_ids = local_run_ids()
+  defp recover_runs(instance) do
+    local_run_ids = local_run_ids(instance)
 
     {skip_local_sql, params} =
       case local_run_ids do
@@ -103,10 +112,10 @@ defmodule Continuum.Runtime.Recovery do
     RETURNING id
     """
 
-    query_count(sql, params)
+    query_count(instance, sql, params)
   end
 
-  defp recover_activity_tasks do
+  defp recover_activity_tasks(instance) do
     sql = """
     UPDATE continuum_activity_tasks
     SET state = 'available',
@@ -117,10 +126,10 @@ defmodule Continuum.Runtime.Recovery do
     RETURNING id
     """
 
-    query_count(sql, [])
+    query_count(instance, sql, [])
   end
 
-  defp recover_due_timers do
+  defp recover_due_timers(instance) do
     sql = """
     UPDATE continuum_runs AS r
     SET next_wakeup_at = now()
@@ -133,11 +142,11 @@ defmodule Continuum.Runtime.Recovery do
     RETURNING r.id
     """
 
-    query_count(sql, [])
+    query_count(instance, sql, [])
   end
 
-  defp query_count(sql, params) do
-    case repo().query(sql, params) do
+  defp query_count(instance, sql, params) do
+    case instance.repo.query(sql, params) do
       {:ok, %{num_rows: count}} -> {:ok, count}
       {:error, reason} -> {:error, reason}
     end
@@ -151,19 +160,15 @@ defmodule Continuum.Runtime.Recovery do
     end
   end
 
-  defp recovery_enabled? do
-    Application.get_env(:continuum, :repo) != nil
+  defp recovery_enabled?(instance) do
+    instance.repo != nil
   end
 
-  defp local_run_ids do
-    Registry.select(Continuum.Runtime.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+  defp local_run_ids(instance) do
+    Registry.select(instance.registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
   rescue
     _ -> []
   catch
     :exit, _ -> []
-  end
-
-  defp repo do
-    Application.fetch_env!(:continuum, :repo)
   end
 end

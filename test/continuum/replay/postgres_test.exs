@@ -49,7 +49,7 @@ defmodule Continuum.Replay.PostgresTest do
 
       {:ok, _} = Continuum.await(run_id, 1_000, journal: Postgres)
 
-      events = Postgres.load(run_id)
+      events = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
       assert length(events) == 2
       assert Enum.all?(events, &(&1.type == :side_effect))
     end
@@ -60,7 +60,7 @@ defmodule Continuum.Replay.PostgresTest do
 
       {:ok, _} = Continuum.await(run_id, 1_000, journal: Postgres)
 
-      events = Postgres.load(run_id)
+      events = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
 
       ctx = %Continuum.Runtime.Context{
         run_id: "pg-replay-test",
@@ -126,12 +126,12 @@ defmodule Continuum.Replay.PostgresTest do
 
     test "raises ReplayDriftError when journaled type doesn't match" do
       run_id = generate_uuid()
-      :ok = Postgres.start_run(run_id, DriftPgFlow, %{})
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, DriftPgFlow, %{})
 
       event = %{type: :signal_received, name: :foo, payload: :bar, seq: 0}
-      :ok = Postgres.append!(run_id, event, nil)
+      :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
 
-      events = Postgres.load(run_id)
+      events = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
 
       ctx = %Continuum.Runtime.Context{
         run_id: "pg-drift",

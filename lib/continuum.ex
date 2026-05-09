@@ -29,35 +29,67 @@ defmodule Continuum do
   @type input :: term()
 
   @doc """
-  Returns the Postgres runtime child specs for a host application's
-  supervision tree.
-
-  Place these children after your configured Ecto repo so pollers and
-  listeners cannot query before the repo is started:
+  Returns runtime child specs for a named, non-default Continuum instance.
 
       children =
         [
           MyApp.Repo,
-          {Phoenix.PubSub, name: MyApp.PubSub}
-        ] ++ Continuum.children()
+          Continuum.children(name: :billing_continuum, repo: MyApp.Repo)
+        ]
 
-  Child-specific options may be passed with `:recovery`, `:dispatcher`,
-  `:activity_dispatcher`, `:timer_wheel`, and `:signal_router`.
+  The default `Continuum` instance is owned by `Continuum.Application` and
+  `Continuum.children()` returns `[]` to avoid duplicate process names.
+
+  Child-specific options may be passed with `:heartbeater`, `:run_supervisor`,
+  `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
+  `:timer_wheel`, and `:signal_router`.
   Passing `false` for a child omits it from the returned list.
   """
   @spec children(keyword()) :: [Supervisor.child_spec()]
   def children(opts \\ []) do
-    [
-      child(Continuum.Runtime.Recovery, Keyword.get(opts, :recovery, [])),
-      child(Continuum.Runtime.Dispatcher, Keyword.get(opts, :dispatcher, [])),
-      child(
-        Continuum.Runtime.ActivityWorker.Dispatcher,
-        Keyword.get(opts, :activity_dispatcher, [])
-      ),
-      child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, [])),
-      child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []))
-    ]
-    |> Enum.reject(&is_nil/1)
+    name = Keyword.get(opts, :name, Continuum)
+
+    if name == Continuum do
+      []
+    else
+      instance =
+        Continuum.Runtime.Instance.new(name: name, repo: opts[:repo])
+        |> Continuum.Runtime.Instance.register()
+
+      [
+        Supervisor.child_spec({Phoenix.PubSub, name: instance.pubsub},
+          id: {Phoenix.PubSub, instance.name}
+        ),
+        Supervisor.child_spec({Registry, keys: :unique, name: instance.registry},
+          id: {Registry, instance.name}
+        ),
+        child(
+          Continuum.Runtime.Lease.Heartbeater,
+          Keyword.get(opts, :heartbeater, []),
+          instance
+        ),
+        child(
+          Continuum.Runtime.RunSupervisor,
+          Keyword.get(opts, :run_supervisor, []),
+          instance
+        ),
+        child(
+          Continuum.Runtime.ActivityWorker.Supervisor,
+          Keyword.get(opts, :activity_supervisor, []),
+          instance
+        ),
+        child(Continuum.Runtime.Recovery, Keyword.get(opts, :recovery, []), instance),
+        child(Continuum.Runtime.Dispatcher, Keyword.get(opts, :dispatcher, []), instance),
+        child(
+          Continuum.Runtime.ActivityWorker.Dispatcher,
+          Keyword.get(opts, :activity_dispatcher, []),
+          instance
+        ),
+        child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, []), instance),
+        child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance)
+      ]
+      |> Enum.reject(&is_nil/1)
+    end
   end
 
   @doc """
@@ -73,7 +105,16 @@ defmodule Continuum do
   """
   @spec signal(run_id(), atom(), term()) :: :ok | {:error, term()}
   def signal(run_id, name, payload) do
-    Continuum.Runtime.SignalRouter.deliver(run_id, name, payload)
+    signal(run_id, name, payload, [])
+  end
+
+  @doc """
+  Deliver a signal to a running workflow, selecting a Continuum instance with
+  `:instance`.
+  """
+  @spec signal(run_id(), atom(), term(), keyword()) :: :ok | {:error, term()}
+  def signal(run_id, name, payload, opts) do
+    Continuum.Runtime.SignalRouter.deliver(run_id, name, payload, opts)
   end
 
   @doc """
@@ -189,9 +230,13 @@ defmodule Continuum do
 
   # ---------------------------------------------------------------------------
 
-  defp child(_module, false), do: nil
-  defp child(module, true), do: module
-  defp child(module, opts), do: {module, opts}
+  defp child(_module, false, _instance), do: nil
+  defp child(module, true, instance), do: child(module, [], instance)
+
+  defp child(module, opts, instance) do
+    opts = opts |> List.wrap() |> Keyword.put(:instance, instance)
+    Supervisor.child_spec({module, opts}, id: {module, instance.name})
+  end
 
   @doc false
   def __generate_uuid4__ do

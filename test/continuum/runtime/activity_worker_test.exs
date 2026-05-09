@@ -157,7 +157,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert %DeclinedError{reason: :insufficient_funds, code: "card_declined"} = task_error
 
     [%{type: :activity_scheduled}, %{type: :activity_failed, error: event_error}] =
-      Postgres.load(run_id)
+      Postgres.load(Continuum.Runtime.Instance.default(), run_id)
 
     assert %DeclinedError{reason: :insufficient_funds, code: "card_declined"} = event_error
   end
@@ -191,7 +191,12 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
 
     assert_raise RuntimeError, ~r/activity_task_lease_mismatch/, fn ->
-      Postgres.complete_activity_task!(stale_task, {:ok, 10}, lease_token)
+      Postgres.complete_activity_task!(
+        Continuum.Runtime.Instance.default(),
+        stale_task,
+        {:ok, 10},
+        lease_token
+      )
     end
 
     assert ["activity_scheduled"] = event_types(run_id)
@@ -227,7 +232,12 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     current_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
 
     assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
-      Postgres.complete_activity_task!(claimed_task, {:ok, 10}, current_token + 1)
+      Postgres.complete_activity_task!(
+        Continuum.Runtime.Instance.default(),
+        claimed_task,
+        {:ok, 10},
+        current_token + 1
+      )
     end
 
     assert ["activity_scheduled"] = event_types(run_id)

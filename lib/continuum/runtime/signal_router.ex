@@ -10,27 +10,38 @@ defmodule Continuum.Runtime.SignalRouter do
 
   use GenServer
 
-  alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
+  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Telemetry}
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    GenServer.start_link(__MODULE__, opts, name: instance.signal_router)
   end
 
   @doc "Deliver a signal to a run."
   @spec deliver(binary(), atom(), term()) :: :ok | {:error, term()}
   def deliver(run_id, name, payload) do
+    deliver(run_id, name, payload, [])
+  end
+
+  @spec deliver(binary(), atom(), term(), keyword()) :: :ok | {:error, term()}
+  def deliver(run_id, name, payload, opts) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
     case Journal.default() do
-      Journal.Postgres -> deliver_durable(run_id, name, payload)
-      _journal -> deliver_local(run_id, name, payload)
+      Journal.Postgres -> deliver_durable(instance, run_id, name, payload)
+      _journal -> deliver_local(instance, run_id, name, payload)
     end
   end
 
   @impl true
   def init(opts) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     config = router_config()
 
     state = %{
-      listen?: Keyword.get(opts, :listen?, Keyword.get(config, :listen?, listen_enabled?())),
+      instance: instance,
+      listen?:
+        Keyword.get(opts, :listen?, Keyword.get(config, :listen?, listen_enabled?(instance))),
       notifier: nil,
       ref: nil
     }
@@ -40,25 +51,26 @@ defmodule Continuum.Runtime.SignalRouter do
 
   @impl true
   def handle_info({:notification, _pid, _ref, "continuum_signal", run_id}, state) do
-    route(run_id)
+    route(state.instance, run_id)
     {:noreply, state}
   end
 
   def handle_info({:notification, _pid, _ref, _channel, _payload}, state), do: {:noreply, state}
 
-  defp deliver_durable(run_id, name, payload) do
-    :ok = Journal.Postgres.deliver_signal!(run_id, name, payload)
-    route(run_id)
+  defp deliver_durable(instance, run_id, name, payload) do
+    :ok = Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
+    route(instance, run_id)
     :ok
   end
 
-  defp deliver_local(run_id, name, payload) do
-    case Registry.lookup(Continuum.Runtime.Registry, run_id) do
+  defp deliver_local(instance, run_id, name, payload) do
+    case Registry.lookup(instance.registry, run_id) do
       [{_pid, _value}] ->
-        append_in_memory_signal!(run_id, name, payload)
-        Engine.wake(run_id)
+        append_in_memory_signal!(instance, run_id, name, payload)
+        Engine.wake(instance, run_id)
 
         Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
+          instance: instance.name,
           run_id: run_id,
           signal_name: name,
           durable?: false
@@ -71,28 +83,27 @@ defmodule Continuum.Runtime.SignalRouter do
     end
   end
 
-  defp append_in_memory_signal!(run_id, name, payload) do
+  defp append_in_memory_signal!(instance, run_id, name, payload) do
     Journal.InMemory.append!(
+      instance,
       run_id,
       %{type: :signal_received, name: name, payload: payload, seq: nil},
       nil
     )
   end
 
-  defp route(run_id) do
-    Engine.wake(run_id)
+  defp route(instance, run_id) do
+    Engine.wake(instance, run_id)
     :ok
   end
 
   defp start_listener(%{listen?: false} = state), do: state
 
   defp start_listener(state) do
-    repo = Application.get_env(:continuum, :repo)
-
-    if repo == nil do
+    if state.instance.repo == nil do
       state
     else
-      config = repo.config()
+      config = state.instance.repo.config()
 
       case Postgrex.Notifications.start_link(config) do
         {:ok, notifier} ->
@@ -113,7 +124,7 @@ defmodule Continuum.Runtime.SignalRouter do
     end
   end
 
-  defp listen_enabled? do
-    Journal.default() == Journal.Postgres and Application.get_env(:continuum, :repo) != nil
+  defp listen_enabled?(instance) do
+    Journal.default() == Journal.Postgres and instance.repo != nil
   end
 end

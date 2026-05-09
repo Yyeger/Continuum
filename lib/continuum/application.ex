@@ -5,17 +5,41 @@ defmodule Continuum.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      {Phoenix.PubSub, name: Continuum.PubSub},
-      {Registry, keys: :unique, name: Continuum.Runtime.Registry},
-      Continuum.VersionRegistry,
-      Continuum.Runtime.Journal.InMemory,
-      Continuum.Runtime.Lease.Heartbeater,
-      Continuum.Runtime.RunSupervisor,
-      Continuum.Runtime.ActivityWorker.Supervisor
-    ]
+    instance =
+      Continuum.Runtime.Instance.new(
+        name: Continuum,
+        repo: Application.get_env(:continuum, :repo)
+      )
+      |> Continuum.Runtime.Instance.register()
+
+    children =
+      [
+        {Phoenix.PubSub, name: instance.pubsub},
+        {Registry, keys: :unique, name: instance.registry},
+        Continuum.VersionRegistry,
+        Continuum.Runtime.Journal.InMemory,
+        child(Continuum.Runtime.RunSupervisor, instance)
+      ] ++ postgres_children(instance)
 
     opts = [strategy: :one_for_one, name: Continuum.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp postgres_children(%{repo: nil}), do: []
+
+  defp postgres_children(instance) do
+    [
+      child(Continuum.Runtime.Lease.Heartbeater, instance),
+      child(Continuum.Runtime.ActivityWorker.Supervisor, instance),
+      child(Continuum.Runtime.Recovery, instance),
+      child(Continuum.Runtime.Dispatcher, instance),
+      child(Continuum.Runtime.ActivityWorker.Dispatcher, instance),
+      child(Continuum.Runtime.TimerWheel, instance),
+      child(Continuum.Runtime.SignalRouter, instance)
+    ]
+  end
+
+  defp child(module, instance) do
+    Supervisor.child_spec({module, instance: instance}, id: {module, instance.name})
   end
 end

@@ -10,14 +10,15 @@ defmodule Continuum.Runtime.TimerWheel do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
+  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Telemetry}
 
   @default_interval_ms 1_000
   @default_batch_size 50
 
   @doc false
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    GenServer.start_link(__MODULE__, opts, name: instance.timer_wheel)
   end
 
   @doc """
@@ -25,20 +26,24 @@ defmodule Continuum.Runtime.TimerWheel do
   """
   @spec fire_due_once(keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
   def fire_due_once(opts \\ []) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
 
-    with {:ok, timers} <- claim_due(batch_size) do
-      Enum.each(timers, &fire_timer/1)
+    with {:ok, timers} <- claim_due(instance, batch_size) do
+      Enum.each(timers, &fire_timer(instance, &1))
       {:ok, length(timers)}
     end
   end
 
   @impl true
   def init(opts) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     config = timer_config()
 
     state = %{
-      enabled?: Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, timer_enabled?())),
+      instance: instance,
+      enabled?:
+        Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, timer_enabled?(instance))),
       interval_ms:
         Keyword.get(opts, :interval_ms, Keyword.get(config, :interval_ms, @default_interval_ms)),
       batch_size:
@@ -51,7 +56,7 @@ defmodule Continuum.Runtime.TimerWheel do
 
   @impl true
   def handle_info(:poll, state) do
-    case fire_due_once(batch_size: state.batch_size) do
+    case fire_due_once(instance: state.instance, batch_size: state.batch_size) do
       {:ok, _count} -> :ok
       {:error, reason} -> Logger.error("TimerWheel poll failed: #{inspect(reason)}")
     end
@@ -60,7 +65,7 @@ defmodule Continuum.Runtime.TimerWheel do
     {:noreply, state}
   end
 
-  defp claim_due(batch_size) do
+  defp claim_due(instance, batch_size) do
     sql = """
     SELECT t.id::text, t.run_id::text, r.lease_token
     FROM continuum_timers AS t
@@ -75,7 +80,7 @@ defmodule Continuum.Runtime.TimerWheel do
     LIMIT $1
     """
 
-    case repo().query(sql, [batch_size]) do
+    case instance.repo.query(sql, [batch_size]) do
       {:ok, %{rows: rows}} ->
         {:ok,
          Enum.map(rows, fn [id, run_id, lease_token] ->
@@ -87,11 +92,12 @@ defmodule Continuum.Runtime.TimerWheel do
     end
   end
 
-  defp fire_timer(timer) do
-    :ok = Journal.Postgres.fire_timer!(timer.run_id, timer.id, timer.lease_token)
-    Engine.wake(timer.run_id)
+  defp fire_timer(instance, timer) do
+    :ok = Journal.Postgres.fire_timer!(instance, timer.run_id, timer.id, timer.lease_token)
+    Engine.wake(instance, timer.run_id)
 
     Telemetry.execute([:continuum, :timer, :fired], %{}, %{
+      instance: instance.name,
       run_id: timer.run_id,
       timer_id: timer.id
     })
@@ -105,12 +111,8 @@ defmodule Continuum.Runtime.TimerWheel do
     end
   end
 
-  defp timer_enabled? do
-    Application.get_env(:continuum, :repo) != nil
-  end
-
-  defp repo do
-    Application.fetch_env!(:continuum, :repo)
+  defp timer_enabled?(instance) do
+    instance.repo != nil
   end
 
   defp schedule_poll(interval_ms) do

@@ -31,7 +31,7 @@ defmodule Continuum.ReplayTest do
       {:ok, run_id} = Continuum.start(TwoStepFlow, %{seed: 5})
       {:ok, _} = Continuum.await(run_id, 1_000)
 
-      events = InMemory.load(run_id)
+      events = InMemory.load(Continuum.Runtime.Instance.default(), run_id)
       assert length(events) == 2
       assert Enum.all?(events, &(&1.type == :side_effect))
       assert Enum.all?(events, &(is_tuple(&1.command_id) and tuple_size(&1.command_id) >= 5))
@@ -222,7 +222,7 @@ defmodule Continuum.ReplayTest do
     test "raises ReplayDriftError when command identity changes but event shape still matches" do
       {:ok, run_id} = Continuum.start(CommandIdSourceFlow, %{})
       {:ok, _} = Continuum.await(run_id, 1_000)
-      events = InMemory.load(run_id)
+      events = InMemory.load(Continuum.Runtime.Instance.default(), run_id)
 
       ctx = %Continuum.Runtime.Context{
         run_id: "command-id-drift",
@@ -247,7 +247,7 @@ defmodule Continuum.ReplayTest do
     test "raises ReplayDriftError when builtin primitive command identity changes" do
       {:ok, run_id} = Continuum.start(BuiltinCommandSourceFlow, %{})
       {:ok, _} = Continuum.await(run_id, 1_000)
-      events = InMemory.load(run_id)
+      events = InMemory.load(Continuum.Runtime.Instance.default(), run_id)
 
       assert [%{type: :side_effect, kind: :now, command_id: command_id}] = events
 
