@@ -5,6 +5,16 @@ defmodule Continuum.Runtime.TimerWheelTest do
   alias Continuum.Runtime.TimerWheel
   alias Continuum.Schema.{Run, Timer}
 
+  setup do
+    TimerWheel.reset_cache()
+
+    on_exit(fn ->
+      TimerWheel.reset_cache()
+    end)
+
+    :ok
+  end
+
   defmodule TimerFlow do
     use Continuum.Workflow, version: 1
 
@@ -52,6 +62,50 @@ defmodule Continuum.Runtime.TimerWheelTest do
     assert {:error, :timeout} = Continuum.await(run_id, 25, journal: Postgres)
   end
 
+  test "TimerWheel fires a past-due timer loaded during cache hydrate" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(Timer, :count) == 1
+    end)
+
+    timer = Repo.one!(Timer)
+    force_due(timer.id)
+
+    pid = ensure_timer_wheel!()
+    send(pid, :refresh)
+
+    assert {:ok, %{state: :completed, result: {:ok, :fired}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Repo.one!(from(t in Timer, where: t.id == ^timer.id)).fired == true
+  end
+
+  test "TimerWheel notification caches a newly armed timer without waiting for refresh" do
+    pid = ensure_timer_wheel!()
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(Timer, :count) == 1
+    end)
+
+    timer = Repo.one!(Timer)
+    force_due(timer.id)
+
+    send(
+      pid,
+      {:notification, self(), make_ref(), "continuum_timer_armed", timer_payload(run_id, timer)}
+    )
+
+    assert {:ok, %{state: :completed, result: {:ok, :fired}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Repo.one!(from(t in Timer, where: t.id == ^timer.id)).fired == true
+  end
+
   test "timer fire rejects stale run authority before appending an event" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
@@ -86,6 +140,22 @@ defmodule Continuum.Runtime.TimerWheelTest do
       from(t in Timer, where: t.id == ^timer_id),
       set: [fires_at: due_at]
     )
+  end
+
+  defp timer_payload(run_id, %Timer{fires_at: fires_at}) do
+    "#{run_id}|#{DateTime.to_iso8601(fires_at)}"
+  end
+
+  defp ensure_timer_wheel! do
+    case Process.whereis(TimerWheel) do
+      nil ->
+        start_supervised!(
+          {TimerWheel, enabled?: true, listen?: false, refresh_ms: 30_000, window_ms: 60_000}
+        )
+
+      pid ->
+        pid
+    end
   end
 
   defp event_types(run_id) do

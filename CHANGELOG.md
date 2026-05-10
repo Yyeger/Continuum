@@ -19,6 +19,9 @@
 - Added a Postgres signal-await fast-path: when a signal is already pending in
   the durable mailbox, `await signal(...)` journals `signal_received` directly
   and skips `signal_awaited` plus timeout timer creation.
+- Reworked `Continuum.Runtime.TimerWheel` to use an ETS near-term timer cache,
+  30s refresh safety net, and Postgres `continuum_timer_armed` notifications
+  instead of a fixed 1s polling loop.
 
 ## v0.1 — "It survives a crash"
 

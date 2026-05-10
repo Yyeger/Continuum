@@ -371,6 +371,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
         with {:ok, _event} <- repo().insert(event_changeset),
              {:ok, _timer} <- repo().insert(timer_changeset),
+             :ok <- notify_timer_armed_with_repo(run_id, timer.fires_at),
              {1, _} <-
                repo().update_all(
                  leased_run_query(run_id, lease_token),
@@ -390,6 +391,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
       {:error, reason} ->
         raise "Continuum.Runtime.Journal.Postgres schedule_timer! failed: #{inspect(reason)}"
     end
+  end
+
+  @doc false
+  def notify_timer_armed!(%Instance{} = instance, run_id, fires_at) do
+    with_repo(instance, fn -> notify_timer_armed_with_repo(run_id, fires_at) end)
   end
 
   def schedule_signal_await!(%Instance{} = instance, run_id, event, lease_token) do
@@ -805,7 +811,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       })
 
     case repo().insert(changeset) do
-      {:ok, _timer} -> :ok
+      {:ok, _timer} -> notify_timer_armed_with_repo(run_id, fires_at)
       {:error, changeset} -> {:error, changeset}
     end
   end
@@ -823,6 +829,15 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp maybe_set_signal_timeout_wakeup(_run_id, _event, _lease_token), do: :ok
+
+  defp notify_timer_armed_with_repo(run_id, fires_at) do
+    payload = "#{run_id}|#{DateTime.to_iso8601(fires_at)}"
+
+    case repo().query("SELECT pg_notify('continuum_timer_armed', $1)", [payload]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp signal_await_winner(run_id, await_event) do
     winner_seq = await_event.seq + 1
