@@ -109,20 +109,54 @@ end
   helpers for integration tests, signal/timer injection, golden-history replay.
 - **24+ telemetry events** under the `[:continuum, …]` prefix.
 
+## Observer (v0.2, in progress)
+
+The optional `Continuum.Observer` LiveView UI lists runs, renders the journal
+event timeline per run, and exposes operator actions for cancelling a run and
+sending a signal. It is mounted from a host Phoenix router and ships no
+authentication of its own — wrap it in your existing admin pipeline.
+
+![Continuum Observer runs index](./dev/ui.png)
+
+```elixir
+import Continuum.Observer.Router
+
+scope "/admin" do
+  pipe_through [:browser, :authenticate_admin]
+
+  continuum_observer "/continuum", instance: :myapp_continuum
+end
+```
+
+To see the UI locally before it ships in v0.2, the repo bundles a
+self-contained demo:
+
+```bash
+docker compose up -d
+MIX_ENV=test iex -S mix run dev/observer_demo.exs
+# then open http://localhost:4000/continuum
+```
+
+The demo seeds three runs in different states and prints iex helpers for
+spawning more, sending signals, and cancelling. See
+[`guides/observer.md`](./guides/observer.md) for production mount
+instructions.
+
 ## What's deliberately out of v0.1
 
-LiveView observer, compensation/saga DSL, parent/child workflows,
-`continue_as_new`, search attributes, cluster distribution, real `patched?/1`,
-Oban adapter. Each is on the roadmap; see [`ROADMAP.md`](./ROADMAP.md) for the
-phased plan.
+Compensation/saga DSL, parent/child workflows, `continue_as_new`, search
+attributes, cluster distribution, real `patched?/1`, Oban adapter. Each is on
+the roadmap; see [`ROADMAP.md`](./ROADMAP.md) for the phased plan.
 
 ## Guides
 
-The ExDoc guides cover the v0.1 path:
+The ExDoc guides cover the v0.1 path plus v0.2 in progress:
 
 - *Your first workflow*
 - *Activities, retries, and idempotency*
 - *Determinism rules and replay drift*
+- *Observer* (v0.2 preview)
+- *Observability / OpenTelemetry bridge* (v0.2 preview)
 
 See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 for a Phoenix app exercising activity → signal/timeout → activity, with a

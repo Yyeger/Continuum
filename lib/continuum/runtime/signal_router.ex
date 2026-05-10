@@ -26,8 +26,9 @@ defmodule Continuum.Runtime.SignalRouter do
   @spec deliver(binary(), atom(), term(), keyword()) :: :ok | {:error, term()}
   def deliver(run_id, name, payload, opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    journal = Keyword.get(opts, :journal, Journal.default())
 
-    case Journal.default() do
+    case journal do
       Journal.Postgres -> deliver_durable(instance, run_id, name, payload)
       _journal -> deliver_local(instance, run_id, name, payload)
     end

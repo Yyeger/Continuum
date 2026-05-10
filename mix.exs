@@ -37,6 +37,11 @@ defmodule Continuum.MixProject do
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.2"},
       {:phoenix_pubsub, "~> 2.1"},
+      {:phoenix, "~> 1.7", only: [:dev, :test], optional: true},
+      {:phoenix_html, "~> 4.0", only: [:dev, :test], optional: true},
+      {:phoenix_live_view, "~> 1.0", only: [:dev, :test], optional: true},
+      {:plug_cowboy, "~> 2.7", only: [:dev, :test], optional: true},
+      {:lazy_html, ">= 0.1.0", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
@@ -59,6 +64,7 @@ defmodule Continuum.MixProject do
         "guides/activities-retries-idempotency.md",
         "guides/idempotency.md",
         "guides/observability.md",
+        "guides/observer.md",
         "guides/determinism-rules.md"
       ],
       groups_for_extras: [

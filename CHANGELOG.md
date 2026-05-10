@@ -25,6 +25,18 @@
 - Added `Continuum.OpenTelemetry.setup/1`, an optional bridge from Continuum
   telemetry events to run-attempt and activity-attempt spans. Continuum still
   compiles without OpenTelemetry packages; applications opt in explicitly.
+- Added the optional `Continuum.Observer` surface: Phoenix LiveView router and
+  view modules guarded behind runtime dependency checks, repo-backed run/event
+  query helpers, coarse `"continuum:runs"` PubSub updates, and operator actions
+  for cancelling runs and sending signals.
+- Added a self-contained Observer demo at `dev/observer_demo.exs`: boots a
+  Phoenix endpoint with the LiveView client wired up, seeds sample runs in
+  different states, and serves the Observer at `http://localhost:4000/continuum`
+  for visual / interactive verification.
+- Extended `Continuum.Observer.Router.continuum_observer/2` with an optional
+  `:layout` option that is forwarded to `Phoenix.LiveView.Router.live_session/3`,
+  so host apps (and the demo) can wrap the Observer in their own HTML chrome
+  without forking the LiveViews.
 
 ## v0.1 — "It survives a crash"
 

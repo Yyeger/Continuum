@@ -105,19 +105,51 @@ end
   辅助函数、信号/定时器注入，以及黄金历史重放。
 - 在 `[:continuum, …]` 前缀下提供 **24+ 个遥测事件**。
 
+## Observer（v0.2，开发中）
+
+可选的 `Continuum.Observer` LiveView 界面会列出所有运行、按运行渲染日志事件
+时间线，并提供取消运行、发送信号等运维操作。它由宿主 Phoenix 路由挂载，
+本身不附带任何鉴权 —— 请将其包裹在你已有的管理员管线中。
+
+![Continuum Observer 运行列表](./dev/ui.png)
+
+```elixir
+import Continuum.Observer.Router
+
+scope "/admin" do
+  pipe_through [:browser, :authenticate_admin]
+
+  continuum_observer "/continuum", instance: :myapp_continuum
+end
+```
+
+要在 v0.2 正式发布之前在本地预览界面，仓库内自带了一个独立的演示脚本：
+
+```bash
+docker compose up -d
+MIX_ENV=test iex -S mix run dev/observer_demo.exs
+# 然后在浏览器打开 http://localhost:4000/continuum
+```
+
+该演示会预先创建三个处于不同状态的运行，并打印 iex 帮助命令，便于继续创建
+新的运行、发送信号或取消运行。生产环境的挂载方式见
+[`guides/observer.md`](./guides/observer.md)。
+
 ## v0.1 故意不包含的内容
 
-LiveView 观察面板、补偿/Saga DSL、父子工作流、`continue_as_new`、搜索属性、
-集群分发、真正的 `patched?/1`、Oban 适配器。这些都在路线图中；分阶段计划见
+补偿/Saga DSL、父子工作流、`continue_as_new`、搜索属性、集群分发、
+真正的 `patched?/1`、Oban 适配器。这些都在路线图中；分阶段计划见
 [`ROADMAP.md`](./ROADMAP.md)。
 
 ## 指南
 
-ExDoc 中的指南覆盖 v0.1 的主线：
+ExDoc 中的指南覆盖 v0.1 主线，并包含 v0.2 开发中的内容：
 
 - *你的第一个工作流*
 - *活动、重试与幂等性*
 - *确定性规则与重放漂移*
+- *Observer*（v0.2 预览）
+- *可观测性 / OpenTelemetry 桥*（v0.2 预览）
 
 [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 是一个 Phoenix 示例应用，演示了 “活动 → 带超时的信号 → 活动” 的流程，并在

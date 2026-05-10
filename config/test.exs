@@ -21,4 +21,9 @@ config :continuum, Continuum.Test.Repo,
   log: false,
   priv: "priv/test_repo"
 
+config :continuum, Continuum.Test.ObserverEndpoint,
+  secret_key_base: String.duplicate("a", 64),
+  live_view: [signing_salt: "observer-test"],
+  server: false
+
 config :logger, level: :warning

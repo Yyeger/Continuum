@@ -208,6 +208,8 @@ defmodule Continuum.Runtime.Engine do
       )
     end
 
+    Continuum.Observer.broadcast_run_state_changed(instance, run_id, state)
+
     :ok
   end
 
@@ -262,6 +264,8 @@ defmodule Continuum.Runtime.Engine do
         lease_owner: lease_owner
       })
     )
+
+    Continuum.Observer.broadcast_run_state_changed(instance, run_id, :running)
 
     {:ok, state, {:continue, :run}}
   end
@@ -356,6 +360,7 @@ defmodule Continuum.Runtime.Engine do
     :ok = state.journal.suspend!(state.instance, state.run_id, state.lease_token)
 
     Telemetry.execute([:continuum, :run, :suspended], %{}, run_metadata(state, %{reason: reason}))
+    Continuum.Observer.broadcast_run_state_changed(state.instance, state.run_id, :suspended)
 
     %{state | status: :suspended}
   rescue
@@ -470,6 +475,7 @@ defmodule Continuum.Runtime.Engine do
     Logger.warning("Workflow #{state.run_id} lost its Postgres lease; stopping stale engine")
 
     Telemetry.execute([:continuum, :run, :lease_lost], %{}, run_metadata(state))
+    Continuum.Observer.broadcast_run_state_changed(state.instance, state.run_id, :lease_lost)
 
     %{state | status: :lease_lost}
   end
