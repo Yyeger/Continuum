@@ -43,6 +43,13 @@ defmodule Continuum.Telemetry do
   pending in the durable mailbox, Continuum emits `[:continuum, :signal,
   :received]` without a preceding `[:continuum, :signal, :awaited]`; there was
   no suspended await period to bracket.
+
+  ## OpenTelemetry bridge
+
+  `Continuum.OpenTelemetry.setup/1` can attach an optional bridge that turns
+  the run and activity lifecycle events above into OpenTelemetry spans. The
+  bridge is opt-in and uses runtime checks, so Continuum compiles and runs
+  without OpenTelemetry packages installed.
   """
 
   @events [

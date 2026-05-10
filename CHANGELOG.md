@@ -22,6 +22,9 @@
 - Reworked `Continuum.Runtime.TimerWheel` to use an ETS near-term timer cache,
   30s refresh safety net, and Postgres `continuum_timer_armed` notifications
   instead of a fixed 1s polling loop.
+- Added `Continuum.OpenTelemetry.setup/1`, an optional bridge from Continuum
+  telemetry events to run-attempt and activity-attempt spans. Continuum still
+  compiles without OpenTelemetry packages; applications opt in explicitly.
 
 ## v0.1 — "It survives a crash"
 
