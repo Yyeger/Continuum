@@ -63,6 +63,7 @@ defmodule Continuum.MixProject do
         "guides/your-first-workflow.md",
         "guides/activities-retries-idempotency.md",
         "guides/idempotency.md",
+        "guides/multi-instance.md",
         "guides/observability.md",
         "guides/observer.md",
         "guides/snapshots.md",

@@ -154,9 +154,16 @@ The ExDoc guides cover the v0.1 path plus v0.2 in progress:
 
 - *Your first workflow*
 - *Activities, retries, and idempotency*
-- *Determinism rules and replay drift*
-- *Observer* (v0.2 preview)
-- *Observability / OpenTelemetry bridge* (v0.2 preview)
+- *Idempotency* (cross-run scope, residual crash window)
+- *Determinism rules and replay drift* (now covers helper-module warnings and
+  `trusted_modules`)
+- *Multi-instance Continuum* (named instances with `Continuum.children/1`)
+- *Observer* (v0.2)
+- *Observability / OpenTelemetry bridge* (v0.2)
+- *Experimental snapshots* (opt-in long-history compaction)
+
+Upgrading from v0.1? See
+[`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md).
 
 See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 for a Phoenix app exercising activity → signal/timeout → activity, with a

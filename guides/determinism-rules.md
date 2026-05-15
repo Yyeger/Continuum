@@ -33,6 +33,49 @@ Workflow code must not directly call non-deterministic APIs such as:
 `Continuum.AstCheck` scans workflow modules at compile time and rejects known
 unsafe calls with a remediation hint.
 
+## Helper Modules
+
+Workflow code often calls into helper modules for pure transformations. The
+scanner cannot follow into arbitrary helpers, so v0.2 emits a compile-time
+warning for every external module a workflow calls that is not known to be
+deterministic. A helper module is *trusted* when one of the following holds:
+
+* it is in the stdlib allowlist (`Enum`, `Map`, `String`, `Integer`,
+  `Decimal`-shaped collections — see `Continuum.AstCheck.trusted_stdlib/0`)
+* it exports `__continuum_pure__/0` because it does `use Continuum.Pure`
+* it is listed in `config :continuum, trusted_modules: [MyApp.PriceMath, ...]`
+
+```elixir
+# A helper module that should be safe to call from a workflow.
+defmodule MyApp.PriceMath do
+  use Continuum.Pure
+
+  def total(items), do: Enum.reduce(items, 0, &(&1.price + &2))
+end
+```
+
+`use Continuum.Pure` runs the same AST scan over every function in the helper
+module at its compile time. Non-deterministic calls become a compile error in
+the *helper*, not in the workflow.
+
+Unmarked helpers produce a warning by default. To turn the warning into a
+compile error:
+
+```elixir
+config :continuum, untrusted_call_severity: :error
+```
+
+Use `:trusted_modules` for third-party or externally audited modules that you
+cannot annotate with `use Continuum.Pure`:
+
+```elixir
+config :continuum, trusted_modules: [Decimal, Money]
+```
+
+The scanner cannot transitively follow into helper code — that would require a
+full compile-time call graph. The trust marker is the boundary; audit the
+inside of a trusted helper module the same way you audit workflow code.
+
 ## Replay Drift
 
 Replay drift means the workflow asks for a different effect than the next event
