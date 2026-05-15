@@ -163,6 +163,15 @@ defmodule Continuum.ReplayTest do
       end
     end
 
+    defmodule SnapshotPrefixFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(input) do
+        first = Continuum.side_effect(fn -> input.seed * 2 end)
+        Continuum.side_effect(fn -> first + 1 end)
+      end
+    end
+
     test "raises ReplayDriftError when journaled type doesn't match the requested effect" do
       # Forge a journal where the first event is a signal — but the workflow
       # asks for a side_effect. This simulates an incompatible code change.
@@ -268,6 +277,40 @@ defmodule Continuum.ReplayTest do
       try do
         assert_raise Continuum.ReplayDriftError, fn ->
           BuiltinCommandChangedFlow.run(%{})
+        end
+      after
+        Continuum.Runtime.Context.clear()
+      end
+    end
+
+    test "raises ReplayDriftError after a compacted snapshot prefix" do
+      {:ok, run_id} = Continuum.start(SnapshotPrefixFlow, %{seed: 5})
+      {:ok, _} = Continuum.await(run_id, 1_000)
+      [first_event, _second_event] = InMemory.load(Continuum.Runtime.Instance.default(), run_id)
+
+      {:ok, snapshot} =
+        Continuum.Snapshot.compact(
+          "snapshot-drift",
+          SnapshotPrefixFlow.__continuum_workflow__().version_hash,
+          [first_event]
+        )
+
+      ctx = %Continuum.Runtime.Context{
+        run_id: "snapshot-drift",
+        history: [%{type: :signal_received, name: :oops, payload: :bad, seq: 1}],
+        history_offset: 1,
+        snapshot_steps: snapshot.steps_by_seq,
+        cursor: 0,
+        workflow_module: SnapshotPrefixFlow,
+        lease_token: nil,
+        journal: InMemory
+      }
+
+      Continuum.Runtime.Context.put(ctx)
+
+      try do
+        assert_raise Continuum.ReplayDriftError, fn ->
+          SnapshotPrefixFlow.run(%{seed: 5})
         end
       after
         Continuum.Runtime.Context.clear()

@@ -36,6 +36,16 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   @impl true
+  def load_with_snapshot(%Instance{} = instance, run_id, _lease_token) do
+    GenServer.call(__MODULE__, {:load_with_snapshot, instance.name, run_id})
+  end
+
+  @impl true
+  def take_snapshot!(%Instance{} = instance, %Continuum.Snapshot{} = snapshot) do
+    GenServer.call(__MODULE__, {:take_snapshot, instance.name, snapshot})
+  end
+
+  @impl true
   def suspend!(%Instance{} = instance, run_id, _lease_token) do
     GenServer.call(__MODULE__, {:suspend, instance, run_id})
   end
@@ -74,8 +84,10 @@ defmodule Continuum.Runtime.Journal.InMemory do
     run = %{
       run_id: run_id,
       workflow: workflow,
+      version_hash: version_hash(workflow),
       input: input,
       events: [],
+      snapshots: [],
       state: :running,
       result: nil,
       error: nil
@@ -87,7 +99,9 @@ defmodule Continuum.Runtime.Journal.InMemory do
   def handle_call({:append, instance, run_id, event}, _from, state) do
     state =
       update_run(state, instance.name, run_id, fn run ->
-        Map.update!(run, :events, &(&1 ++ [event]))
+        Map.update!(run, :events, fn events ->
+          events ++ [normalize_event_seq(event, events)]
+        end)
       end)
 
     {:reply, :ok, state}
@@ -101,6 +115,21 @@ defmodule Continuum.Runtime.Journal.InMemory do
       end
 
     {:reply, events, state}
+  end
+
+  def handle_call({:load_with_snapshot, instance_name, run_id}, _from, state) do
+    {snapshot, events} =
+      case get_run_state(state, instance_name, run_id) do
+        %{events: events, snapshots: snapshots} ->
+          snapshot = latest_snapshot(snapshots)
+          events = events_after_snapshot(events, snapshot)
+          {snapshot, events}
+
+        _ ->
+          {nil, []}
+      end
+
+    {:reply, {snapshot, events}, state}
   end
 
   def handle_call({:suspend, instance, run_id}, _from, state) do
@@ -136,6 +165,22 @@ defmodule Continuum.Runtime.Journal.InMemory do
   def handle_call(:dump, _from, state), do: {:reply, state, state}
   def handle_call(:reset, _from, _state), do: {:reply, :ok, %{}}
 
+  def handle_call({:take_snapshot, instance_name, snapshot}, _from, state) do
+    state =
+      update_run(state, instance_name, snapshot.run_id, fn run ->
+        snapshots =
+          run
+          |> Map.get(:snapshots, [])
+          |> Enum.reject(&(&1.through_seq == snapshot.through_seq))
+          |> Kernel.++([snapshot])
+          |> Enum.sort_by(& &1.through_seq)
+
+        Map.put(run, :snapshots, snapshots)
+      end)
+
+    {:reply, :ok, state}
+  end
+
   def handle_call({:get_run, instance_name, run_id}, _from, state),
     do: {:reply, get_run_state(state, instance_name, run_id), state}
 
@@ -143,8 +188,10 @@ defmodule Continuum.Runtime.Journal.InMemory do
     %{
       run_id: run_id,
       workflow: nil,
+      version_hash: nil,
       input: nil,
       events: [],
+      snapshots: [],
       state: :running,
       result: nil,
       error: nil
@@ -173,5 +220,44 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   defp broadcast_failed(instance, run_id, error) do
     Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :failed, error)
+  end
+
+  defp version_hash(workflow) do
+    workflow.__continuum_workflow__().version_hash
+  rescue
+    UndefinedFunctionError -> <<0::256>>
+  end
+
+  defp latest_snapshot([]), do: nil
+
+  defp latest_snapshot(snapshots) do
+    snapshots
+    |> Enum.sort_by(& &1.through_seq)
+    |> List.last()
+  end
+
+  defp events_after_snapshot(events, nil), do: events
+
+  defp events_after_snapshot(events, snapshot) do
+    Enum.filter(events, &(event_seq(&1) > snapshot.through_seq))
+  end
+
+  defp event_seq(%{seq: nil}), do: -1
+  defp event_seq(%{seq: seq}), do: seq
+
+  defp normalize_event_seq(event, events) do
+    case Map.get(event, :seq) do
+      nil -> Map.put(event, :seq, next_seq(events))
+      _seq -> event
+    end
+  end
+
+  defp next_seq([]), do: 0
+
+  defp next_seq(events) do
+    events
+    |> Enum.map(&event_seq/1)
+    |> Enum.max(fn -> -1 end)
+    |> Kernel.+(1)
   end
 end

@@ -81,13 +81,26 @@ defmodule Continuum.Runtime.Effect do
     {ctx, command_id} = assign_command_id(ctx, command_base_fun.(ctx))
     Context.put(ctx)
 
-    case Enum.at(ctx.history, ctx.cursor) do
-      nil ->
-        live_tail!(ctx, effect, live_compute, command_id)
+    case snapshot_step(ctx, ctx.cursor) do
+      {:ok, step} ->
+        replay_snapshot_step!(ctx, step, effect, command_id)
 
-      event ->
-        # Replay: validate and return.
-        replay_event!(ctx, event, effect, command_id)
+      :none ->
+        case history_event(ctx, ctx.cursor) do
+          :compacted_gap ->
+            raise Continuum.ReplayDriftError,
+              run_id: ctx.run_id,
+              cursor: ctx.cursor,
+              expected: :snapshot_step,
+              actual: effect
+
+          nil ->
+            live_tail!(ctx, effect, live_compute, command_id)
+
+          event ->
+            # Replay: validate and return.
+            replay_event!(ctx, event, effect, command_id)
+        end
     end
   end
 
@@ -368,6 +381,19 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
+  defp replay_snapshot_step!(ctx, step, effect, command_id) do
+    if command_matches?(step, command_id) and snapshot_step_matches?(step, effect) do
+      Context.put(%{ctx | cursor: ctx.cursor + Map.fetch!(step, :advance_by)})
+      Map.get(step, :result)
+    else
+      raise Continuum.ReplayDriftError,
+        run_id: ctx.run_id,
+        cursor: ctx.cursor,
+        expected: step,
+        actual: effect
+    end
+  end
+
   defp encode_event({:side_effect, kind}, result, seq, command_id) do
     %{type: :side_effect, kind: kind, payload: result, command_id: command_id, seq: seq}
   end
@@ -406,7 +432,7 @@ defmodule Continuum.Runtime.Effect do
          command_id
        )
        when emod == lmod and efun == lfun do
-    case Enum.at(ctx.history, ctx.cursor + 1) do
+    case history_event(ctx, ctx.cursor + 1) do
       %{type: :activity_completed, mfa: {^emod, ^efun, _}, payload: payload} = event ->
         if command_matches?(event, command_id), do: {:ok, payload, 2}, else: :mismatch
 
@@ -447,7 +473,7 @@ defmodule Continuum.Runtime.Effect do
        ) do
     timeout_timer_id = Map.get(event, :timeout_timer_id)
 
-    case Enum.at(ctx.history, ctx.cursor + 1) do
+    case history_event(ctx, ctx.cursor + 1) do
       %{type: :signal_received, name: ^name, payload: payload} = event ->
         if command_matches?(event, command_id), do: {:ok, payload, 2}, else: :mismatch
 
@@ -483,7 +509,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp match_event(ctx, %{type: :timer_started, timer_id: timer_id}, {:timer, _ms}, command_id) do
-    case Enum.at(ctx.history, ctx.cursor + 1) do
+    case history_event(ctx, ctx.cursor + 1) do
       %{type: :timer_fired, timer_id: ^timer_id} = event ->
         if command_matches?(event, command_id), do: {:ok, :ok, 2}, else: :mismatch
 
@@ -543,6 +569,30 @@ defmodule Continuum.Runtime.Effect do
 
   defp effect_shape({:await_signal, name, _opts}), do: {:await_signal, name}
   defp effect_shape({:timer, _ms}), do: {:timer, :timer}
+
+  defp snapshot_step(ctx, cursor) do
+    case Map.get(ctx.snapshot_steps || %{}, cursor) do
+      nil -> :none
+      step -> {:ok, step}
+    end
+  end
+
+  defp snapshot_step_matches?(step, effect) do
+    {effect_type, shape} = effect_shape(effect)
+    Map.get(step, :effect_type) == effect_type and Map.get(step, :shape) == shape
+  end
+
+  defp history_event(ctx, cursor) do
+    offset = ctx.history_offset || 0
+
+    cond do
+      cursor < offset ->
+        :compacted_gap
+
+      true ->
+        Enum.at(ctx.history, cursor - offset)
+    end
+  end
 
   defp hash_term(term) do
     term

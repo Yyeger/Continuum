@@ -13,6 +13,7 @@ defmodule Continuum.Runtime.Instance do
     :activity_dispatcher,
     :timer_wheel,
     :signal_router,
+    :snapshotter,
     :recovery
   ]
 
@@ -60,6 +61,7 @@ defmodule Continuum.Runtime.Instance do
       activity_dispatcher: process_name(name, Continuum.Runtime.ActivityWorker.Dispatcher),
       timer_wheel: process_name(name, Continuum.Runtime.TimerWheel),
       signal_router: process_name(name, Continuum.Runtime.SignalRouter),
+      snapshotter: process_name(name, Continuum.Runtime.Snapshotter),
       recovery: process_name(name, Continuum.Runtime.Recovery)
     }
   end

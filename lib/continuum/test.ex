@@ -98,10 +98,13 @@ defmodule Continuum.Test do
     run_id = Keyword.get(opts, :run_id, "continuum-replay")
     journal = Keyword.get(opts, :journal, Journal.InMemory)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    snapshot = compatible_snapshot(Keyword.get(opts, :snapshot), workflow_module)
 
     ctx = %Context{
       run_id: run_id,
       history: history,
+      history_offset: history_offset(snapshot),
+      snapshot_steps: snapshot_steps(snapshot),
       cursor: 0,
       workflow_module: workflow_module,
       lease_token: Keyword.get(opts, :lease_token),
@@ -208,11 +211,34 @@ defmodule Continuum.Test do
   end
 
   defp assert_all_history_consumed!(history) do
-    consumed = Context.get().cursor
+    ctx = Context.get()
+    consumed = ctx.cursor
+    expected = (ctx.history_offset || 0) + length(history)
 
-    assert consumed == length(history),
-           "replay consumed #{consumed} events but history has #{length(history)} events"
+    assert consumed == expected,
+           "replay consumed #{consumed} events but history covers through cursor #{expected}"
   end
+
+  defp compatible_snapshot(nil, _workflow_module), do: nil
+
+  defp compatible_snapshot(
+         %Continuum.Snapshot{version_hash: version_hash} = snapshot,
+         workflow_module
+       ) do
+    if version_hash == workflow_version_hash(workflow_module), do: snapshot, else: nil
+  end
+
+  defp workflow_version_hash(workflow_module) do
+    workflow_module.__continuum_workflow__().version_hash
+  rescue
+    UndefinedFunctionError -> <<0::256>>
+  end
+
+  defp history_offset(nil), do: 0
+  defp history_offset(%Continuum.Snapshot{through_seq: through_seq}), do: through_seq + 1
+
+  defp snapshot_steps(nil), do: %{}
+  defp snapshot_steps(%Continuum.Snapshot{steps_by_seq: steps}), do: steps || %{}
 
   defp fire_journal_timer(instance, run_id, journal) do
     with {:ok, timer_event} <- latest_pending_timer(journal.load(instance, run_id)) do

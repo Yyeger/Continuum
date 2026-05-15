@@ -14,6 +14,8 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "create table(:continuum_activity_results"
       assert source =~ "PRIMARY KEY (activity_module, idempotency_key)"
       assert source =~ "add :trace_context, :bytea"
+      assert source =~ "create table(:continuum_snapshots"
+      assert source =~ "continuum_snapshots_latest_idx"
     end)
   end
 

@@ -65,6 +65,7 @@ defmodule Continuum.MixProject do
         "guides/idempotency.md",
         "guides/observability.md",
         "guides/observer.md",
+        "guides/snapshots.md",
         "guides/determinism-rules.md"
       ],
       groups_for_extras: [

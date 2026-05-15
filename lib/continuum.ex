@@ -42,7 +42,7 @@ defmodule Continuum do
 
   Child-specific options may be passed with `:heartbeater`, `:run_supervisor`,
   `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
-  `:timer_wheel`, and `:signal_router`.
+  `:timer_wheel`, `:signal_router`, and `:snapshotter`.
   Passing `false` for a child omits it from the returned list.
   """
   @spec children(keyword()) :: [Supervisor.child_spec()]
@@ -85,6 +85,7 @@ defmodule Continuum do
           Keyword.get(opts, :activity_dispatcher, []),
           instance
         ),
+        child(Continuum.Runtime.Snapshotter, Keyword.get(opts, :snapshotter, []), instance),
         child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, []), instance),
         child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance)
       ]

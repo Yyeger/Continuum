@@ -31,6 +31,17 @@ defmodule Continuum.Runtime.Journal do
 
   @callback load(instance :: Continuum.Runtime.Instance.t(), run_id :: binary()) :: [map()]
 
+  @callback load_with_snapshot(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              lease_token :: integer() | nil
+            ) :: {Continuum.Snapshot.t() | nil, [map()]}
+
+  @callback take_snapshot!(
+              instance :: Continuum.Runtime.Instance.t(),
+              snapshot :: Continuum.Snapshot.t()
+            ) :: :ok
+
   @callback suspend!(
               instance :: Continuum.Runtime.Instance.t(),
               run_id :: binary(),

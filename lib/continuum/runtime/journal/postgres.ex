@@ -16,8 +16,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   import Ecto.Query
 
-  alias Continuum.Runtime.Instance
-  alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Timer}
+  alias Continuum.Runtime.{Instance, Snapshotter}
+  alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Snapshot, Timer}
   alias Continuum.Telemetry
 
   @impl true
@@ -52,7 +52,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   @impl true
   def append!(%Instance{} = instance, run_id, event, lease_token) do
-    with_repo(instance, fn -> append_with_repo!(run_id, event, lease_token) end)
+    :ok = with_repo(instance, fn -> append_with_repo!(run_id, event, lease_token) end)
+    maybe_snapshot_after_event(instance, run_id, event, lease_token)
   end
 
   defp append_with_repo!(run_id, event, lease_token) do
@@ -104,6 +105,54 @@ defmodule Continuum.Runtime.Journal.Postgres do
       )
 
     Enum.map(events, &decode_event/1)
+  end
+
+  @impl true
+  def load_with_snapshot(%Instance{} = instance, run_id, lease_token) do
+    with_repo(instance, fn -> load_with_snapshot_with_repo(run_id, lease_token) end)
+  end
+
+  defp load_with_snapshot_with_repo(run_id, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+
+        snapshot = latest_snapshot(run_id)
+        through_seq = if snapshot, do: snapshot.through_seq, else: -1
+        {snapshot, load_events_after(run_id, through_seq)}
+      end)
+
+    case result do
+      {:ok, value} ->
+        value
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres load_with_snapshot failed: #{inspect(reason)}"
+    end
+  end
+
+  @impl true
+  def take_snapshot!(%Instance{} = instance, %Continuum.Snapshot{} = snapshot) do
+    with_repo(instance, fn -> take_snapshot_with_repo!(snapshot) end)
+  end
+
+  defp take_snapshot_with_repo!(%Continuum.Snapshot{} = snapshot) do
+    repo().insert_all(
+      Snapshot,
+      [
+        %{
+          run_id: snapshot.run_id,
+          through_seq: snapshot.through_seq,
+          version_hash: snapshot.version_hash,
+          payload: Continuum.Snapshot.encode(snapshot),
+          taken_at: snapshot.taken_at
+        }
+      ],
+      on_conflict: :nothing,
+      conflict_target: [:run_id, :through_seq]
+    )
+
+    :ok
   end
 
   def schedule_activity!(%Instance{} = instance, run_id, event, task, lease_token) do
@@ -209,6 +258,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case tx_result do
       {:ok, :ok} ->
+        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token)
         :ok
 
       {:error, reason} ->
@@ -440,14 +490,24 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   def resolve_signal_await(%Instance{} = instance, run_id, await_event, lease_token) do
-    with_repo(instance, fn -> resolve_signal_await_with_repo(run_id, await_event, lease_token) end)
+    value =
+      with_repo(instance, fn ->
+        resolve_signal_await_with_repo(run_id, await_event, lease_token)
+      end)
+
+    maybe_snapshot_after_signal_resolution(instance, run_id, value, lease_token)
+    value
   end
 
   @doc false
   def consume_pending_signal!(%Instance{} = instance, run_id, name, command_id, seq, lease_token) do
-    with_repo(instance, fn ->
-      consume_pending_signal_with_repo!(run_id, name, command_id, seq, lease_token)
-    end)
+    value =
+      with_repo(instance, fn ->
+        consume_pending_signal_with_repo!(run_id, name, command_id, seq, lease_token)
+      end)
+
+    maybe_snapshot_after_signal_resolution(instance, run_id, value, lease_token)
+    value
   end
 
   defp consume_pending_signal_with_repo!(run_id, name, command_id, seq, lease_token) do
@@ -539,7 +599,9 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   def consume_signal(%Instance{} = instance, run_id, name, lease_token) do
-    with_repo(instance, fn -> consume_signal_with_repo(run_id, name, lease_token) end)
+    value = with_repo(instance, fn -> consume_signal_with_repo(run_id, name, lease_token) end)
+    maybe_snapshot_after_signal_resolution(instance, run_id, value, lease_token)
+    value
   end
 
   defp consume_signal_with_repo(run_id, name, lease_token) do
@@ -608,7 +670,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   def fire_timer!(%Instance{} = instance, run_id, timer_id, lease_token) do
-    with_repo(instance, fn -> fire_timer_with_repo!(run_id, timer_id, lease_token) end)
+    :ok = with_repo(instance, fn -> fire_timer_with_repo!(run_id, timer_id, lease_token) end)
+    Snapshotter.maybe_snapshot(instance, run_id, lease_token)
   end
 
   defp fire_timer_with_repo!(run_id, timer_id, lease_token) do
@@ -686,6 +749,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case result do
       {:ok, :ok} ->
+        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token)
         :ok
 
       {:error, reason} ->
@@ -1004,6 +1068,30 @@ defmodule Continuum.Runtime.Journal.Postgres do
     |> Enum.map(&decode_event/1)
   end
 
+  defp load_events_after(run_id, through_seq) do
+    repo().all(
+      from(e in Event,
+        where: e.run_id == ^run_id and e.seq > ^through_seq,
+        order_by: [asc: e.seq]
+      )
+    )
+    |> Enum.map(&decode_event/1)
+  end
+
+  defp latest_snapshot(run_id) do
+    repo().one(
+      from(s in Snapshot,
+        where: s.run_id == ^run_id,
+        order_by: [desc: s.through_seq],
+        limit: 1
+      )
+    )
+    |> case do
+      nil -> nil
+      snapshot -> decode_snapshot(snapshot)
+    end
+  end
+
   defp insert_event!(run_id, event) do
     {event_type, payload} = encode_event(event)
 
@@ -1021,6 +1109,24 @@ defmodule Continuum.Runtime.Journal.Postgres do
       {:ok, event_record} -> decode_event(event_record)
       {:error, changeset} -> repo().rollback({:event_insert_failed, changeset})
     end
+  end
+
+  defp maybe_snapshot_after_event(instance, run_id, event, lease_token) do
+    if advancing_event?(Map.get(event, :type)) do
+      Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+    else
+      :ok
+    end
+  end
+
+  defp maybe_snapshot_after_signal_resolution(_instance, _run_id, :none, _lease_token), do: :ok
+
+  defp maybe_snapshot_after_signal_resolution(instance, run_id, _value, lease_token) do
+    Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+  end
+
+  defp advancing_event?(type) do
+    type in [:side_effect, :activity_completed, :activity_failed, :signal_received, :timer_fired]
   end
 
   defp mark_timer_resolved(run_id, timer_id, lease_token) do
@@ -1058,6 +1164,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
           completed_at: DateTime.utc_now()
         })
 
+      Snapshotter.maybe_snapshot(instance, run_id, lease_token)
       Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
     end)
   end
@@ -1072,6 +1179,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
           completed_at: DateTime.utc_now()
         })
 
+      Snapshotter.maybe_snapshot(instance, run_id, lease_token)
       broadcast_failed(instance, run_id, error)
     end)
   end
@@ -1086,6 +1194,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
       nil -> nil
       run -> decode_run(run)
     end
+  end
+
+  defp decode_snapshot(%Snapshot{payload: payload}) do
+    Continuum.Snapshot.decode(payload)
   end
 
   defp cas_update_run(run_id, lease_token, updates) do
@@ -1220,6 +1332,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       result: decode_term(run.result),
       error: decode_term(run.error),
       input: decode_term(run.input),
+      version_hash: run.version_hash,
       trace_context: run.trace_context
     }
   end

@@ -52,6 +52,8 @@ defmodule Continuum.ReplayPropertyTest do
 
       assert Continuum.Test.assert_replays(SideEffectChainFlow, %{steps: steps}, history) ==
                expected
+
+      assert_snapshot_replays(SideEffectChainFlow, %{steps: steps}, history, expected)
     end
   end
 
@@ -79,6 +81,26 @@ defmodule Continuum.ReplayPropertyTest do
                end)
 
       assert Continuum.Test.assert_replays(MixedOperationFlow, %{ops: ops}, history) == expected
+      assert_snapshot_replays(MixedOperationFlow, %{ops: ops}, history, expected)
+    end
+  end
+
+  defp assert_snapshot_replays(_workflow, _input, [], _expected), do: :ok
+
+  defp assert_snapshot_replays(workflow, input, history, expected) do
+    version_hash = workflow.__continuum_workflow__().version_hash
+
+    thresholds =
+      [1, max(1, div(length(history), 2)), length(history)]
+      |> Enum.uniq()
+
+    for threshold <- thresholds do
+      prefix = Enum.take(history, threshold)
+      {:ok, snapshot} = Continuum.Snapshot.compact("property-snapshot", version_hash, prefix)
+      remaining = Enum.drop(history, snapshot.through_seq + 1)
+
+      assert {:ok, ^expected} =
+               Continuum.Test.replay(workflow, input, remaining, snapshot: snapshot)
     end
   end
 

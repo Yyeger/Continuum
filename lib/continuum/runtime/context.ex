@@ -20,7 +20,9 @@ defmodule Continuum.Runtime.Context do
     :trace_context,
     :instance,
     :journal,
-    command_counts: %{}
+    command_counts: %{},
+    snapshot_steps: %{},
+    history_offset: 0
   ]
 
   @type t :: %__MODULE__{
@@ -32,7 +34,9 @@ defmodule Continuum.Runtime.Context do
           trace_context: binary() | nil,
           instance: Continuum.Runtime.Instance.t() | nil,
           journal: module(),
-          command_counts: map()
+          command_counts: map(),
+          snapshot_steps: map(),
+          history_offset: non_neg_integer()
         }
 
   @doc "Set the current context for this process."

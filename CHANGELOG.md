@@ -37,6 +37,11 @@
   `:layout` option that is forwarded to `Phoenix.LiveView.Router.live_session/3`,
   so host apps (and the demo) can wrap the Observer in their own HTML chrome
   without forking the LiveViews.
+- Added experimental, opt-in history snapshots: `continuum_snapshots`,
+  `Continuum.Snapshot`, `Continuum.Runtime.Snapshotter`, compacted-prefix
+  replay validation, snapshot telemetry, `guides/snapshots.md`, and a
+  snapshot benchmark harness. The default remains `snapshot_threshold:
+  :infinity`.
 
 ## v0.1 — "It survives a crash"
 

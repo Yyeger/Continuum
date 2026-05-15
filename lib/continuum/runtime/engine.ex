@@ -308,11 +308,13 @@ defmodule Continuum.Runtime.Engine do
   # ---------------------------------------------------------------------------
 
   defp attempt_run(state) do
-    history = state.journal.load(state.instance, state.run_id)
+    {snapshot, history} = load_replay_history(state)
 
     ctx = %Context{
       run_id: state.run_id,
       history: history,
+      history_offset: history_offset(snapshot),
+      snapshot_steps: snapshot_steps(snapshot),
       cursor: 0,
       workflow_module: state.workflow_module,
       lease_token: state.lease_token,
@@ -342,6 +344,35 @@ defmodule Continuum.Runtime.Engine do
       Context.clear()
     end
   end
+
+  defp load_replay_history(state) do
+    {snapshot, events} =
+      state.journal.load_with_snapshot(state.instance, state.run_id, state.lease_token)
+
+    if compatible_snapshot?(snapshot, state.workflow_module) do
+      {snapshot, events}
+    else
+      {nil, state.journal.load(state.instance, state.run_id)}
+    end
+  end
+
+  defp compatible_snapshot?(nil, _workflow_module), do: true
+
+  defp compatible_snapshot?(%Continuum.Snapshot{version_hash: version_hash}, workflow_module) do
+    version_hash == workflow_version_hash(workflow_module)
+  end
+
+  defp workflow_version_hash(workflow_module) do
+    workflow_module.__continuum_workflow__().version_hash
+  rescue
+    UndefinedFunctionError -> <<0::256>>
+  end
+
+  defp history_offset(nil), do: 0
+  defp history_offset(%Continuum.Snapshot{through_seq: through_seq}), do: through_seq + 1
+
+  defp snapshot_steps(nil), do: %{}
+  defp snapshot_steps(%Continuum.Snapshot{steps_by_seq: steps}), do: steps || %{}
 
   defp complete_run(state, result) do
     :ok = state.journal.complete!(state.instance, state.run_id, result, state.lease_token)

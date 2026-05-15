@@ -34,6 +34,8 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :activity_dispatcher, :polled]`
     * `[:continuum, :activity_dispatcher, :claimed]`
     * `[:continuum, :recovery, :completed]`
+    * `[:continuum, :snapshot, :taken]`
+    * `[:continuum, :snapshot, :skipped]`
 
   Measurements are intentionally small and conventional: most events emit
   `%{count: n}` or `%{duration_ms: n}` when there is a meaningful number,
@@ -77,7 +79,9 @@ defmodule Continuum.Telemetry do
     [:continuum, :dispatcher, :claimed],
     [:continuum, :activity_dispatcher, :polled],
     [:continuum, :activity_dispatcher, :claimed],
-    [:continuum, :recovery, :completed]
+    [:continuum, :recovery, :completed],
+    [:continuum, :snapshot, :taken],
+    [:continuum, :snapshot, :skipped]
   ]
 
   @doc """

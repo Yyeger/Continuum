@@ -8,7 +8,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
   is configured for your repo) that creates: `continuum_runs`,
   monthly-partitioned `continuum_events`, `continuum_signals`,
   `continuum_timers`, `continuum_activity_tasks`,
-  `continuum_activity_results`, and the `continuum_lease_token_seq` sequence.
+  `continuum_activity_results`, `continuum_snapshots`, and the
+  `continuum_lease_token_seq` sequence.
   """
   use Mix.Task
 
@@ -176,9 +177,27 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         ALTER TABLE continuum_activity_results
           ADD PRIMARY KEY (activity_module, idempotency_key)
         \"\"\"
+
+        create table(:continuum_snapshots) do
+          add :run_id, :uuid, null: false
+          add :through_seq, :bigint, null: false
+          add :version_hash, :bytea, null: false
+          add :payload, :bytea, null: false
+          add :taken_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        create unique_index(:continuum_snapshots, [:run_id, :through_seq],
+                 name: :continuum_snapshots_run_seq_idx
+               )
+
+        execute \"\"\"
+        CREATE INDEX continuum_snapshots_latest_idx
+          ON continuum_snapshots (run_id, through_seq DESC)
+        \"\"\"
       end
 
       def down do
+        drop_if_exists table(:continuum_snapshots)
         drop_if_exists table(:continuum_activity_results)
         drop_if_exists table(:continuum_activity_tasks)
         drop_if_exists table(:continuum_timers)

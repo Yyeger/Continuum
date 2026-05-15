@@ -52,6 +52,10 @@ defmodule Continuum.Integration.CrashResumeTest do
       event_types(run_id) == ["activity_scheduled", "activity_completed", "timer_started"]
     end)
 
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.state)) == "suspended"
+    end)
+
     [{engine_pid, _}] = Registry.lookup(Continuum.Runtime.Registry, run_id)
     ref = Process.monitor(engine_pid)
 

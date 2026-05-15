@@ -32,6 +32,7 @@ defmodule Continuum.Application do
       child(Continuum.Runtime.Lease.Heartbeater, instance),
       child(Continuum.Runtime.ActivityWorker.Supervisor, instance),
       child(Continuum.Runtime.Recovery, instance),
+      child(Continuum.Runtime.Snapshotter, instance),
       child(Continuum.Runtime.Dispatcher, instance),
       child(Continuum.Runtime.ActivityWorker.Dispatcher, instance),
       child(Continuum.Runtime.TimerWheel, instance),
