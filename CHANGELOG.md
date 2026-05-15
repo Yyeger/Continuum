@@ -2,46 +2,156 @@
 
 ## Unreleased
 
-### v0.2 in progress
-- Added monthly partitioning support for `continuum_events`, including
-  operator Mix tasks for creating, listing, and dropping expired partitions.
-- Added enforced activity idempotency through `continuum_activity_results`.
-  Committed results are reused per activity module and idempotency key, across
-  runs, without re-running the activity body.
-- Added nullable `continuum_runs.trace_context` persistence so future OTel
-  run-attempt spans can link resumes back to the original trace.
-- Added compile-time warnings for workflow calls into helper modules that are
-  not stdlib-trusted, marked with `use Continuum.Pure`, or allowlisted through
-  `config :continuum, trusted_modules: [...]`.
-  Upgraders with existing helper-module calls should add `use Continuum.Pure`
-  to audited pure helpers or list externally audited modules in
-  `:trusted_modules`.
-- Added a Postgres signal-await fast-path: when a signal is already pending in
-  the durable mailbox, `await signal(...)` journals `signal_received` directly
-  and skips `signal_awaited` plus timeout timer creation.
-- Reworked `Continuum.Runtime.TimerWheel` to use an ETS near-term timer cache,
-  30s refresh safety net, and Postgres `continuum_timer_armed` notifications
-  instead of a fixed 1s polling loop.
-- Added `Continuum.OpenTelemetry.setup/1`, an optional bridge from Continuum
-  telemetry events to run-attempt and activity-attempt spans. Continuum still
-  compiles without OpenTelemetry packages; applications opt in explicitly.
-- Added the optional `Continuum.Observer` surface: Phoenix LiveView router and
-  view modules guarded behind runtime dependency checks, repo-backed run/event
-  query helpers, coarse `"continuum:runs"` PubSub updates, and operator actions
-  for cancelling runs and sending signals.
-- Added a self-contained Observer demo at `dev/observer_demo.exs`: boots a
-  Phoenix endpoint with the LiveView client wired up, seeds sample runs in
-  different states, and serves the Observer at `http://localhost:4000/continuum`
-  for visual / interactive verification.
-- Extended `Continuum.Observer.Router.continuum_observer/2` with an optional
-  `:layout` option that is forwarded to `Phoenix.LiveView.Router.live_session/3`,
-  so host apps (and the demo) can wrap the Observer in their own HTML chrome
-  without forking the LiveViews.
-- Added experimental, opt-in history snapshots: `continuum_snapshots`,
+## v0.2.0 — 2026-05-15 — "I can see what's happening"
+
+v0.2 makes the v0.1 engine operable: a free Phoenix LiveView Observer, an
+optional OpenTelemetry bridge, opt-in history snapshots, named multi-instance
+runtimes, and six pieces of v0.1 debt paid down (event partitioning, ETS timer
+cache, idempotency enforcement, helper-module determinism warnings, the
+`signal_awaited` fast-path, per-process repo threading).
+
+See [`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md) for the upgrade
+path.
+
+### New surfaces
+
+- `Continuum.Observer` — optional Phoenix LiveView observer: runs index, run
+  detail with decoded event timeline, operator actions for cancelling and
+  sending signals. Mounted via `Continuum.Observer.Router.continuum_observer/2`
+  with an optional `:layout` forwarded to `live_session/3`. Continuum core
+  compiles without Phoenix LiveView installed; host applications add the
+  Phoenix dependencies when they mount the Observer. Self-contained demo
+  ships at `dev/observer_demo.exs`. See `guides/observer.md`.
+- `Continuum.OpenTelemetry.setup/1` — opt-in bridge that turns
+  `[:continuum, :run, ...]` and `[:continuum, :activity, ...]` telemetry into
+  short `continuum.run_attempt` and `continuum.activity_attempt` spans. Resume
+  spans link back to the original trace via the new
+  `continuum_runs.trace_context` column. Continuum still compiles without any
+  OpenTelemetry packages. See `guides/observability.md`.
+- `Continuum.children/1` — host-supervisor helper for named instances. Each
+  instance owns its own registry, run supervisor, dispatchers, timer wheel,
+  signal router, lease heartbeater, snapshotter, and recovery process bound
+  to a single Ecto repo. Public calls accept `instance: name`. The default
+  `Continuum` instance is unchanged. See `guides/multi-instance.md`.
+- Experimental, opt-in history snapshots: `continuum_snapshots`,
   `Continuum.Snapshot`, `Continuum.Runtime.Snapshotter`, compacted-prefix
-  replay validation, snapshot telemetry, `guides/snapshots.md`, and a
-  snapshot benchmark harness. The default remains `snapshot_threshold:
-  :infinity`.
+  replay validation, snapshot telemetry, snapshot benchmark harness
+  (`bench/snapshot_bench.exs`). Replay-loop cost on a 10k-event side-effect
+  workflow drops ~8× when snapshots are enabled. Default remains
+  `snapshot_threshold: :infinity`. See `guides/snapshots.md`.
+
+### v0.1 debt paid down
+
+- Monthly partitioning for `continuum_events` (`PARTITION BY RANGE
+  (inserted_at)`), with operator Mix tasks: `mix continuum.partitions.create`,
+  `mix continuum.partitions.list`, `mix continuum.partitions.drop_old`
+  (`--execute` opt-in). No runtime partition manager in v0.2.
+- Activity idempotency is enforced through `continuum_activity_results` keyed
+  on `(activity_module, idempotency_key)`. Committed results are reused
+  across runs without re-running the activity body. New telemetry
+  `[:continuum, :activity, :idempotency_hit]`. See `guides/idempotency.md`.
+- ETS-cached `Continuum.Runtime.TimerWheel`: near-term timer cache hydrated
+  from Postgres, 30s refresh safety net, and `continuum_timer_armed`
+  `pg_notify` reschedules. Replaces the v0.1 1s polling loop. TimerWheel owns
+  its own Postgrex notification listener per instance.
+- Compile-time warnings for workflow calls into helper modules that are not
+  stdlib-trusted, not marked `use Continuum.Pure`, and not allowlisted via
+  `config :continuum, trusted_modules: [...]`. Severity is configurable with
+  `config :continuum, untrusted_call_severity: :warn | :error` (default
+  `:warn`). See the *Helper Modules* section of `guides/determinism-rules.md`.
+- Postgres signal-await fast-path: when a signal is already in the durable
+  mailbox, `await signal(...)` journals `signal_received` directly and skips
+  the `signal_awaited` event plus the timeout-timer write. Old histories
+  that did journal `signal_awaited` replay unchanged.
+- Per-process repo / multi-instance threading. `Continuum.children/1`
+  registers a named instance; `instance:` selects it on `start/3`,
+  `signal/4`, `cancel/2`, `await/3`. Lease owner format is now
+  `node()/instance/monotonic_int`. `Continuum.InstanceNotRegisteredError`
+  surfaces unknown names. Postgres `start_run` accepts `trace_context:` so
+  resumed runs can link OTel spans back to the original trace.
+
+### Determinism hardening
+
+- Snapshot compaction fails closed when a source event lacks a `command_id`:
+  `Snapshot.compact/4` returns `{:error, {:missing_command_id, seq}}` instead
+  of producing a nil-matching step that any effect would replay through.
+- In-memory journal now assigns sequence numbers when callers omit `:seq`,
+  matching the Postgres `next_seq/1` semantics. Fixes a latent gap where
+  `inject_signal/4` and `fire_timer/2` could write `seq: nil` events that
+  snapshot compaction would later misorder or drop.
+
+### Behavior changes operators should know about
+
+- `continuum_events` primary key is now `(run_id, seq, inserted_at)` because
+  Postgres partitioned tables require the partition key in the PK. Continuum
+  still guarantees per-run `(run_id, seq)` uniqueness through the run-row
+  write lock; SQL-level uniqueness was relaxed only to satisfy the partition
+  shape. Migration notes are in `MIGRATING_v0_1_to_v0_2.md`.
+- `signal_awaited` is no longer journaled when a matching signal is already
+  pending. Dashboards counting `signal_awaited` rows as a proxy for "signal
+  arrivals" should count `signal_received` instead.
+- Helper-module calls inside `use Continuum.Workflow` modules now produce a
+  compile-time warning unless the module is `use Continuum.Pure`,
+  stdlib-trusted, or listed in `config :continuum, trusted_modules: [...]`.
+
+### Migrations
+
+Four delta migrations on top of v0.1, runnable in order on a fresh database
+or the current local v0.1 dev/test schema:
+
+1. `20260601000000_partition_continuum_events`
+2. `20260601000001_create_continuum_activity_results`
+3. `20260601000002_create_continuum_snapshots`
+4. `20260601000003_add_trace_context_to_runs`
+
+Fresh installs (`mix continuum.gen.migration`) get the v0.2 shape directly
+and do not need the delta migrations. v0.1 had no public release, so there
+is no production-data compatibility promise.
+
+### Telemetry additions
+
+- `[:continuum, :activity, :idempotency_hit]`
+- `[:continuum, :snapshot, :taken]`
+- `[:continuum, :snapshot, :skipped]`
+
+All Continuum telemetry events now include `instance: name` metadata so
+dashboards can split correctly when more than one instance is active.
+
+### Documentation
+
+- New: `guides/multi-instance.md`, `guides/snapshots.md`,
+  `guides/observer.md`, `guides/observability.md`, `guides/idempotency.md`.
+- Updated: `guides/determinism-rules.md` now covers the helper-module warning,
+  `use Continuum.Pure`, and `trusted_modules`.
+- New: `MIGRATING_v0_1_to_v0_2.md` at the repo root.
+
+### Note on the module-count moat
+
+The ROADMAP's "~25 core modules" target was a v0.1 working principle. v0.2
+deliberately revises it: with Observer, OpenTelemetry, snapshots, multi-instance
+plumbing, and the Mix-task surface, raw module count is no longer the right
+shape of the moat. The replacement target is keeping the **runtime** surface
+small and justified — new runtime processes need a written reason — while
+allowing optional UI modules (Observer LiveViews, components), Mix tasks, and
+schema files to land where they make sense. The v0.2 tree adds the
+Snapshotter as a runtime child; everything else under `lib/continuum/observer/`
+and `lib/mix/tasks/` is optional surface.
+
+### Known limitations carried forward to v0.3+
+
+- Snapshot runtime use is experimental in v0.2. Default
+  `snapshot_threshold: :infinity` (off). Public snapshot payload format
+  (`:erlang.term_to_binary` of the struct) is not promised stable.
+- `Continuum.VersionRegistry` and `Continuum.patched?/1` remain stubs;
+  content-addressed module dispatch and journaled patch decisions land in
+  v0.3.
+- `compensate` macro and parent/child workflows are still v0.3.
+- `continue_as_new` is v0.3.
+- `mix continuum.audit` is v0.5.
+- Cluster distribution and the `:peer`-based multi-node test harness are v0.5.
+- No Oban adapter yet — v0.5.
+- Observer has no replay-stepping debugger in v0.2 (run detail shows the
+  durable timeline only). Replay debugger is v0.3+.
 
 ## v0.1 — "It survives a crash"
 
