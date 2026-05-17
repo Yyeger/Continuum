@@ -1,10 +1,10 @@
 # Continuum Example Orders
 
-Minimal Phoenix example app for the Continuum v0.1 smoke test. It starts an
+Minimal Phoenix example app for the Continuum v0.2 smoke test. It starts an
 order checkout workflow, waits for a fraud-review signal, then ships or rejects
 the order.
 
-The application supervises `Continuum.children()` after
+The application supervises a named Continuum instance after
 `ContinuumExampleOrders.Repo`, matching the required startup order for
 Postgres-backed runtime pollers.
 
@@ -12,12 +12,44 @@ Postgres-backed runtime pollers.
 
 ```bash
 cd examples/continuum_example_orders
+docker compose up -d
 mix deps.get
 mix ecto.create
-mix continuum.gen.migration --repo ContinuumExampleOrders.Repo
 mix ecto.migrate
 mix phx.server
 ```
+
+The compose file starts Postgres and Jaeger. Continuum spans are exported to
+Jaeger's OTLP HTTP endpoint at `http://localhost:4318`; open the Jaeger UI at
+`http://localhost:16686`.
+
+This example includes `opentelemetry`, `opentelemetry_api`, and
+`opentelemetry_exporter` as runtime dependencies so traces are exported by
+default. Applications that copy this layout are opting into those runtime deps.
+
+## Observer
+
+The Continuum Observer is mounted at:
+
+```text
+http://localhost:4000/admin/continuum
+```
+
+The example uses hardcoded basic auth credentials:
+
+```text
+username: admin
+password: admin
+```
+
+The Observer stylesheet is served directly from Continuum's
+`priv/static/observer.css` with a dedicated `Plug.Static` entry in the example
+endpoint. Host apps may alternatively copy the file into their own
+`priv/static` directory.
+
+Snapshots are intentionally not demonstrated in this app. They remain
+experimental and opt-in; see `../../guides/snapshots.md` and
+`../../bench/snapshot_bench.exs`.
 
 ## Smoke Test
 

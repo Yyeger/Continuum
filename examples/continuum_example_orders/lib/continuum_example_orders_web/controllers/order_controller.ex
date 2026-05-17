@@ -1,11 +1,21 @@
 defmodule ContinuumExampleOrdersWeb.OrderController do
   use Phoenix.Controller, formats: [:json]
 
+  @workflow_opts [
+    instance: :continuum_example_orders,
+    journal: Continuum.Runtime.Journal.Postgres
+  ]
+
+  @fraud_review_decisions %{
+    "approved" => :approved,
+    "rejected" => :rejected
+  }
+
   def create(conn, params) do
     order_id = Map.get(params, "order_id") || Ecto.UUID.generate()
     input = Map.put(params, "order_id", order_id)
 
-    case Continuum.start(ContinuumExampleOrders.OrderFlow, input) do
+    case Continuum.start(ContinuumExampleOrders.OrderFlow, input, @workflow_opts) do
       {:ok, run_id} ->
         json(conn, %{order_id: order_id, run_id: run_id})
 
@@ -17,9 +27,19 @@ defmodule ContinuumExampleOrdersWeb.OrderController do
   end
 
   def fraud_review(conn, %{"run_id" => run_id, "decision" => decision}) do
-    signal = String.to_existing_atom(decision)
+    case Map.fetch(@fraud_review_decisions, decision) do
+      {:ok, signal} ->
+        signal_fraud_review(conn, run_id, signal)
 
-    case Continuum.signal(run_id, :fraud_review, signal) do
+      :error ->
+        invalid_fraud_review_decision(conn)
+    end
+  end
+
+  def fraud_review(conn, _params), do: invalid_fraud_review_decision(conn)
+
+  defp signal_fraud_review(conn, run_id, signal) do
+    case Continuum.signal(run_id, :fraud_review, signal, instance: :continuum_example_orders) do
       :ok ->
         json(conn, %{ok: true})
 
@@ -28,10 +48,11 @@ defmodule ContinuumExampleOrdersWeb.OrderController do
         |> put_status(:not_found)
         |> json(%{error: inspect(reason)})
     end
-  rescue
-    ArgumentError ->
-      conn
-      |> put_status(:bad_request)
-      |> json(%{error: "decision must be approved or rejected"})
+  end
+
+  defp invalid_fraud_review_decision(conn) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{error: "decision must be approved or rejected"})
   end
 end

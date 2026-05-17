@@ -3,8 +3,8 @@
 Continuum Observer is an optional Phoenix LiveView UI for inspecting workflow
 runs. It is not started by `Continuum.Application`; mount it in your Phoenix
 router when your app directly depends on `:phoenix_live_view` and
-`:phoenix_html`. Continuum's own `mix.exs` includes Phoenix only for dev/test
-coverage; those dependencies are not transitive for downstream applications.
+`:phoenix_html`. Continuum declares Phoenix as optional; host applications that
+mount the Observer must include the Phoenix dependencies they use.
 
 ```elixir
 defmodule MyAppWeb.Router do
@@ -42,7 +42,16 @@ the Observer is not a sandbox for malicious journal rows.
 
 Continuum includes `priv/static/observer.css` as a small baseline stylesheet.
 Copy or serve it from your host app if you want the default styling. One simple
-option is to copy it into your app's `priv/static` directory and allow it from
+option is to serve it directly from the Continuum dependency:
+
+```elixir
+plug Plug.Static,
+  at: "/",
+  from: :continuum,
+  only: ~w(observer.css)
+```
+
+You can also copy it into your app's `priv/static` directory and allow it from
 your existing `Plug.Static`:
 
 ```elixir

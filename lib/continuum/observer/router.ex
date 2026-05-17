@@ -39,24 +39,28 @@ defmodule Continuum.Observer.Router do
 
     base = "/" <> (path |> String.trim() |> String.trim("/"))
     instance = Keyword.get(opts, :instance, Continuum)
-    layout = Keyword.get(opts, :layout)
-    session = %{"instance" => instance, "observer_path" => base}
-    live_session_name = :"continuum_observer_#{:erlang.phash2(base)}"
 
-    session_kv = quote do: {:session, unquote(Macro.escape(session))}
-
-    layout_kv =
-      if layout do
-        [quote(do: {:layout, unquote(layout)})]
-      else
-        []
+    layout =
+      case Keyword.get(opts, :layout) do
+        {module, template} -> {Macro.expand(module, __CALLER__), template}
+        nil -> nil
       end
 
-    live_session_opts_ast = [session_kv | layout_kv]
+    layout_ast = Macro.escape(layout)
 
     quote do
-      Phoenix.LiveView.Router.live_session unquote(live_session_name),
-                                           unquote(live_session_opts_ast) do
+      scoped_base = Phoenix.Router.scoped_path(__MODULE__, unquote(base))
+      session = %{"instance" => unquote(Macro.escape(instance)), "observer_path" => scoped_base}
+
+      live_session_opts =
+        if unquote(layout_ast) do
+          [session: session, layout: unquote(layout_ast)]
+        else
+          [session: session]
+        end
+
+      Phoenix.LiveView.Router.live_session :"continuum_observer_#{:erlang.phash2(scoped_base)}",
+                                           live_session_opts do
         Phoenix.LiveView.Router.live(
           unquote(base),
           Continuum.Observer.RunsLive,
