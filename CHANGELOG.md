@@ -133,9 +133,10 @@ plumbing, and the Mix-task surface, raw module count is no longer the right
 shape of the moat. The replacement target is keeping the **runtime** surface
 small and justified — new runtime processes need a written reason — while
 allowing optional UI modules (Observer LiveViews, components), Mix tasks, and
-schema files to land where they make sense. The v0.2 tree adds the
-Snapshotter as a runtime child; everything else under `lib/continuum/observer/`
-and `lib/mix/tasks/` is optional surface.
+schema files to land where they make sense. At tag-prep time the v0.2 tree has
+49 `.ex` files under `lib/`, with 19 under `lib/continuum/runtime/`. The v0.2
+tree adds the Snapshotter as a runtime child; everything else under
+`lib/continuum/observer/` and `lib/mix/tasks/` is optional surface.
 
 ### Known limitations carried forward to v0.3+
 
