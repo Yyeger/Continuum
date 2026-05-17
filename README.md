@@ -7,10 +7,15 @@ replay, single dependency. Write a multi-step business process as straight-line
 Elixir code. Failures, restarts, and node death cause the workflow to resume
 exactly where it left off.
 
-> **Status:** v0.1 (pre-1.0). The full v0.1 surface — replay, lease/fencing,
-> durable timers, durable signals with timeout, activity worker pool, recovery,
-> generators, guides — is implemented and tested. APIs may still change before
-> 1.0; pin to a specific 0.x in production.
+> **Status:** v0.2 (pre-1.0). v0.1's replay/lease/timer/signal/worker-pool core
+> is unchanged. v0.2 adds an optional Phoenix LiveView **Observer**, an opt-in
+> **OpenTelemetry** bridge, **named multi-instance** supervision, and
+> experimental opt-in **history snapshots**. It also pays down the named v0.1
+> debts: monthly partitioning, activity-idempotency side table, ETS-cached
+> TimerWheel, per-process repos, helper-module AST scan, persisted trace
+> context. APIs may still change before 1.0; pin to a specific 0.x in
+> production. Upgrading from v0.1? See
+> [`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md).
 
 ## Quickstart
 
@@ -49,7 +54,7 @@ end
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.1"},
+    {:continuum, "~> 0.2"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -85,13 +90,18 @@ def start(_type, _args) do
 end
 ```
 
-## What ships in v0.1
+## What ships in v0.2
+
+The v0.1 core is unchanged:
 
 - **Deterministic replay** with structured cursor identity. Replay drift
   produces `Continuum.ReplayDriftError`, never silent corruption.
 - **Compile-time AST scan** rejects non-deterministic calls (`DateTime.utc_now`,
   `:rand.*`, `:ets.*`, `Process.send`, `Kernel.apply`, …) with remediation
-  hints. Helpers opt in via `use Continuum.Pure`.
+  hints. Helpers opt in via `use Continuum.Pure`. v0.2 also warns on calls into
+  unmarked helper modules (configurable via
+  `config :continuum, untrusted_call_severity: :warn | :error`) and accepts an
+  app-env allowlist (`config :continuum, trusted_modules: [...]`).
 - **Postgres journal** with lease + fencing-token CAS on every write. Stolen
   leases produce write failures and terminate the stale engine.
 - **Built-in activity worker pool** (no Oban dependency). `FOR UPDATE SKIP
@@ -109,9 +119,35 @@ end
   helpers for integration tests, signal/timer injection, golden-history replay.
 - **24+ telemetry events** under the `[:continuum, …]` prefix.
 
-## Observer (v0.2, in progress)
+v0.2 adds:
 
-The optional `Continuum.Observer` LiveView UI lists runs, renders the journal
+- **`Continuum.Observer`** — optional Phoenix LiveView UI: runs index with
+  search and pagination, run detail with decoded event timeline, operator
+  actions for cancelling a run and sending a JSON signal. Mounted from your
+  router; host app owns auth. See the Observer section below.
+- **`Continuum.OpenTelemetry.setup/1`** — opt-in bridge that turns Continuum
+  telemetry into short `continuum.run_attempt` and `continuum.activity_attempt`
+  spans, linked back to the persisted W3C `traceparent` in
+  `continuum_runs.trace_context`. Continuum still compiles without any
+  OpenTelemetry packages.
+- **Named multi-instance supervision** via `Continuum.children(name: ..., repo: ...)`
+  and `instance: ...` on `start/3`, `signal/4`, `cancel/2`, `await/3`. The
+  default `Continuum` instance is unchanged.
+- **Experimental, opt-in history snapshots** — `continuum_snapshots`,
+  `Continuum.Snapshot`, `Continuum.Runtime.Snapshotter`, compacted-prefix
+  replay validation. Default `snapshot_threshold: :infinity` (off); opt in with
+  a positive integer after reading `guides/snapshots.md`.
+- **Monthly partitioning** for `continuum_events`, with operator Mix tasks
+  `mix continuum.partitions.{create,list,drop_old}` (`--execute` opt-in).
+- **Cross-run activity idempotency** through `continuum_activity_results`,
+  keyed on `(activity_module, idempotency_key)`.
+- **ETS-cached `TimerWheel`** with `pg_notify`-driven reschedule.
+- **Per-process repo threading** through `Continuum.children/1`.
+- **Persisted W3C `traceparent`** on `continuum_runs.trace_context`.
+
+## Observer
+
+The optional `Continuum.Observer` LiveView lists runs, renders the journal
 event timeline per run, and exposes operator actions for cancelling a run and
 sending a signal. It is mounted from a host Phoenix router and ships no
 authentication of its own — wrap it in your existing admin pipeline.
@@ -128,8 +164,7 @@ scope "/admin" do
 end
 ```
 
-To see the UI locally before it ships in v0.2, the repo bundles a
-self-contained demo:
+To see the UI locally, the repo bundles a self-contained demo:
 
 ```bash
 docker compose up -d
@@ -142,24 +177,26 @@ spawning more, sending signals, and cancelling. See
 [`guides/observer.md`](./guides/observer.md) for production mount
 instructions.
 
-## What's deliberately out of v0.1
+## What's deliberately out of v0.2
 
-Compensation/saga DSL, parent/child workflows, `continue_as_new`, search
-attributes, cluster distribution, real `patched?/1`, Oban adapter. Each is on
-the roadmap; see [`ROADMAP.md`](./ROADMAP.md) for the phased plan.
+Compensation/saga DSL, parent/child workflows, `continue_as_new`, real
+`patched?/1` with journaling, replay-stepping debugger inside the Observer,
+search attributes, cluster distribution, `mix continuum.audit`, and the Oban
+adapter. Each is on the roadmap; see [`ROADMAP.md`](./ROADMAP.md) for the
+phased plan.
 
 ## Guides
 
-The ExDoc guides cover the v0.1 path plus v0.2 in progress:
+The ExDoc guides cover the v0.2 surface:
 
 - *Your first workflow*
 - *Activities, retries, and idempotency*
 - *Idempotency* (cross-run scope, residual crash window)
-- *Determinism rules and replay drift* (now covers helper-module warnings and
+- *Determinism rules and replay drift* (helper-module warnings and
   `trusted_modules`)
 - *Multi-instance Continuum* (named instances with `Continuum.children/1`)
-- *Observer* (v0.2)
-- *Observability / OpenTelemetry bridge* (v0.2)
+- *Observer*
+- *Observability / OpenTelemetry bridge*
 - *Experimental snapshots* (opt-in long-history compaction)
 
 Upgrading from v0.1? See

@@ -37,8 +37,11 @@ path.
   `Continuum.Snapshot`, `Continuum.Runtime.Snapshotter`, compacted-prefix
   replay validation, snapshot telemetry, snapshot benchmark harness
   (`bench/snapshot_bench.exs`). Replay-loop cost on a 10k-event side-effect
-  workflow drops ~8× when snapshots are enabled. Default remains
-  `snapshot_threshold: :infinity`. See `guides/snapshots.md`.
+  workflow drops ~8× when snapshots are enabled. The v0.2 plan's ≥10×
+  acceptance target is *not* met; the gap is accepted under E1's
+  minimum-acceptance clause because snapshots ship experimental and opt-in
+  (default `snapshot_threshold: :infinity`). Closing the remaining 25% is
+  tracked for v0.3 once runtime use is dogfooded. See `guides/snapshots.md`.
 
 ### v0.1 debt paid down
 
