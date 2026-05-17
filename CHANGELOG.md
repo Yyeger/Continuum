@@ -53,7 +53,10 @@ path.
 - ETS-cached `Continuum.Runtime.TimerWheel`: near-term timer cache hydrated
   from Postgres, 30s refresh safety net, and `continuum_timer_armed`
   `pg_notify` reschedules. Replaces the v0.1 1s polling loop. TimerWheel owns
-  its own Postgrex notification listener per instance.
+  its own Postgrex notification listener per instance. Benchmark harness
+  `bench/timer_wheel_bench.exs` reports a 20.0x DB-query reduction for 1000
+  idle long-due timers over a 60s window (60 pre-cache poller queries vs. 3
+  cached-wheel timer SELECTs).
 - Compile-time warnings for workflow calls into helper modules that are not
   stdlib-trusted, not marked `use Continuum.Pure`, and not allowlisted via
   `config :continuum, trusted_modules: [...]`. Severity is configurable with
