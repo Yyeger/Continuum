@@ -26,19 +26,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp start_run_with_repo(run_id, workflow, input, opts) do
-    version_hash =
-      try do
-        workflow.__continuum_workflow__().version_hash
-      rescue
-        UndefinedFunctionError -> <<0::256>>
-      end
+    metadata = workflow_metadata(workflow)
 
     changeset =
       %Run{}
       |> Ecto.Changeset.change(%{
         id: run_id,
-        workflow: inspect(workflow),
-        version_hash: version_hash,
+        workflow: metadata.workflow,
+        version_hash: metadata.version_hash,
         state: "running",
         input: encode_term(input),
         trace_context: Keyword.get(opts, :trace_context)
@@ -47,6 +42,17 @@ defmodule Continuum.Runtime.Journal.Postgres do
     case repo().insert(changeset) do
       {:ok, _} -> :ok
       {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  defp workflow_metadata(workflow) do
+    case Continuum.VersionRegistry.ensure_registered(workflow) do
+      {:ok, metadata} ->
+        %{workflow: metadata.workflow_string, version_hash: metadata.version_hash}
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "expected #{inspect(workflow)} to use Continuum.Workflow before starting a durable run, got: #{inspect(reason)}"
     end
   end
 
@@ -1181,6 +1187,16 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       Snapshotter.maybe_snapshot(instance, run_id, lease_token)
       broadcast_failed(instance, run_id, error)
+    end)
+  end
+
+  def mark_unknown_version!(%Instance{} = instance, run_id, error, lease_token) do
+    with_repo(instance, fn ->
+      :ok =
+        cas_update_run(run_id, lease_token, %{
+          state: "stuck_unknown_version",
+          error: encode_term(error)
+        })
     end)
   end
 

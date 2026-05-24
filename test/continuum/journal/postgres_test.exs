@@ -12,6 +12,19 @@ defmodule Continuum.Journal.PostgresTest do
   alias Continuum.Runtime.Journal.Postgres
   alias Continuum.Schema.{Event, Run}
 
+  defmodule SomeWorkflow do
+    @moduledoc false
+
+    def __continuum_workflow__ do
+      %{
+        module: __MODULE__,
+        entrypoint: __MODULE__,
+        version: 1,
+        version_hash: :crypto.hash(:sha256, "test")
+      }
+    end
+  end
+
   describe "start_run/3 and get_run/1" do
     test "creates a run row and retrieves it" do
       run_id = generate_uuid()
@@ -302,6 +315,19 @@ defmodule Continuum.Journal.PostgresConcurrencyTest do
 
   alias Continuum.Runtime.Journal.Postgres
 
+  defmodule SomeWorkflow do
+    @moduledoc false
+
+    def __continuum_workflow__ do
+      %{
+        module: __MODULE__,
+        entrypoint: __MODULE__,
+        version: 1,
+        version_hash: :crypto.hash(:sha256, "concurrency-test")
+      }
+    end
+  end
+
   test "implicit sequence numbers serialize concurrent appends" do
     run_id = Ecto.UUID.generate()
     :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
@@ -327,13 +353,5 @@ defmodule Continuum.Journal.PostgresConcurrencyTest do
       |> Enum.map(& &1.seq)
 
     assert seqs == Enum.to_list(0..19)
-  end
-end
-
-defmodule SomeWorkflow do
-  @moduledoc false
-
-  def __continuum_workflow__ do
-    %{version: 1, version_hash: :crypto.hash(:sha256, "test"), module: __MODULE__}
   end
 end

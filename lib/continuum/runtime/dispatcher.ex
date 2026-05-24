@@ -107,7 +107,7 @@ defmodule Continuum.Runtime.Dispatcher do
         lease_expires_at = now() + make_interval(secs => $3)
     FROM candidates
     WHERE r.id = candidates.id
-    RETURNING r.id::text, r.workflow, r.input, r.lease_token, r.trace_context
+    RETURNING r.id::text, r.workflow, r.version_hash, r.input, r.lease_token, r.trace_context
     """
 
     case instance.repo.query(sql, [owner, batch_size, ttl_seconds]) do
@@ -127,10 +127,12 @@ defmodule Continuum.Runtime.Dispatcher do
     end
   end
 
-  defp decode_claim(owner, [run_id, workflow, input, token, trace_context]) do
+  defp decode_claim(owner, [run_id, workflow, version_hash, input, token, trace_context]) do
     %{
       run_id: run_id,
       workflow_module: Module.concat([workflow]),
+      workflow: workflow,
+      version_hash: version_hash,
       input: decode_term(input),
       lease_owner: owner,
       lease_token: token,
@@ -144,7 +146,9 @@ defmodule Continuum.Runtime.Dispatcher do
       journal: Journal.Postgres,
       lease_owner: claim.lease_owner,
       lease_token: claim.lease_token,
-      trace_context: claim.trace_context
+      trace_context: claim.trace_context,
+      workflow: claim.workflow,
+      version_hash: claim.version_hash
     ]
 
     case Engine.resume_run(claim.workflow_module, claim.input, claim.run_id, opts) do

@@ -5,6 +5,19 @@ defmodule Continuum.Runtime.LeaseTest do
   alias Continuum.Runtime.Lease
   alias Continuum.Schema.{ActivityTask, Event, Run, Signal, Timer}
 
+  defmodule SomeWorkflow do
+    @moduledoc false
+
+    def __continuum_workflow__ do
+      %{
+        module: __MODULE__,
+        entrypoint: __MODULE__,
+        version: 1,
+        version_hash: :crypto.hash(:sha256, "lease-test")
+      }
+    end
+  end
+
   defmodule FencedActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
 

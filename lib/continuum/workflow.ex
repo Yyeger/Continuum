@@ -32,8 +32,9 @@ defmodule Continuum.Workflow do
 
   The module's AST is hashed at compile time and exposed through
   `__continuum_workflow__/0`. Each Postgres run stores that hash on start so
-  drift can be surfaced. Full content-addressed module dispatch is deliberately
-  deferred until workflow versioning becomes load-bearing.
+  drift can be surfaced. As of v0.3, callers may pass `workflow: LogicalModule`
+  to `use Continuum.Workflow` to register a concrete module as a hash-specific
+  entrypoint for a logical workflow.
   """
 
   @doc """
@@ -117,6 +118,7 @@ defmodule Continuum.Workflow do
   defmacro __using__(opts) do
     version = Keyword.get(opts, :version, 1)
     retention = Keyword.get(opts, :retention, {:days, 30})
+    logical_workflow = Keyword.get(opts, :workflow, Keyword.get(opts, :logical_workflow))
 
     quote do
       require Continuum
@@ -140,6 +142,7 @@ defmodule Continuum.Workflow do
 
       @continuum_workflow_version unquote(version)
       @continuum_workflow_retention unquote(retention)
+      @continuum_logical_workflow unquote(logical_workflow)
     end
   end
 
@@ -204,17 +207,21 @@ defmodule Continuum.Workflow.BeforeCompile do
   defmacro __before_compile__(env) do
     version = Module.get_attribute(env.module, :continuum_workflow_version)
     retention = Module.get_attribute(env.module, :continuum_workflow_retention)
+    logical_workflow = Module.get_attribute(env.module, :continuum_logical_workflow) || env.module
     hash = compute_version_hash(env.module)
 
     quote do
       def __continuum_workflow__ do
         %{
-          module: __MODULE__,
+          module: unquote(logical_workflow),
+          entrypoint: __MODULE__,
           version: unquote(version),
           retention: unquote(Macro.escape(retention)),
           version_hash: unquote(hash)
         }
       end
+
+      def __continuum_entrypoint__, do: __MODULE__
     end
   end
 

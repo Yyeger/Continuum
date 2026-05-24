@@ -24,6 +24,9 @@ defmodule Continuum.Runtime.Engine do
     :lease_owner,
     :lease_token,
     :trace_context,
+    :resume?,
+    :workflow,
+    :version_hash,
     :status,
     :result,
     :error
@@ -142,6 +145,9 @@ defmodule Continuum.Runtime.Engine do
       %{state: :cancelled} ->
         {:error, %{run_id: run_id, state: :cancelled}}
 
+      %{state: :stuck_unknown_version, error: err} ->
+        {:error, %{run_id: run_id, state: :stuck_unknown_version, error: err}}
+
       %{state: :running} ->
         :pending
 
@@ -251,6 +257,9 @@ defmodule Continuum.Runtime.Engine do
       lease_owner: lease_owner,
       lease_token: lease_token,
       trace_context: trace_context,
+      resume?: Keyword.get(opts, :resume, false),
+      workflow: Keyword.get(opts, :workflow),
+      version_hash: Keyword.get(opts, :version_hash),
       status: :running,
       result: nil,
       error: nil
@@ -308,6 +317,14 @@ defmodule Continuum.Runtime.Engine do
   # ---------------------------------------------------------------------------
 
   defp attempt_run(state) do
+    with {:ok, state} <- resolve_workflow_entrypoint(state) do
+      attempt_resolved_run(state)
+    else
+      {:error, error, state} -> unknown_version(state, error)
+    end
+  end
+
+  defp attempt_resolved_run(state) do
     {snapshot, history} = load_replay_history(state)
 
     ctx = %Context{
@@ -344,6 +361,39 @@ defmodule Continuum.Runtime.Engine do
       Context.clear()
     end
   end
+
+  defp resolve_workflow_entrypoint(%{resume?: false} = state) do
+    _ = Continuum.VersionRegistry.ensure_registered(state.workflow_module)
+    {:ok, state}
+  end
+
+  defp resolve_workflow_entrypoint(%{journal: Continuum.Runtime.Journal.Postgres} = state) do
+    {workflow, version_hash} =
+      if state.workflow && state.version_hash do
+        {state.workflow, state.version_hash}
+      else
+        run = state.journal.get_run(state.instance, state.run_id) || %{}
+        {state.workflow || Map.get(run, :workflow), state.version_hash || Map.get(run, :version_hash)}
+      end
+
+    case Continuum.VersionRegistry.resolve(workflow, version_hash) do
+      {:ok, %{entrypoint: entrypoint}} ->
+        {:ok, %{state | workflow_module: entrypoint, workflow: workflow, version_hash: version_hash}}
+
+      {:error, _reason} ->
+        error = %Continuum.UnknownVersionError{
+          run_id: state.run_id,
+          workflow: workflow,
+          version_hash: version_hash
+        }
+
+        {:error, error, %{state | workflow: workflow, version_hash: version_hash}}
+    end
+  end
+
+  # In-memory runs are intentionally dispatched with the exact module supplied
+  # by the caller/test helper; durable version resolution is Postgres-only.
+  defp resolve_workflow_entrypoint(state), do: {:ok, state}
 
   defp load_replay_history(state) do
     {snapshot, events} =
@@ -413,6 +463,43 @@ defmodule Continuum.Runtime.Engine do
   rescue
     error ->
       if lease_lost?(:error, error), do: lease_lost(state), else: reraise(error, __STACKTRACE__)
+  end
+
+  defp unknown_version(%{journal: Continuum.Runtime.Journal.Postgres} = state, error) do
+    :ok =
+      Continuum.Runtime.Journal.Postgres.mark_unknown_version!(
+        state.instance,
+        state.run_id,
+        error,
+        state.lease_token
+      )
+
+    Telemetry.execute(
+      [:continuum, :run, :unknown_version],
+      %{},
+      run_metadata(state, %{
+        workflow: state.workflow,
+        version_hash: state.version_hash,
+        error: error
+      })
+    )
+
+    Continuum.Observer.broadcast_run_state_changed(
+      state.instance,
+      state.run_id,
+      :stuck_unknown_version
+    )
+
+    %{state | status: :stuck_unknown_version, error: error}
+  rescue
+    mark_error ->
+      if lease_lost?(:error, mark_error),
+        do: lease_lost(state),
+        else: fail_run(state, {:error, error, []}, {:error, error})
+  end
+
+  defp unknown_version(state, error) do
+    fail_run(state, {:error, error, []}, {:error, error})
   end
 
   defp cancel_run(%{journal: Continuum.Runtime.Journal.Postgres} = state) do

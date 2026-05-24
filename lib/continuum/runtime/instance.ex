@@ -14,7 +14,8 @@ defmodule Continuum.Runtime.Instance do
     :timer_wheel,
     :signal_router,
     :snapshotter,
-    :recovery
+    :recovery,
+    :workflow_modules
   ]
 
   alias __MODULE__
@@ -62,7 +63,8 @@ defmodule Continuum.Runtime.Instance do
       timer_wheel: process_name(name, Continuum.Runtime.TimerWheel),
       signal_router: process_name(name, Continuum.Runtime.SignalRouter),
       snapshotter: process_name(name, Continuum.Runtime.Snapshotter),
-      recovery: process_name(name, Continuum.Runtime.Recovery)
+      recovery: process_name(name, Continuum.Runtime.Recovery),
+      workflow_modules: Keyword.get(opts, :workflow_modules)
     }
   end
 

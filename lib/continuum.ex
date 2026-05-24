@@ -40,7 +40,8 @@ defmodule Continuum do
   The default `Continuum` instance is owned by `Continuum.Application` and
   `Continuum.children()` returns `[]` to avoid duplicate process names.
 
-  Child-specific options may be passed with `:heartbeater`, `:run_supervisor`,
+  Child-specific options may be passed with `:workflow_modules`,
+  `:heartbeater`, `:run_supervisor`,
   `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
   `:timer_wheel`, `:signal_router`, and `:snapshotter`.
   Passing `false` for a child omits it from the returned list.
@@ -53,7 +54,11 @@ defmodule Continuum do
       []
     else
       instance =
-        Continuum.Runtime.Instance.new(name: name, repo: opts[:repo])
+        Continuum.Runtime.Instance.new(
+          name: name,
+          repo: opts[:repo],
+          workflow_modules: opts[:workflow_modules]
+        )
         |> Continuum.Runtime.Instance.register()
 
       [
@@ -87,7 +92,8 @@ defmodule Continuum do
         ),
         child(Continuum.Runtime.Snapshotter, Keyword.get(opts, :snapshotter, []), instance),
         child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, []), instance),
-        child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance)
+        child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance),
+        child(Continuum.VersionRegistry, Keyword.get(opts, :version_registry, []), instance)
       ]
       |> Enum.reject(&is_nil/1)
     end

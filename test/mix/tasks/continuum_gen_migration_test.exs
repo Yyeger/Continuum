@@ -16,6 +16,8 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "add :trace_context, :bytea"
       assert source =~ "create table(:continuum_snapshots"
       assert source =~ "continuum_snapshots_latest_idx"
+      assert source =~ "create table(:continuum_workflow_versions"
+      assert source =~ "PRIMARY KEY (workflow, version_hash)"
     end)
   end
 

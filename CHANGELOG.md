@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### New surfaces
+
+- `Continuum.VersionRegistry` now resolves durable `(workflow, version_hash)`
+  pairs to loaded workflow entrypoints. The hot-path registry is backed by
+  `:persistent_term`; a short-lived boot task upserts loaded workflow versions
+  into Postgres for each Continuum instance.
+- `use Continuum.Workflow, workflow: LogicalWorkflow` registers a concrete
+  module as a hash-specific entrypoint for a logical workflow. This is the
+  v0.3 compromise entrypoint strategy: keep old version modules loaded and
+  point new versions at the same logical workflow.
+
+### Migrations
+
+- Added `continuum_workflow_versions`, keyed by `(workflow, version_hash)`,
+  with the loaded `entrypoint` module and `registered_at` timestamp.
+
+### Behavior changes operators should know about
+
+- Resuming Postgres-backed runs now dispatches through the run row's journaled
+  `workflow` and `version_hash`; it no longer trusts the latest logical module.
+- Runs whose journaled workflow version cannot be resolved are marked
+  `:stuck_unknown_version` instead of being replayed through possibly changed
+  code.
+- Starting a durable run now fails loudly if the workflow module does not
+  expose `__continuum_workflow__/0`.
+
+### Telemetry additions
+
+- `[:continuum, :run, :unknown_version]`
+
 ## v0.2.0 — 2026-05-15 — "I can see what's happening"
 
 v0.2 makes the v0.1 engine operable: a free Phoenix LiveView Observer, an

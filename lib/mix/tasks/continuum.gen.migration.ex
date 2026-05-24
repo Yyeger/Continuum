@@ -8,8 +8,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
   is configured for your repo) that creates: `continuum_runs`,
   monthly-partitioned `continuum_events`, `continuum_signals`,
   `continuum_timers`, `continuum_activity_tasks`,
-  `continuum_activity_results`, `continuum_snapshots`, and the
-  `continuum_lease_token_seq` sequence.
+  `continuum_activity_results`, `continuum_snapshots`,
+  `continuum_workflow_versions`, and the `continuum_lease_token_seq` sequence.
   """
   use Mix.Task
 
@@ -194,9 +194,22 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         CREATE INDEX continuum_snapshots_latest_idx
           ON continuum_snapshots (run_id, through_seq DESC)
         \"\"\"
+
+        create table(:continuum_workflow_versions, primary_key: false) do
+          add :workflow, :text, null: false
+          add :version_hash, :bytea, null: false
+          add :entrypoint, :text, null: false
+          add :registered_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        execute \"\"\"
+        ALTER TABLE continuum_workflow_versions
+          ADD PRIMARY KEY (workflow, version_hash)
+        \"\"\"
       end
 
       def down do
+        drop_if_exists table(:continuum_workflow_versions)
         drop_if_exists table(:continuum_snapshots)
         drop_if_exists table(:continuum_activity_results)
         drop_if_exists table(:continuum_activity_tasks)

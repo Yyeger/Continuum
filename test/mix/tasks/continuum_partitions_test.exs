@@ -3,6 +3,19 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
 
   alias Continuum.Runtime.Journal.Postgres
 
+  defmodule SomeWorkflow do
+    @moduledoc false
+
+    def __continuum_workflow__ do
+      %{
+        module: __MODULE__,
+        entrypoint: __MODULE__,
+        version: 1,
+        version_hash: :crypto.hash(:sha256, "partitions-test")
+      }
+    end
+  end
+
   setup do
     previous_shell = Mix.shell()
     Mix.shell(Mix.Shell.Process)

@@ -1,38 +1,237 @@
 defmodule Continuum.VersionRegistry do
   @moduledoc """
-  In-memory registry mapping `(workflow_module, version_hash) -> module`.
+  Registry for workflow version hashes and callable entrypoints.
 
-  The plan calls for content-addressed module names like
-  `MyApp.OrderFlow.V_<hash>` so old versions of a workflow can coexist with
-  new ones. v0.1 stores the latest hash per module; the full versioned
-  module-name mechanism lands with versioning in v0.3.
+  The hot path is process-independent: loaded workflow metadata is cached in
+  `:persistent_term` so module-load/start/resume registration never depends on
+  a GenServer being alive. The supervised child is only a short-lived boot task
+  that upserts loaded versions into the configured instance's repo.
   """
 
-  use GenServer
+  alias Continuum.Runtime.Instance
+  alias Continuum.Schema.WorkflowVersion
 
+  @registry_key {__MODULE__, :entries}
+
+  @type entry :: %{
+         workflow: module(),
+         workflow_string: String.t(),
+         version: term(),
+          hash: binary(),
+         version_hash: binary(),
+         entrypoint: module()
+        }
+
+  @doc false
+  def child_spec(opts) do
+    %{
+      id: {__MODULE__, Keyword.get(opts, :instance, Continuum)},
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :temporary,
+      type: :worker
+    }
+  end
+
+  @doc false
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
+    Task.start_link(fn ->
+      if instance.repo do
+        upsert_instance(instance, Keyword.get(opts, :workflow_modules, instance.workflow_modules))
+      end
+    end)
   end
 
-  @doc "Record the latest version hash for a workflow module."
+  @doc since: "0.3.0"
+  @doc """
+  Register the current module metadata if the module is a Continuum workflow.
+  """
+  @spec ensure_registered(module()) :: {:ok, entry()} | {:error, term()}
+  def ensure_registered(module) when is_atom(module) do
+    cond do
+      function_exported?(module, :__continuum_workflow__, 0) ->
+        register_loaded(module)
+
+      match?({:module, ^module}, Code.ensure_loaded(module)) ->
+        register_loaded(module)
+
+      true ->
+        {:error, :not_a_workflow}
+    end
+  end
+
+  @doc since: "0.3.0"
+  @doc """
+  Backwards-compatible registration helper for tests and old callers.
+  """
+  @spec register(module(), term(), binary()) :: :ok
   def register(module, version, hash) do
-    GenServer.call(__MODULE__, {:register, module, version, hash})
+    register(module, version, hash, module)
   end
 
-  @doc "Look up the stored metadata for a module (latest registered)."
-  def lookup(module) do
-    GenServer.call(__MODULE__, {:lookup, module})
+  @doc since: "0.3.0"
+  @doc """
+  Register a logical workflow/version hash to a concrete entrypoint module.
+  """
+  @spec register(module(), term(), binary(), module()) :: :ok
+  def register(workflow, version, hash, entrypoint) do
+    put_entry(%{
+      workflow: workflow,
+      workflow_string: inspect(workflow),
+      version: version,
+      hash: hash,
+      version_hash: hash,
+      entrypoint: entrypoint
+    })
+
+    :ok
   end
 
-  @impl true
-  def init(_opts), do: {:ok, %{}}
+  @doc since: "0.3.0"
+  @doc """
+  Look up the latest registered metadata for a logical workflow module.
 
-  @impl true
-  def handle_call({:register, module, version, hash}, _from, state) do
-    {:reply, :ok, Map.put(state, module, %{version: version, hash: hash})}
+  This preserves the v0.1 helper shape. Resume dispatch must use `resolve/2`.
+  """
+  @spec lookup(module()) :: nil | map()
+  def lookup(module) when is_atom(module) do
+    entries()
+    |> Map.values()
+    |> Enum.filter(&(&1.workflow == module))
+    |> Enum.max_by(& &1.version_hash, fn -> nil end)
   end
 
-  def handle_call({:lookup, module}, _from, state) do
-    {:reply, Map.get(state, module), state}
+  @doc since: "0.3.0"
+  @doc """
+  Resolve a journaled `(workflow, version_hash)` pair to a loaded entrypoint.
+  """
+  @spec resolve(module() | String.t(), binary()) :: {:ok, entry()} | {:error, term()}
+  def resolve(workflow, version_hash) do
+    workflow_string = workflow_string(workflow)
+
+    case Map.get(entries(), {workflow_string, version_hash}) || discover(workflow_string, version_hash) do
+      nil ->
+        {:error, :unknown_version}
+
+      %{entrypoint: entrypoint} = entry ->
+        case Code.ensure_loaded(entrypoint) do
+          {:module, ^entrypoint} -> {:ok, entry}
+          _ -> {:error, :unknown_version}
+        end
+    end
   end
+
+  @doc since: "0.3.0"
+  @doc """
+  Upsert loaded workflow versions for an instance into `continuum_workflow_versions`.
+  """
+  @spec upsert_instance(Instance.t(), [module()] | nil) :: :ok
+  def upsert_instance(instance, workflow_modules \\ nil)
+
+  def upsert_instance(%Instance{repo: nil}, _workflow_modules), do: :ok
+
+  def upsert_instance(%Instance{} = instance, workflow_modules) do
+    rows =
+      workflow_modules
+      |> configured_modules()
+      |> Enum.flat_map(fn module ->
+        case ensure_registered(module) do
+          {:ok, entry} -> [entry]
+          {:error, _} -> []
+        end
+      end)
+      |> Enum.uniq_by(&{&1.workflow_string, &1.version_hash})
+      |> Enum.map(&workflow_version_row/1)
+
+    if rows != [] do
+      instance.repo.insert_all(WorkflowVersion, rows,
+        on_conflict: {:replace, [:entrypoint, :registered_at]},
+        conflict_target: [:workflow, :version_hash]
+      )
+    end
+
+    :ok
+  rescue
+    error in Postgrex.Error ->
+      if missing_workflow_versions_table?(error), do: :ok, else: reraise(error, __STACKTRACE__)
+  end
+
+  defp configured_modules(nil) do
+    case Application.get_env(:continuum, :workflow_modules) do
+      modules when is_list(modules) and modules != [] -> modules
+      _ -> loaded_workflow_modules()
+    end
+  end
+
+  defp configured_modules(modules) when is_list(modules), do: modules
+
+  defp loaded_workflow_modules do
+    :code.all_loaded()
+    |> Enum.map(fn {module, _path} -> module end)
+    |> Enum.filter(&function_exported?(&1, :__continuum_workflow__, 0))
+  end
+
+  defp workflow_metadata(module) do
+    if function_exported?(module, :__continuum_workflow__, 0) do
+      metadata = module.__continuum_workflow__()
+      workflow = Map.get(metadata, :module, module)
+      entrypoint = Map.get(metadata, :entrypoint, module)
+
+      {:ok,
+       %{
+         workflow: workflow,
+         workflow_string: inspect(workflow),
+         version: Map.get(metadata, :version),
+         hash: Map.fetch!(metadata, :version_hash),
+         version_hash: Map.fetch!(metadata, :version_hash),
+         entrypoint: entrypoint
+       }}
+    else
+      {:error, :not_a_workflow}
+    end
+  end
+
+  defp register_loaded(module) do
+    case workflow_metadata(module) do
+      {:ok, metadata} -> {:ok, put_entry(metadata)}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp put_entry(%{workflow_string: workflow, version_hash: hash} = entry) do
+    :persistent_term.put(@registry_key, Map.put(entries(), {workflow, hash}, entry))
+    entry
+  end
+
+  defp discover(workflow_string, version_hash) do
+    loaded_workflow_modules()
+    |> Enum.find_value(fn module ->
+      case ensure_registered(module) do
+        {:ok, %{workflow_string: ^workflow_string, version_hash: ^version_hash} = entry} -> entry
+        _ -> nil
+      end
+    end)
+  end
+
+  defp entries do
+    :persistent_term.get(@registry_key, %{})
+  end
+
+  defp workflow_string(workflow) when is_atom(workflow), do: inspect(workflow)
+  defp workflow_string(workflow) when is_binary(workflow), do: workflow
+
+  defp workflow_version_row(entry) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    %{
+      workflow: entry.workflow_string,
+      version_hash: entry.version_hash,
+      entrypoint: inspect(entry.entrypoint),
+      registered_at: now
+    }
+  end
+
+  defp missing_workflow_versions_table?(%Postgrex.Error{postgres: %{code: :undefined_table}}), do: true
+  defp missing_workflow_versions_table?(_error), do: false
 end

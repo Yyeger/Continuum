@@ -8,7 +8,8 @@ defmodule Continuum.Application do
     instance =
       Continuum.Runtime.Instance.new(
         name: Continuum,
-        repo: Application.get_env(:continuum, :repo)
+        repo: Application.get_env(:continuum, :repo),
+        workflow_modules: Application.get_env(:continuum, :workflow_modules)
       )
       |> Continuum.Runtime.Instance.register()
 
@@ -16,7 +17,7 @@ defmodule Continuum.Application do
       [
         {Phoenix.PubSub, name: instance.pubsub},
         {Registry, keys: :unique, name: instance.registry},
-        Continuum.VersionRegistry,
+        child(Continuum.VersionRegistry, instance),
         Continuum.Runtime.Journal.InMemory,
         child(Continuum.Runtime.RunSupervisor, instance)
       ] ++ postgres_children(instance)
