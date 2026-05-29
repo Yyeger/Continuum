@@ -53,7 +53,8 @@ defmodule Continuum.TestHelpersTest do
     File.rm(path)
   end
 
-  test "patched? is a v0.1 false stub" do
+  test "patched? returns false outside a workflow process" do
+    require Continuum
     refute Continuum.patched?(:future_change)
   end
 

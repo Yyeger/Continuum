@@ -1132,7 +1132,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp advancing_event?(type) do
-    type in [:side_effect, :activity_completed, :activity_failed, :signal_received, :timer_fired]
+    type in [
+      :side_effect,
+      :activity_completed,
+      :activity_failed,
+      :signal_received,
+      :timer_fired,
+      :patched
+    ]
   end
 
   defp mark_timer_resolved(run_id, timer_id, lease_token) do

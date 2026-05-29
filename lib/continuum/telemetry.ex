@@ -15,6 +15,8 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :run, :failed]`
     * `[:continuum, :run, :cancelled]`
     * `[:continuum, :run, :lease_lost]`
+    * `[:continuum, :run, :unknown_version]`
+    * `[:continuum, :patched, :hit]`
     * `[:continuum, :activity, :scheduled]`
     * `[:continuum, :activity, :started]`
     * `[:continuum, :activity, :completed]`
@@ -61,6 +63,8 @@ defmodule Continuum.Telemetry do
     [:continuum, :run, :failed],
     [:continuum, :run, :cancelled],
     [:continuum, :run, :lease_lost],
+    [:continuum, :run, :unknown_version],
+    [:continuum, :patched, :hit],
     [:continuum, :activity, :scheduled],
     [:continuum, :activity, :started],
     [:continuum, :activity, :completed],

@@ -76,6 +76,39 @@ defmodule Continuum.Runtime.Effect do
 
   # ---------------------------------------------------------------------------
 
+  # `{:patched, name}` is the only effect that may return *without advancing the
+  # cursor*: it does so when replaying pre-patch history, so a run recorded
+  # before the patch line existed stays on its original branch. The non-advance
+  # is conditioned on `command_id` lookahead, not just type lookahead, so two
+  # `patched?/1` calls at distinct command_ids each independently take this
+  # branch on the same old history without consuming a downstream event of
+  # another shape. A fresh (live-tail) call journals `value: true` and advances.
+  defp advance({:patched, patch_name} = effect, _live_compute, command_base_fun) do
+    ctx = Context.get() || raise_not_in_workflow(effect)
+    {ctx, command_id} = assign_command_id(ctx, command_base_fun.(ctx))
+    Context.put(ctx)
+
+    case snapshot_step(ctx, ctx.cursor) do
+      {:ok, step} ->
+        replay_patched_step(ctx, step, patch_name, command_id)
+
+      :none ->
+        case history_event(ctx, ctx.cursor) do
+          nil ->
+            journal_patched!(ctx, patch_name, command_id)
+
+          %{type: :patched} = event ->
+            replay_patched_event!(ctx, event, patch_name, command_id)
+
+          :compacted_gap ->
+            patched_miss(ctx, patch_name)
+
+          _other ->
+            patched_miss(ctx, patch_name)
+        end
+    end
+  end
+
   defp advance(effect, live_compute, command_base_fun) do
     ctx = Context.get() || raise_not_in_workflow(effect)
     {ctx, command_id} = assign_command_id(ctx, command_base_fun.(ctx))
@@ -111,6 +144,8 @@ defmodule Continuum.Runtime.Effect do
   defp compute_live({:activity, {_mod, _fun, _args}, _opts}) do
     raise "Continuum.Runtime.Effect.run/2 invoked for activity without scheduler"
   end
+
+  defp compute_live({:patched, _name}), do: true
 
   defp compute_live({:await_signal, _name, _opts}) do
     throw({:continuum_suspend, :awaiting_signal})
@@ -352,6 +387,77 @@ defmodule Continuum.Runtime.Effect do
       :none ->
         throw({:continuum_suspend, {:awaiting_signal, name}})
     end
+  end
+
+  defp journal_patched!(ctx, patch_name, command_id) do
+    event = %{
+      type: :patched,
+      patch_name: patch_name,
+      value: true,
+      command_id: command_id,
+      seq: ctx.cursor
+    }
+
+    :ok = apply(ctx.journal, :append!, [ctx.instance, ctx.run_id, event, ctx.lease_token])
+    Context.put(%{ctx | history: ctx.history ++ [event], cursor: ctx.cursor + 1})
+    emit_patched(ctx, patch_name, true)
+    true
+  end
+
+  defp replay_patched_event!(ctx, %{type: :patched} = event, patch_name, command_id) do
+    cond do
+      command_matches?(event, command_id) and Map.get(event, :patch_name) == patch_name ->
+        value = Map.get(event, :value)
+        Context.put(%{ctx | cursor: ctx.cursor + 1})
+        emit_patched(ctx, patch_name, value)
+        value
+
+      command_matches?(event, command_id) ->
+        # Same command site, but a different patch name was journaled here.
+        raise Continuum.ReplayDriftError,
+          run_id: ctx.run_id,
+          cursor: ctx.cursor,
+          expected: event,
+          actual: {:patched, patch_name}
+
+      true ->
+        # A `patched` marker for a *different* command site sits here; this
+        # call did not exist when the history was recorded.
+        patched_miss(ctx, patch_name)
+    end
+  end
+
+  defp replay_patched_step(ctx, %{effect_type: :patched} = step, patch_name, command_id) do
+    if command_matches?(step, command_id) and Map.get(step, :shape) == patch_name do
+      Context.put(%{ctx | cursor: ctx.cursor + Map.fetch!(step, :advance_by)})
+      value = Map.get(step, :result)
+      emit_patched(ctx, patch_name, value)
+      value
+    else
+      raise Continuum.ReplayDriftError,
+        run_id: ctx.run_id,
+        cursor: ctx.cursor,
+        expected: step,
+        actual: {:patched, patch_name}
+    end
+  end
+
+  defp replay_patched_step(ctx, _step, patch_name, _command_id) do
+    # A non-patched compacted step occupies this cursor → pre-patch history.
+    patched_miss(ctx, patch_name)
+  end
+
+  defp patched_miss(ctx, patch_name) do
+    emit_patched(ctx, patch_name, false)
+    false
+  end
+
+  defp emit_patched(ctx, patch_name, value) do
+    Telemetry.execute([:continuum, :patched, :hit], %{}, %{
+      run_id: ctx.run_id,
+      patch_name: patch_name,
+      value: value
+    })
   end
 
   defp replay_event!(ctx, event, effect, command_id) do

@@ -4,6 +4,17 @@
 
 ### New surfaces
 
+- `Continuum.patched?/1` is now a real, journaled patch marker (was a `false`
+  stub). It is a macro (capturing `__CALLER__` for a stable command identity);
+  the first call at a source line journals a `patched` event with `value: true`
+  and returns `true`, and the value replays on resume. Runs replaying history
+  recorded *before* the patch line return `false` without consuming an event,
+  keeping in-flight runs on the old branch. `patched?/1` is the only effect that
+  may return without advancing the replay cursor, and the non-advance is keyed
+  on `command_id` lookahead so independent patch calls don't interfere. Patch
+  decisions are captured by snapshots. New telemetry `[:continuum, :patched,
+  :hit]`. Modules calling it must `require Continuum` (`use Continuum.Workflow`
+  does this); outside a workflow it returns `false`.
 - `Continuum.Test.Paranoid` — the `--paranoid` re-replay safety net. Enable it
   for a whole run with `CONTINUUM_PARANOID=1 mix test` (or
   `config :continuum, :paranoid_replay, true`); the default is off so ordinary

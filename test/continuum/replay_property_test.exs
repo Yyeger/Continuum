@@ -19,6 +19,16 @@ defmodule Continuum.ReplayPropertyTest do
     def run(acc, step), do: acc + step
   end
 
+  defmodule PatchedMixFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      base = Continuum.side_effect(fn -> input.seed end)
+      bonus = if Continuum.patched?(:bonus), do: 100, else: 0
+      {:ok, base + bonus}
+    end
+  end
+
   defmodule MixedOperationFlow do
     use Continuum.Workflow, version: 1
 
@@ -82,6 +92,23 @@ defmodule Continuum.ReplayPropertyTest do
 
       assert Continuum.Test.assert_replays(MixedOperationFlow, %{ops: ops}, history) == expected
       assert_snapshot_replays(MixedOperationFlow, %{ops: ops}, history, expected)
+    end
+  end
+
+  property "patched + side_effect histories replay identically and survive snapshotting" do
+    check all(seed <- integer(-1_000..1_000), max_runs: 25) do
+      Continuum.Test.reset_in_memory!()
+
+      {:ok, run_id} = Continuum.Test.start_synchronous(PatchedMixFlow, %{seed: seed})
+      expected = {:ok, seed + 100}
+
+      assert {:ok, %{state: :completed, result: ^expected}} = Continuum.await(run_id, 1_000)
+
+      history = Continuum.Test.history(run_id)
+      assert Enum.any?(history, &(&1.type == :patched))
+
+      assert Continuum.Test.assert_replays(PatchedMixFlow, %{seed: seed}, history) == expected
+      assert_snapshot_replays(PatchedMixFlow, %{seed: seed}, history, expected)
     end
   end
 

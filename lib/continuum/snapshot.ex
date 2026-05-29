@@ -121,6 +121,10 @@ defmodule Continuum.Snapshot do
     one_step(event, :timer, :timer, :ok)
   end
 
+  defp step_from(%{type: :patched, patch_name: patch_name, value: value} = event, _rest) do
+    one_step(event, :patched, patch_name, value)
+  end
+
   defp step_from(%{type: :activity_scheduled} = event, rest) do
     with {:ok, next} <- next_event(event, rest),
          :ok <- same_command?(event, next),

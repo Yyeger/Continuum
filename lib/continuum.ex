@@ -230,14 +230,45 @@ defmodule Continuum do
   end
 
   @doc """
-  Compatibility marker for future workflow patches.
+  Journaled patch marker for in-place, backward-compatible workflow changes.
 
-  v0.1 ships this as a deterministic stub returning `false`. Real patch
-  markers are planned for a later release; until then, use explicit workflow
-  versions for incompatible changes.
+      def run(input) do
+        if Continuum.patched?(:add_fraud_check_v2) do
+          activity FraudCheck.v2(input)
+        else
+          activity FraudCheck.v1(input)
+        end
+      end
+
+  Inside a workflow the first call to `patched?(name)` at a given source line
+  journals a `patched` event with `value: true` and returns `true`; the value
+  is then replayed on resume so the run never changes branch mid-flight. A run
+  that is replaying history recorded *before* the patch line existed returns
+  `false` without consuming any event, keeping in-flight runs on the old path.
+
+  Outside a workflow process (test setup, ordinary code) it returns `false`.
+
+  Like `now/0` and `uuid4/0`, this is a macro so it captures `__CALLER__` for a
+  stable command identity; modules that call it must `require Continuum`
+  (`use Continuum.Workflow` does this for you).
   """
-  @spec patched?(atom() | binary()) :: false
-  def patched?(_patch_name), do: false
+  @doc since: "0.3.0"
+  defmacro patched?(patch_name) do
+    command = command_base(__CALLER__, :patched)
+
+    quote do
+      Continuum.__patched__(unquote(patch_name), unquote(Macro.escape(command)))
+    end
+  end
+
+  @doc false
+  def __patched__(patch_name, command_base) do
+    if Context.active?() do
+      Effect.run({:patched, patch_name}, {:command, command_base})
+    else
+      false
+    end
+  end
 
   # ---------------------------------------------------------------------------
 
