@@ -37,11 +37,15 @@ defmodule Continuum.PatchedTest do
 
   test "a fresh run journals patched=true and replays the journaled value" do
     {:ok, run_id} = Continuum.Test.start_synchronous(PatchedBranchFlow, %{})
-    assert {:ok, %{state: :completed, result: {:ok, :new_branch}}} = Continuum.await(run_id, 1_000)
+
+    assert {:ok, %{state: :completed, result: {:ok, :new_branch}}} =
+             Continuum.await(run_id, 1_000)
 
     history = Continuum.Test.history(run_id)
 
-    assert [%{type: :patched, patch_name: :feature, value: true, command_id: command_id}] = history
+    assert [%{type: :patched, patch_name: :feature, value: true, command_id: command_id}] =
+             history
+
     assert is_tuple(command_id) and tuple_size(command_id) >= 5
 
     # Replaying the journaled history reproduces the same branch without
@@ -101,9 +105,10 @@ defmodule Continuum.PatchedTest do
       assert :old ==
                Effect.run(
                  {:side_effect, :user},
-                 {:command, {:side_effect, :user, {:old_site}, "hash"}, fn ->
-                   raise "producer must not run on replay"
-                 end}
+                 {:command, {:side_effect, :user, {:old_site}, "hash"},
+                  fn ->
+                    raise "producer must not run on replay"
+                  end}
                )
 
       assert Context.get().cursor == 1
@@ -130,7 +135,9 @@ defmodule Continuum.PatchedTest do
 
   test "tampering with a journaled patched event surfaces as replay drift" do
     {:ok, run_id} = Continuum.Test.start_synchronous(PatchedTailFlow, %{})
-    assert {:ok, %{state: :completed, result: {:ok, {true, :tail}}}} = Continuum.await(run_id, 1_000)
+
+    assert {:ok, %{state: :completed, result: {:ok, {true, :tail}}}} =
+             Continuum.await(run_id, 1_000)
 
     history = Continuum.Test.history(run_id)
     assert [%{type: :patched} = patched, %{type: :side_effect}] = history

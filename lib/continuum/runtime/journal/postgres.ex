@@ -280,7 +280,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
   matching `child_completed`/`child_failed`/`child_cancelled` event to the
   parent and returns the decoded outcome; otherwise returns `:pending`.
   """
-  def await_child_terminal!(%Instance{} = instance, parent_run_id, child_run_id, command_id, seq, lease_token) do
+  def await_child_terminal!(
+        %Instance{} = instance,
+        parent_run_id,
+        child_run_id,
+        command_id,
+        seq,
+        lease_token
+      ) do
     with_repo(instance, fn ->
       await_child_terminal_with_repo!(parent_run_id, child_run_id, command_id, seq, lease_token)
     end)
@@ -390,7 +397,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
   (the chain root's id), and any `parent_run_id`/`parent_command_id` so a
   continued child stays a child.
   """
-  def continue_as_new!(%Instance{} = instance, run_id, next_run_id, next_input, event, lease_token) do
+  def continue_as_new!(
+        %Instance{} = instance,
+        run_id,
+        next_run_id,
+        next_input,
+        event,
+        lease_token
+      ) do
     with_repo(instance, fn ->
       continue_as_new_with_repo!(run_id, next_run_id, next_input, event, lease_token)
     end)
@@ -816,7 +830,9 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp wake_parent(_instance, nil), do: :ok
-  defp wake_parent(instance, parent_run_id), do: Continuum.Runtime.Engine.wake(instance, parent_run_id)
+
+  defp wake_parent(instance, parent_run_id),
+    do: Continuum.Runtime.Engine.wake(instance, parent_run_id)
 
   defp run_in_transaction!(fun) do
     case repo().transaction(fun) do

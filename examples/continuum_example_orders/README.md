@@ -1,8 +1,9 @@
 # Continuum Example Orders
 
-Minimal Phoenix example app for the Continuum v0.2 smoke test. It starts an
-order checkout workflow, waits for a fraud-review signal, then ships or rejects
-the order.
+Minimal Phoenix example app for Continuum. It starts an order checkout
+workflow, waits for a fraud-review signal, then ships or compensates the
+payment capture. It also includes a parent/child batch workflow that fans out
+one order child per input order.
 
 The application supervises a named Continuum instance after
 `ContinuumExampleOrders.Repo`, matching the required startup order for
@@ -68,6 +69,41 @@ curl -s -X POST http://localhost:4000/runs/$RUN_ID/fraud-review \
   -H 'content-type: application/json' \
   -d '{"decision":"approved"}'
 ```
+
+Rejecting the order runs the payment compensation exactly once:
+
+```bash
+curl -s -X POST http://localhost:4000/runs/$RUN_ID/fraud-review \
+  -H 'content-type: application/json' \
+  -d '{"decision":"rejected"}'
+```
+
+The `continuum_events` table will contain `compensation_scheduled` and
+`compensation_completed` for the refund.
+
+## Batch Demo
+
+`ContinuumExampleOrders.BatchOrders` demonstrates parent/child fan-out. Start a
+batch run from IEx or your own controller:
+
+```elixir
+Continuum.start(
+  ContinuumExampleOrders.BatchOrders,
+  %{
+    "batch_id" => "b1",
+    "orders" => [
+      %{"order_id" => "o1", "items" => [%{"sku" => "sku_1", "qty" => 1, "price" => 1200}]},
+      %{"order_id" => "o2", "items" => [%{"sku" => "sku_2", "qty" => 2, "price" => 900}]},
+      %{"order_id" => "o3", "items" => [%{"sku" => "sku_3", "qty" => 1, "price" => 2200}]}
+    ]
+  },
+  instance: :continuum_example_orders
+)
+```
+
+Use the Observer to find the child run ids, then send each child its
+`:fraud_review` signal. Cancelling the batch cascades to any in-flight child
+orders.
 
 Manual crash-resume check:
 

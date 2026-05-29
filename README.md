@@ -7,15 +7,11 @@ replay, single dependency. Write a multi-step business process as straight-line
 Elixir code. Failures, restarts, and node death cause the workflow to resume
 exactly where it left off.
 
-> **Status:** v0.2 (pre-1.0). v0.1's replay/lease/timer/signal/worker-pool core
-> is unchanged. v0.2 adds an optional Phoenix LiveView **Observer**, an opt-in
-> **OpenTelemetry** bridge, **named multi-instance** supervision, and
-> experimental opt-in **history snapshots**. It also pays down the named v0.1
-> debts: monthly partitioning, activity-idempotency side table, ETS-cached
-> TimerWheel, per-process repos, helper-module AST scan, persisted trace
-> context. APIs may still change before 1.0; pin to a specific 0.x in
-> production. Upgrading from v0.1? See
-> [`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md).
+> **Status:** v0.3 (pre-1.0). v0.3 adds the "real workflow" surface:
+> compensation/saga DSL, parent/child workflows, `continue_as_new`, journaled
+> `patched?/1`, and content-addressed workflow dispatch. APIs may still change
+> before 1.0; pin to a specific 0.x in production. Upgrading from v0.2? See
+> [`MIGRATING_v0_2_to_v0_3.md`](./MIGRATING_v0_2_to_v0_3.md).
 
 ## Quickstart
 
@@ -28,11 +24,15 @@ defmodule MyApp.OrderFlow do
 
     {:ok, charge} =
       activity Payments.charge(id, validated.total),
-        retry: [max_attempts: 5, backoff: :exponential]
+        retry: [max_attempts: 5, backoff: :exponential],
+        compensate: {Payments, :refund, [id]}
 
     case await signal(:fraud_review, timeout: hours(24)) do
       :approved -> activity Fulfillment.ship(id)
-      :rejected -> {:error, %{charge: charge, reason: :fraud_rejected}}
+      :rejected ->
+        compensate(charge)
+        {:error, :fraud_rejected}
+
       :timeout  -> activity Fulfillment.ship(id)
     end
   end
@@ -54,7 +54,7 @@ end
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.2"},
+    {:continuum, "~> 0.3"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -90,9 +90,9 @@ def start(_type, _args) do
 end
 ```
 
-## What ships in v0.2
+## What ships in v0.3
 
-The v0.1 core is unchanged:
+The v0.1/v0.2 core remains:
 
 - **Deterministic replay** with structured cursor identity. Replay drift
   produces `Continuum.ReplayDriftError`, never silent corruption.
@@ -145,6 +145,41 @@ v0.2 adds:
 - **Per-process repo threading** through `Continuum.children/1`.
 - **Persisted W3C `traceparent`** on `continuum_runs.trace_context`.
 
+v0.3 adds:
+
+- **Compensation / saga DSL** — attach `compensate:` to an activity, then use
+  `compensate/1` or `compensate_all/0` to roll back completed work in a
+  deterministic LIFO order. See [`guides/sagas.md`](./guides/sagas.md).
+- **Parent/child workflows** — `await child Mod.run(input)`, `start_child/3`,
+  and `await_child/1` for durable composition and fan-out/fan-in. See
+  [`guides/child-workflows.md`](./guides/child-workflows.md).
+- **`continue_as_new/1`** — complete the current run and start a successor with
+  fresh history for long-running loops. See
+  [`guides/long-running-workflows.md`](./guides/long-running-workflows.md).
+- **Journaled `Continuum.patched?/1`** — safe in-place patch markers for
+  compatible workflow edits. See [`guides/patching.md`](./guides/patching.md).
+- **Content-addressed workflow dispatch** — resumes resolve the run's stored
+  `(workflow, version_hash)` through `Continuum.VersionRegistry` and mark
+  missing code as `:stuck_unknown_version` instead of silently replaying through
+  changed code. See
+  [`guides/workflow-versioning.md`](./guides/workflow-versioning.md).
+
+## Parent/Child Example
+
+```elixir
+defmodule MyApp.BatchFlow do
+  use Continuum.Workflow, version: 1
+
+  def run(%{order_ids: ids}) do
+    ids
+    |> Enum.map(fn id ->
+      start_child MyApp.OrderFlow, %{order_id: id}, id: id
+    end)
+    |> Enum.map(&await_child/1)
+  end
+end
+```
+
 ## Observer
 
 The optional `Continuum.Observer` LiveView lists runs, renders the journal
@@ -177,17 +212,15 @@ spawning more, sending signals, and cancelling. See
 [`guides/observer.md`](./guides/observer.md) for production mount
 instructions.
 
-## What's deliberately out of v0.2
+## What's deliberately out of v0.3
 
-Compensation/saga DSL, parent/child workflows, `continue_as_new`, real
-`patched?/1` with journaling, replay-stepping debugger inside the Observer,
-search attributes, cluster distribution, `mix continuum.audit`, and the Oban
-adapter. Each is on the roadmap; see [`ROADMAP.md`](./ROADMAP.md) for the
-phased plan.
+Replay-stepping debugger inside the Observer, search attributes, cluster
+distribution, `mix continuum.audit`, and the Oban adapter. Each is on the
+roadmap; see [`ROADMAP.md`](./ROADMAP.md) for the phased plan.
 
 ## Guides
 
-The ExDoc guides cover the v0.2 surface:
+The ExDoc guides cover the current surface:
 
 - *Your first workflow*
 - *Activities, retries, and idempotency*
@@ -195,16 +228,23 @@ The ExDoc guides cover the v0.2 surface:
 - *Determinism rules and replay drift* (helper-module warnings and
   `trusted_modules`)
 - *Multi-instance Continuum* (named instances with `Continuum.children/1`)
+- *Sagas and compensation*
+- *Child workflows*
+- *Long-running workflows* (`continue_as_new`)
+- *Patching workflows*
+- *Workflow versioning*
 - *Observer*
 - *Observability / OpenTelemetry bridge*
 - *Experimental snapshots* (opt-in long-history compaction)
 
-Upgrading from v0.1? See
+Upgrading from v0.2? See
+[`MIGRATING_v0_2_to_v0_3.md`](./MIGRATING_v0_2_to_v0_3.md). Upgrading from
+v0.1 first? See
 [`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md).
 
 See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
-for a Phoenix app exercising activity → signal/timeout → activity, with a
-manual crash-resume smoke script in `scripts/smoke_test.exs`.
+for a Phoenix app exercising activity -> signal/timeout -> compensation,
+parent/child batches, Observer, and OpenTelemetry.
 
 ## License
 

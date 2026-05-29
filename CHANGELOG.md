@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-05-29 — "Real workflows"
 
 ### New surfaces
 
@@ -113,9 +113,24 @@
   originating run-attempt span (a child's own work is captured by its own run
   spans, correlated by run id).
 
+### Benchmarks
+
+- `MIX_ENV=test mix run bench/snapshot_bench.exs` on 2026-05-29 with 10,000
+  side-effect events reported raw replay 100 ms, snapshot replay 13 ms, and a
+  7.2x replay speedup. The v0.3 re-bench does not close the >=10x snapshot
+  target; snapshot payload format and the remaining perf gap stay deferred.
+
 ### Telemetry additions
 
 - `[:continuum, :run, :unknown_version]`
+
+### Documentation
+
+- Added guides for sagas, child workflows, long-running workflows, patching,
+  and workflow versioning.
+- Added `MIGRATING_v0_2_to_v0_3.md`.
+- Updated `continuum_example_orders` with a refund compensation and a
+  parent/child batch workflow.
 
 ## v0.2.0 — 2026-05-15 — "I can see what's happening"
 

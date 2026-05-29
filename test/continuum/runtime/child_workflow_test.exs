@@ -88,7 +88,8 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
   end
 
   test "fan-out start_child + await_child returns each child's result" do
-    {:ok, parent_id} = Continuum.start(FanOutParentFlow, %{ids: [1, 2, 3, 4, 5]}, journal: Postgres)
+    {:ok, parent_id} =
+      Continuum.start(FanOutParentFlow, %{ids: [1, 2, 3, 4, 5]}, journal: Postgres)
 
     pump(parent_id)
 

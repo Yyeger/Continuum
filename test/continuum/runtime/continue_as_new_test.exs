@@ -80,7 +80,8 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     history = Postgres.load(Continuum.Runtime.Instance.default(), r2.id)
     assert Enum.any?(history, &(&1.type == :run_continued_as_new))
 
-    input = Repo.one(from(r in Run, where: r.id == ^r2.id, select: r.input)) |> :erlang.binary_to_term()
+    input =
+      Repo.one(from(r in Run, where: r.id == ^r2.id, select: r.input)) |> :erlang.binary_to_term()
 
     assert {:continued, _next_run_id} = Continuum.Test.replay(CycleFlow, input, history)
   end
@@ -114,7 +115,9 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     assert Repo.aggregate(from(r in Run, where: r.continued_from_run_id == ^run2), :count) == 1
 
     terminal = Enum.find(runs, &(&1.state == "completed" and not continued?(&1.result)))
-    assert {:ok, %{result: {:ok, {:done, 3}}}} = Continuum.await(terminal.id, 2_000, journal: Postgres)
+
+    assert {:ok, %{result: {:ok, {:done, 3}}}} =
+             Continuum.await(terminal.id, 2_000, journal: Postgres)
   end
 
   test "a continued child stays a child and the parent awaits the chain's final result" do

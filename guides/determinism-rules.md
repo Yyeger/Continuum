@@ -13,10 +13,18 @@ Workflow code may:
 * sleep with `timer/1`
 * call `Continuum.now/0`, `today/0`, `uuid4/0`, `random/0`, or
   `side_effect/1`
+* call `Continuum.patched?/1` for journaled patch decisions
+* use `compensate/1`, `compensate_all/0`, `start_child/3`, `await_child/1`,
+  `await child ...`, and `continue_as_new/1`
 * call pure helper modules that are safe to replay
 
 Each of those operations goes through `Continuum.Runtime.Effect`, which checks
 the journal before doing anything live.
+
+`Continuum.patched?/1` is the one special replay branch: when replaying a
+history recorded before a patch line existed, it may return `false` without
+advancing the replay cursor. That branch is keyed on command identity, so two
+patch markers at different source locations do not consume each other's events.
 
 ## What Workflow Code Must Not Do
 
@@ -89,8 +97,29 @@ that still has active runs. Prefer one of these patterns:
 * add new effects after existing effects
 * put externally visible work in activities
 * bump the workflow version for incompatible state changes
+* use `Continuum.patched?/1` for compatible in-place branches that must keep old
+  in-flight histories on the old path
 * use `Continuum.Test.assert_replays/3` with committed golden histories before
   shipping workflow edits
+
+## Side Effects
+
+`Continuum.side_effect/1` is the escape hatch for deterministic values that are
+not worth a full activity, such as choosing a UUID-like correlation key or
+capturing a small derived value. The function runs only at the live tail; its
+return value is journaled and later replayed.
+
+Do not use `side_effect/1` for external work. HTTP calls, database writes,
+payments, emails, and anything that needs retry/idempotency belong in
+activities. `side_effect/1` composes with v0.3 effects (`patched?/1`,
+compensations, child waits, snapshots, and `continue_as_new`) because it still
+uses the same command identity and replay cursor as every other effect.
+
+## Continuing As New
+
+`continue_as_new/1` journals `run_continued_as_new` and then terminates the
+current engine with a dedicated sentinel. Code after it in the same branch is
+not executed. Treat it as a tail call.
 
 ## Golden-History Test
 

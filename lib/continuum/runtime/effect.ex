@@ -116,7 +116,10 @@ defmodule Continuum.Runtime.Effect do
   def compensate(ref_or_ok, {:command, command_base}) do
     ref = unwrap_ref(ref_or_ok)
     ctx = Context.get() || raise_not_in_workflow({:compensate, ref.activity_id})
-    {ctx, command_id} = assign_command_id(ctx, :erlang.append_element(command_base, ref.activity_id))
+
+    {ctx, command_id} =
+      assign_command_id(ctx, :erlang.append_element(command_base, ref.activity_id))
+
     Context.put(ctx)
 
     result = do_compensation(ref.activity_id, ref.compensate, command_id)
@@ -814,7 +817,11 @@ defmodule Continuum.Runtime.Effect do
 
   # --- continue_as_new -------------------------------------------------------
 
-  defp live_continue_as_new!(%{journal: Continuum.Runtime.Journal.Postgres} = ctx, input, command_id) do
+  defp live_continue_as_new!(
+         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         input,
+         command_id
+       ) do
     next_run_id = deterministic_continue_run_id(ctx.run_id, command_id)
 
     event = %{
@@ -878,7 +885,11 @@ defmodule Continuum.Runtime.Effect do
 
   defp wrap_compensated({:ok, value}, mfa, compensate_mfa, activity_id) do
     ctx = Context.get()
-    Context.put(%{ctx | compensation_stack: [{activity_id, compensate_mfa} | ctx.compensation_stack]})
+
+    Context.put(%{
+      ctx
+      | compensation_stack: [{activity_id, compensate_mfa} | ctx.compensation_stack]
+    })
 
     {:ok,
      %Continuum.ActivityRef{

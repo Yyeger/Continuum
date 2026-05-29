@@ -12,7 +12,14 @@ defmodule ContinuumExampleOrders.Application do
         ContinuumExampleOrders.Repo,
         {Phoenix.PubSub, name: ContinuumExampleOrders.PubSub}
       ] ++
-        Continuum.children(name: :continuum_example_orders, repo: ContinuumExampleOrders.Repo) ++
+        Continuum.children(
+          name: :continuum_example_orders,
+          repo: ContinuumExampleOrders.Repo,
+          workflow_modules: [
+            ContinuumExampleOrders.OrderFlow,
+            ContinuumExampleOrders.BatchOrders
+          ]
+        ) ++
         [
           ContinuumExampleOrdersWeb.Endpoint
         ]

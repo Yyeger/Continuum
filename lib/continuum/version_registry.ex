@@ -14,12 +14,12 @@ defmodule Continuum.VersionRegistry do
   @registry_key {__MODULE__, :entries}
 
   @type entry :: %{
-         workflow: module(),
-         workflow_string: String.t(),
-         version: term(),
+          workflow: module(),
+          workflow_string: String.t(),
+          version: term(),
           hash: binary(),
-         version_hash: binary(),
-         entrypoint: module()
+          version_hash: binary(),
+          entrypoint: module()
         }
 
   @doc false
@@ -110,7 +110,8 @@ defmodule Continuum.VersionRegistry do
   def resolve(workflow, version_hash) do
     workflow_string = workflow_string(workflow)
 
-    case Map.get(entries(), {workflow_string, version_hash}) || discover(workflow_string, version_hash) do
+    case Map.get(entries(), {workflow_string, version_hash}) ||
+           discover(workflow_string, version_hash) do
       nil ->
         {:error, :unknown_version}
 
@@ -232,6 +233,8 @@ defmodule Continuum.VersionRegistry do
     }
   end
 
-  defp missing_workflow_versions_table?(%Postgrex.Error{postgres: %{code: :undefined_table}}), do: true
+  defp missing_workflow_versions_table?(%Postgrex.Error{postgres: %{code: :undefined_table}}),
+    do: true
+
   defp missing_workflow_versions_table?(_error), do: false
 end

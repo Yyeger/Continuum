@@ -29,7 +29,8 @@ if Code.ensure_loaded?(Phoenix.Component) do
     end
 
     @doc "CSS class grouping an event type for timeline colouring."
-    def event_class(type), do: "co-event co-event-#{Continuum.Observer.Components.event_kind(type)}"
+    def event_class(type),
+      do: "co-event co-event-#{Continuum.Observer.Components.event_kind(type)}"
 
     @doc false
     def event_kind(type) do

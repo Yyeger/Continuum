@@ -376,12 +376,15 @@ defmodule Continuum.Runtime.Engine do
         {state.workflow, state.version_hash}
       else
         run = state.journal.get_run(state.instance, state.run_id) || %{}
-        {state.workflow || Map.get(run, :workflow), state.version_hash || Map.get(run, :version_hash)}
+
+        {state.workflow || Map.get(run, :workflow),
+         state.version_hash || Map.get(run, :version_hash)}
       end
 
     case Continuum.VersionRegistry.resolve(workflow, version_hash) do
       {:ok, %{entrypoint: entrypoint}} ->
-        {:ok, %{state | workflow_module: entrypoint, workflow: workflow, version_hash: version_hash}}
+        {:ok,
+         %{state | workflow_module: entrypoint, workflow: workflow, version_hash: version_hash}}
 
       {:error, _reason} ->
         error = %Continuum.UnknownVersionError{

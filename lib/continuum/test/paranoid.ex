@@ -181,7 +181,10 @@ defmodule Continuum.Test.Paranoid do
 
     case locate_run(instance, run_id) do
       {journal, %{state: :completed, input: input, result: recorded}} ->
-        classify_and_record(workflow, input, run_id, recorded, instance: instance, journal: journal)
+        classify_and_record(workflow, input, run_id, recorded,
+          instance: instance,
+          journal: journal
+        )
 
       _ ->
         :ok

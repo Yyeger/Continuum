@@ -21,7 +21,9 @@ defmodule Continuum.SagaTest do
 
     def run(input) do
       {:ok, _charge} =
-        activity(SagaActivities.charge(input.id), compensate: {SagaActivities, :refund, [input.id]})
+        activity(SagaActivities.charge(input.id),
+          compensate: {SagaActivities, :refund, [input.id]}
+        )
 
       {:ok, :shipped}
     end
@@ -32,7 +34,9 @@ defmodule Continuum.SagaTest do
 
     def run(input) do
       {:ok, charge} =
-        activity(SagaActivities.charge(input.id), compensate: {SagaActivities, :refund, [input.id]})
+        activity(SagaActivities.charge(input.id),
+          compensate: {SagaActivities, :refund, [input.id]}
+        )
 
       compensate(charge)
       {:error, :rejected}
@@ -44,7 +48,9 @@ defmodule Continuum.SagaTest do
 
     def run(input) do
       {:ok, a} =
-        activity(SagaActivities.charge(input.id), compensate: {SagaActivities, :refund, [input.id]})
+        activity(SagaActivities.charge(input.id),
+          compensate: {SagaActivities, :refund, [input.id]}
+        )
 
       {:ok, _b} =
         activity(SagaActivities.reserve(input.id),
@@ -62,7 +68,9 @@ defmodule Continuum.SagaTest do
 
     def run(input) do
       {:ok, _a} =
-        activity(SagaActivities.charge(input.id), compensate: {SagaActivities, :refund, [input.id]})
+        activity(SagaActivities.charge(input.id),
+          compensate: {SagaActivities, :refund, [input.id]}
+        )
 
       {:ok, _b} =
         activity(SagaActivities.reserve(input.id),
@@ -105,7 +113,9 @@ defmodule Continuum.SagaTest do
 
   test "manual compensate/1 runs exactly one compensation and replays identically" do
     {:ok, run_id} = Continuum.Test.start_synchronous(RejectFlow, %{id: "o2"})
-    assert {:ok, %{state: :completed, result: {:error, :rejected}}} = Continuum.await(run_id, 1_000)
+
+    assert {:ok, %{state: :completed, result: {:error, :rejected}}} =
+             Continuum.await(run_id, 1_000)
 
     history = Continuum.Test.history(run_id)
     assert Enum.count(history, &(&1.type == :compensation_completed)) == 1
@@ -115,7 +125,9 @@ defmodule Continuum.SagaTest do
 
   test "compensate/1 then compensate_all/0 does not double-run a compensation" do
     {:ok, run_id} = Continuum.Test.start_synchronous(DoubleFlow, %{id: "o3"})
-    assert {:ok, %{state: :completed, result: {:error, :rolled_back}}} = Continuum.await(run_id, 1_000)
+
+    assert {:ok, %{state: :completed, result: {:error, :rolled_back}}} =
+             Continuum.await(run_id, 1_000)
 
     history = Continuum.Test.history(run_id)
     compensations = Enum.filter(history, &(&1.type == :compensation_completed))

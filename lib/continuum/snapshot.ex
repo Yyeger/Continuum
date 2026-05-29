@@ -139,7 +139,10 @@ defmodule Continuum.Snapshot do
     one_step(event, :compensation, tid, {:error, error})
   end
 
-  defp step_from(%{type: :child_started, workflow: workflow, child_run_id: child_run_id} = event, _rest) do
+  defp step_from(
+         %{type: :child_started, workflow: workflow, child_run_id: child_run_id} = event,
+         _rest
+       ) do
     one_step(event, :start_child, workflow, child_run_id)
   end
 
@@ -147,7 +150,10 @@ defmodule Continuum.Snapshot do
     one_step(event, :continue_as_new, :continue_as_new, next_run_id)
   end
 
-  defp step_from(%{type: :child_completed, child_run_id: child_run_id, result: result} = event, _rest) do
+  defp step_from(
+         %{type: :child_completed, child_run_id: child_run_id, result: result} = event,
+         _rest
+       ) do
     one_step(event, :await_child, child_run_id, result)
   end
 

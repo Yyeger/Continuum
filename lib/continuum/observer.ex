@@ -140,9 +140,7 @@ defmodule Continuum.Observer do
   def successor_run_id(run_id, opts \\ []) do
     case repo_instance(opts) do
       {:ok, instance} ->
-        instance.repo.one(
-          from(r in Run, where: r.continued_from_run_id == ^run_id, select: r.id)
-        )
+        instance.repo.one(from(r in Run, where: r.continued_from_run_id == ^run_id, select: r.id))
 
       _ ->
         nil

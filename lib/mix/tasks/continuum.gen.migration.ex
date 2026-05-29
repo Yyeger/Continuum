@@ -82,6 +82,10 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :result, :bytea
           add :error, :bytea
           add :trace_context, :bytea
+          add :parent_run_id, :uuid
+          add :parent_command_id, :bytea
+          add :correlation_id, :uuid
+          add :continued_from_run_id, :uuid
           add :started_at, :utc_datetime_usec, null: false, default: fragment("now()")
           add :completed_at, :utc_datetime_usec
           add :lease_owner, :text
@@ -101,6 +105,24 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         CREATE INDEX continuum_runs_lease_idx
           ON continuum_runs (lease_expires_at)
           WHERE lease_owner IS NOT NULL
+        \"\"\"
+
+        execute \"\"\"
+        CREATE INDEX continuum_runs_parent_idx
+          ON continuum_runs (parent_run_id)
+          WHERE parent_run_id IS NOT NULL
+        \"\"\"
+
+        execute \"\"\"
+        CREATE INDEX continuum_runs_correlation_idx
+          ON continuum_runs (correlation_id)
+          WHERE correlation_id IS NOT NULL
+        \"\"\"
+
+        execute \"\"\"
+        CREATE INDEX continuum_runs_continued_from_idx
+          ON continuum_runs (continued_from_run_id)
+          WHERE continued_from_run_id IS NOT NULL
         \"\"\"
 
         execute \"\"\"

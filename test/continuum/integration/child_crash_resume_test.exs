@@ -74,7 +74,10 @@ defmodule Continuum.Integration.ChildCrashResumeTest do
 
   defp make_dispatchable(run_id) do
     past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
-    Repo.update_all(from(r in Run, where: r.id == ^run_id), set: [lease_expires_at: past, next_wakeup_at: past])
+
+    Repo.update_all(from(r in Run, where: r.id == ^run_id),
+      set: [lease_expires_at: past, next_wakeup_at: past]
+    )
   end
 
   defp assert_eventually(fun, attempts \\ 100)
