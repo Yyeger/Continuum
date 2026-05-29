@@ -22,7 +22,8 @@ defmodule Continuum.Runtime.Context do
     :journal,
     command_counts: %{},
     snapshot_steps: %{},
-    history_offset: 0
+    history_offset: 0,
+    compensation_stack: []
   ]
 
   @type t :: %__MODULE__{
@@ -36,7 +37,8 @@ defmodule Continuum.Runtime.Context do
           journal: module(),
           command_counts: map(),
           snapshot_steps: map(),
-          history_offset: non_neg_integer()
+          history_offset: non_neg_integer(),
+          compensation_stack: [{term(), {module(), atom(), list()}}]
         }
 
   @doc "Set the current context for this process."

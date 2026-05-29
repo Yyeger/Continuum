@@ -70,8 +70,72 @@ defmodule Continuum.Runtime.Effect do
     end)
   end
 
+  def run({:activity, _mfa, opts} = effect, {:command, command_base}) when is_list(opts) do
+    ctx = Context.get() || raise_not_in_workflow(effect)
+    {ctx, command_id} = assign_command_id(ctx, command_base)
+    Context.put(ctx)
+
+    raw =
+      case snapshot_step(ctx, ctx.cursor) do
+        {:ok, step} ->
+          replay_snapshot_step!(ctx, step, effect, command_id)
+
+        :none ->
+          case history_event(ctx, ctx.cursor) do
+            :compacted_gap ->
+              raise Continuum.ReplayDriftError,
+                run_id: ctx.run_id,
+                cursor: ctx.cursor,
+                expected: :snapshot_step,
+                actual: effect
+
+            nil ->
+              live_tail!(ctx, effect, fn -> compute_live(effect) end, command_id)
+
+            event ->
+              replay_event!(ctx, event, effect, command_id)
+          end
+      end
+
+    maybe_wrap_activity(raw, effect, opts, command_id)
+  end
+
   def run(effect, {:command, command_base}) do
     advance(effect, fn -> compute_live(effect) end, fn _ctx -> command_base end)
+  end
+
+  @doc """
+  Run the compensation of one successful compensated activity.
+
+  Schedules `ref.compensate` through the activity worker (Postgres) or runs it
+  inline (in-memory), journaling `compensation_scheduled`/`compensation_completed`
+  (or `compensation_failed`), then removes the activity from the pending
+  compensation set. Returns `{:ok, result}` or `{:error, reason}`.
+  """
+  @doc since: "0.3.0"
+  def compensate(ref_or_ok, {:command, command_base}) do
+    ref = unwrap_ref(ref_or_ok)
+    ctx = Context.get() || raise_not_in_workflow({:compensate, ref.activity_id})
+    {ctx, command_id} = assign_command_id(ctx, :erlang.append_element(command_base, ref.activity_id))
+    Context.put(ctx)
+
+    result = do_compensation(ref.activity_id, ref.compensate, command_id)
+    mark_compensated(ref.activity_id)
+    result
+  end
+
+  @doc """
+  Run all pending compensations in LIFO order (most-recent first).
+
+  Each entry is scheduled as a deterministic compensation effect with a stable
+  per-item command id derived from the call site, the target activity id, and
+  the LIFO index. Returns `:ok`.
+  """
+  @doc since: "0.3.0"
+  def compensate_all({:command, command_base}) do
+    ctx = Context.get() || raise_not_in_workflow(:compensate_all)
+    run_compensate_all(ctx.compensation_stack, command_base, 0)
+    :ok
   end
 
   # ---------------------------------------------------------------------------
@@ -146,6 +210,10 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp compute_live({:patched, _name}), do: true
+
+  defp compute_live({:compensation, _target_id, _mfa}) do
+    raise "Continuum.Runtime.Effect: compensation must run through do_compensation/3"
+  end
 
   defp compute_live({:await_signal, _name, _opts}) do
     throw({:continuum_suspend, :awaiting_signal})
@@ -389,6 +457,186 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
+  # --- Compensation (saga DSL) ----------------------------------------------
+
+  defp run_compensate_all([], _command_base, _index), do: :ok
+
+  defp run_compensate_all([{target_id, mfa} | rest], command_base, index) do
+    ctx = Context.get()
+
+    item_base =
+      command_base
+      |> :erlang.append_element(target_id)
+      |> :erlang.append_element(index)
+
+    {ctx, command_id} = assign_command_id(ctx, item_base)
+    Context.put(ctx)
+
+    _result = do_compensation(target_id, mfa, command_id)
+    mark_compensated(target_id)
+    run_compensate_all(rest, command_base, index + 1)
+  end
+
+  defp do_compensation(target_id, mfa, command_id) do
+    ctx = Context.get()
+    effect = {:compensation, target_id, mfa}
+
+    case snapshot_step(ctx, ctx.cursor) do
+      {:ok, step} ->
+        replay_snapshot_step!(ctx, step, effect, command_id)
+
+      :none ->
+        case history_event(ctx, ctx.cursor) do
+          :compacted_gap ->
+            raise Continuum.ReplayDriftError,
+              run_id: ctx.run_id,
+              cursor: ctx.cursor,
+              expected: :snapshot_step,
+              actual: effect
+
+          nil ->
+            live_compensation!(ctx, effect, command_id)
+
+          event ->
+            replay_event!(ctx, event, effect, command_id)
+        end
+    end
+  end
+
+  defp live_compensation!(
+         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         {:compensation, target_id, {mod, _fun, args} = mfa},
+         command_id
+       ) do
+    task_id = Ecto.UUID.generate()
+
+    event = %{
+      type: :compensation_scheduled,
+      target_activity_id: target_id,
+      mfa: mfa,
+      attempt: 1,
+      command_id: command_id,
+      seq: ctx.cursor
+    }
+
+    task = %{
+      id: task_id,
+      seq: ctx.cursor,
+      kind: :compensation,
+      target_activity_id: target_id,
+      mfa: mfa,
+      opts: [],
+      retry: retry_policy(mod, []),
+      timeout_ms: timeout_ms(mod, []),
+      idempotency_key: idempotency_key(mod, args, []),
+      command_id: command_id
+    }
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.schedule_compensation!(
+        ctx.instance,
+        ctx.run_id,
+        event,
+        task,
+        ctx.lease_token
+      )
+
+    Telemetry.execute([:continuum, :compensation, :scheduled], %{}, %{
+      run_id: ctx.run_id,
+      target_activity_id: target_id,
+      mfa: mfa,
+      seq: ctx.cursor
+    })
+
+    throw({:continuum_suspend, {:compensation_pending, task_id}})
+  end
+
+  defp live_compensation!(ctx, {:compensation, target_id, {mod, fun, args}} = effect, command_id) do
+    Telemetry.execute([:continuum, :compensation, :scheduled], %{}, %{
+      run_id: ctx.run_id,
+      target_activity_id: target_id,
+      mfa: {mod, fun, args}
+    })
+
+    result =
+      try do
+        {:ok, apply(mod, fun, args)}
+      rescue
+        error -> {:error, error}
+      catch
+        kind, reason -> {:error, {kind, reason}}
+      end
+
+    journal_live!(ctx, effect, result, command_id)
+    emit_compensation_result(ctx, target_id, result)
+    result
+  end
+
+  defp emit_compensation_result(ctx, target_id, {:ok, _result}) do
+    Telemetry.execute([:continuum, :compensation, :completed], %{}, %{
+      run_id: ctx.run_id,
+      target_activity_id: target_id
+    })
+  end
+
+  defp emit_compensation_result(ctx, target_id, {:error, error}) do
+    Telemetry.execute([:continuum, :compensation, :failed], %{}, %{
+      run_id: ctx.run_id,
+      target_activity_id: target_id,
+      error: error
+    })
+  end
+
+  defp maybe_wrap_activity(raw, {:activity, mfa, _opts}, opts, command_id) do
+    case Keyword.get(opts, :compensate) do
+      nil -> raw
+      compensate_mfa -> wrap_compensated(raw, mfa, compensate_mfa, command_id)
+    end
+  end
+
+  defp wrap_compensated({:ok, value}, mfa, compensate_mfa, activity_id) do
+    ctx = Context.get()
+    Context.put(%{ctx | compensation_stack: [{activity_id, compensate_mfa} | ctx.compensation_stack]})
+
+    {:ok,
+     %Continuum.ActivityRef{
+       activity_id: activity_id,
+       result: value,
+       raw_result: {:ok, value},
+       mfa: mfa,
+       compensate: compensate_mfa
+     }}
+  end
+
+  defp wrap_compensated({:error, _reason} = error, _mfa, _compensate_mfa, _activity_id), do: error
+
+  defp wrap_compensated(other, _mfa, _compensate_mfa, _activity_id) do
+    raise ArgumentError, """
+    an activity scheduled with `compensate:` must return {:ok, value} or \
+    {:error, reason}, got:
+
+      #{inspect(other)}
+
+    Wrap the activity's return in {:ok, value}, or drop the `compensate:` option \
+    if the activity does not need a compensation handle.
+    """
+  end
+
+  defp unwrap_ref(%Continuum.ActivityRef{} = ref), do: ref
+  defp unwrap_ref({:ok, %Continuum.ActivityRef{} = ref}), do: ref
+
+  defp unwrap_ref(other) do
+    raise ArgumentError,
+          "compensate/1 expects the %Continuum.ActivityRef{} returned by a compensated " <>
+            "activity (or {:ok, ref}), got: #{inspect(other)}"
+  end
+
+  defp mark_compensated(activity_id) do
+    ctx = Context.get()
+    stack = Enum.reject(ctx.compensation_stack, fn {id, _mfa} -> id == activity_id end)
+    Context.put(%{ctx | compensation_stack: stack})
+  end
+
   defp journal_patched!(ctx, patch_name, command_id) do
     event = %{
       type: :patched,
@@ -522,6 +770,27 @@ defmodule Continuum.Runtime.Effect do
     %{type: :timer_fired, duration_ms: ms, command_id: command_id, seq: seq}
   end
 
+  defp encode_event({:compensation, target_id, _mfa}, {:ok, value}, seq, command_id) do
+    %{
+      type: :compensation_completed,
+      target_activity_id: target_id,
+      result: value,
+      command_id: command_id,
+      seq: seq
+    }
+  end
+
+  defp encode_event({:compensation, target_id, _mfa}, {:error, error}, seq, command_id) do
+    %{
+      type: :compensation_failed,
+      target_activity_id: target_id,
+      error: error,
+      attempt: 1,
+      command_id: command_id,
+      seq: seq
+    }
+  end
+
   defp match_event(
          _ctx,
          %{type: :side_effect, kind: ek, payload: payload},
@@ -629,6 +898,46 @@ defmodule Continuum.Runtime.Effect do
 
   defp match_event(_ctx, %{type: :timer_fired}, {:timer, _ms}, _command_id), do: {:ok, :ok}
 
+  defp match_event(
+         ctx,
+         %{type: :compensation_scheduled, target_activity_id: etid},
+         {:compensation, ltid, _mfa},
+         command_id
+       )
+       when etid == ltid do
+    case history_event(ctx, ctx.cursor + 1) do
+      %{type: :compensation_completed, target_activity_id: ^etid, result: result} = event ->
+        if command_matches?(event, command_id), do: {:ok, {:ok, result}, 2}, else: :mismatch
+
+      %{type: :compensation_failed, target_activity_id: ^etid, error: error} = event ->
+        if command_matches?(event, command_id), do: {:ok, {:error, error}, 2}, else: :mismatch
+
+      nil ->
+        :pending
+
+      _other ->
+        :mismatch
+    end
+  end
+
+  defp match_event(
+         _ctx,
+         %{type: :compensation_completed, target_activity_id: etid, result: result},
+         {:compensation, ltid, _mfa},
+         _command_id
+       )
+       when etid == ltid,
+       do: {:ok, {:ok, result}}
+
+  defp match_event(
+         _ctx,
+         %{type: :compensation_failed, target_activity_id: etid, error: error},
+         {:compensation, ltid, _mfa},
+         _command_id
+       )
+       when etid == ltid,
+       do: {:ok, {:error, error}}
+
   defp match_event(_ctx, _, _, _), do: :mismatch
 
   defp assign_command_id(ctx, base) do
@@ -675,6 +984,7 @@ defmodule Continuum.Runtime.Effect do
 
   defp effect_shape({:await_signal, name, _opts}), do: {:await_signal, name}
   defp effect_shape({:timer, _ms}), do: {:timer, :timer}
+  defp effect_shape({:compensation, target_id, _mfa}), do: {:compensation, target_id}
 
   defp snapshot_step(ctx, cursor) do
     case Map.get(ctx.snapshot_steps || %{}, cursor) do
@@ -765,6 +1075,10 @@ defmodule Continuum.Runtime.Effect do
 
   defp pending_reason(%{type: :signal_awaited} = event) do
     {:awaiting_signal, Map.get(event, :name)}
+  end
+
+  defp pending_reason(%{type: :compensation_scheduled} = event) do
+    {:compensation_pending, Map.get(event, :target_activity_id)}
   end
 
   defp pending_reason(event), do: {:pending, Map.get(event, :type)}

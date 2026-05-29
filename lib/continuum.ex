@@ -221,6 +221,23 @@ defmodule Continuum do
   end
 
   @doc """
+  Recover an activity's raw return value from a compensation handle.
+
+  When an `activity/2` call uses `compensate:`, a success is returned as
+  `{:ok, %Continuum.ActivityRef{}}` rather than a bare term. `unwrap/1` peels the
+  ref back to the activity's raw return:
+
+    * `unwrap(%Continuum.ActivityRef{raw_result: raw})` → `raw`
+    * `unwrap({:ok, %Continuum.ActivityRef{} = ref})` → `ref.raw_result`
+    * `unwrap(other)` → `other` (activities without `compensate:` are unchanged)
+  """
+  @doc since: "0.3.0"
+  @spec unwrap(term()) :: term()
+  def unwrap(%Continuum.ActivityRef{raw_result: raw}), do: raw
+  def unwrap({:ok, %Continuum.ActivityRef{raw_result: raw}}), do: raw
+  def unwrap(other), do: other
+
+  @doc """
   Whether we are currently executing inside a workflow process. Useful
   in helper modules that branch on context.
   """

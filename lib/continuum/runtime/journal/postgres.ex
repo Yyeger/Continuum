@@ -211,6 +211,91 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  @doc """
+  Schedule a compensation activity task.
+
+  Reuses the activity-task append path: the `compensation_scheduled` event and
+  the worker task are inserted under the run lease in one transaction. The task
+  carries `kind: :compensation` and `target_activity_id` so the worker journals
+  `compensation_completed`/`compensation_failed` on completion.
+  """
+  def schedule_compensation!(%Instance{} = instance, run_id, event, task, lease_token) do
+    with_repo(instance, fn -> schedule_activity_with_repo!(run_id, event, task, lease_token) end)
+  end
+
+  def complete_compensation_task!(%Instance{} = instance, task, result, lease_token, opts \\ []) do
+    with_repo(instance, fn ->
+      complete_compensation_task_with_repo!(task, result, lease_token, opts)
+    end)
+  end
+
+  defp complete_compensation_task_with_repo!(task, result, lease_token, opts) do
+    idempotency = Keyword.get(opts, :idempotency)
+
+    tx_result =
+      repo().transaction(fn ->
+        lock_and_validate_active_run!(task.run_id, lease_token)
+        lock_and_validate_activity_task!(task)
+
+        committed_result = maybe_commit_idempotency_result(task, result, idempotency)
+        event = compensation_completed_event(task, committed_result)
+
+        with %{} <- insert_event!(task.run_id, event),
+             {1, _} <-
+               repo().update_all(
+                 from(t in ActivityTask,
+                   where:
+                     t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
+                       t.lease_owner == ^task.lease_owner
+                 ),
+                 set: [state: "completed", result: encode_term(committed_result)]
+               ) do
+          :ok
+        else
+          {0, _} -> repo().rollback({:compensation_task_result_failed, :task_lease_mismatch})
+        end
+      end)
+
+    case tx_result do
+      {:ok, :ok} ->
+        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token)
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres compensation task result failed: #{inspect(reason)}"
+    end
+  end
+
+  defp compensation_completed_event(task, result) do
+    %{
+      type: :compensation_completed,
+      target_activity_id: task.target_activity_id,
+      result: result,
+      command_id: Map.get(task, :command_id),
+      seq: task.seq + 1
+    }
+  end
+
+  def fail_compensation_task!(%Instance{} = instance, task, error, lease_token) do
+    with_repo(instance, fn ->
+      event = %{
+        type: :compensation_failed,
+        target_activity_id: task.target_activity_id,
+        error: error,
+        attempt: task.attempt,
+        command_id: Map.get(task, :command_id),
+        seq: task.seq + 1
+      }
+
+      activity_task_result!(
+        task,
+        event,
+        [state: "discarded", error: encode_term(error)],
+        lease_token
+      )
+    end)
+  end
+
   def get_activity_result(%Instance{} = instance, activity_module, idempotency_key) do
     with_repo(instance, fn -> get_activity_result_with_repo(activity_module, idempotency_key) end)
   end
@@ -1138,7 +1223,9 @@ defmodule Continuum.Runtime.Journal.Postgres do
       :activity_failed,
       :signal_received,
       :timer_fired,
-      :patched
+      :patched,
+      :compensation_completed,
+      :compensation_failed
     ]
   end
 

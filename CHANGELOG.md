@@ -4,6 +4,23 @@
 
 ### New surfaces
 
+- **Compensation / saga DSL.** `activity/2` accepts a `compensate:` `{m, f, a}`
+  option; a successful (`{:ok, value}`) compensated activity returns
+  `{:ok, %Continuum.ActivityRef{}}` carrying the compensation handle (activities
+  *without* `compensate:` are unchanged and still return a bare term). Two new
+  workflow macros roll work back:
+  - `compensate/1` — run one activity's compensation (by its `ActivityRef`) and
+    drop it from the pending set so `compensate_all/0` can't double-run it.
+  - `compensate_all/0` — run every pending compensation in LIFO order (most
+    recent first); ideal in a `rescue` clause.
+
+  Compensations flow through the same activity worker, retry policy, timeout,
+  idempotency side-table, and lease-fencing path as ordinary activities, and a
+  compensation that fails terminally journals `compensation_failed` without
+  killing the run. `Continuum.unwrap/1` recovers an activity's raw return from a
+  ref. New events `compensation_scheduled` / `compensation_completed` /
+  `compensation_failed` and telemetry `[:continuum, :compensation, :scheduled |
+  :completed | :failed]`. Compensations are captured by snapshots.
 - `Continuum.patched?/1` is now a real, journaled patch marker (was a `false`
   stub). It is a macro (capturing `__CALLER__` for a stable command identity);
   the first call at a source line journals a `patched` event with `value: true`

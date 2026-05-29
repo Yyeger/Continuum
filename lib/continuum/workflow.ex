@@ -107,6 +107,51 @@ defmodule Continuum.Workflow do
     end
   end
 
+  @doc """
+  Macro: run the compensation of one successful compensated activity.
+
+      {:ok, charge} = activity Payments.charge(id, total), compensate: {Payments, :refund, [id]}
+      # ...
+      compensate(charge)
+
+  Takes the `%Continuum.ActivityRef{}` (or `{:ok, ref}`) returned by a compensated
+  `activity/2` call, schedules its compensation MFA through the activity worker,
+  and removes it from the pending compensation set so a later `compensate_all/0`
+  cannot run it twice. Returns `{:ok, result}` or, if the compensation fails
+  terminally, `{:error, reason}` — the run continues either way.
+  """
+  @doc since: "0.3.0"
+  defmacro compensate(ref) do
+    command = command_base(__CALLER__, :compensate, :compensate)
+
+    quote do
+      Continuum.Runtime.Effect.compensate(
+        unquote(ref),
+        {:command, unquote(Macro.escape(command))}
+      )
+    end
+  end
+
+  @doc """
+  Macro: run all pending compensations in LIFO order (most-recent first).
+
+      rescue
+        e ->
+          compensate_all()
+          reraise e, __STACKTRACE__
+
+  Each successful compensated activity that has not already been compensated by
+  `compensate/1` is rolled back, newest first. Returns `:ok`.
+  """
+  @doc since: "0.3.0"
+  defmacro compensate_all do
+    command = command_base(__CALLER__, :compensate_all, :compensate_all)
+
+    quote do
+      Continuum.Runtime.Effect.compensate_all({:command, unquote(Macro.escape(command))})
+    end
+  end
+
   @doc "Returns a duration in milliseconds."
   defmacro seconds(n), do: quote(do: unquote(n) * 1_000)
   defmacro minutes(n), do: quote(do: unquote(n) * 60 * 1_000)
@@ -129,6 +174,8 @@ defmodule Continuum.Workflow do
           activity: 2,
           await: 1,
           timer: 1,
+          compensate: 1,
+          compensate_all: 0,
           seconds: 1,
           minutes: 1,
           hours: 1,

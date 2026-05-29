@@ -125,6 +125,36 @@ defmodule Continuum.Snapshot do
     one_step(event, :patched, patch_name, value)
   end
 
+  defp step_from(
+         %{type: :compensation_completed, target_activity_id: tid, result: result} = event,
+         _rest
+       ) do
+    one_step(event, :compensation, tid, {:ok, result})
+  end
+
+  defp step_from(
+         %{type: :compensation_failed, target_activity_id: tid, error: error} = event,
+         _rest
+       ) do
+    one_step(event, :compensation, tid, {:error, error})
+  end
+
+  defp step_from(%{type: :compensation_scheduled, target_activity_id: tid} = event, rest) do
+    with {:ok, next} <- next_event(event, rest),
+         :ok <- same_command?(event, next) do
+      case next.type do
+        :compensation_completed ->
+          paired_step(event, next, :compensation, tid, {:ok, next.result})
+
+        :compensation_failed ->
+          paired_step(event, next, :compensation, tid, {:error, next.error})
+
+        other ->
+          {:error, {:compensation_winner_mismatch, event.seq, other}}
+      end
+    end
+  end
+
   defp step_from(%{type: :activity_scheduled} = event, rest) do
     with {:ok, next} <- next_event(event, rest),
          :ok <- same_command?(event, next),

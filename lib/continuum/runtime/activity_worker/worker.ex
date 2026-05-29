@@ -100,33 +100,55 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
 
   defp complete(task, result, started_at, opts \\ []) do
     idempotency = idempotency(task)
+    duration = System.monotonic_time(:millisecond) - started_at
 
-    :ok =
-      Journal.Postgres.complete_activity_task!(
-        task.instance,
-        task,
-        result,
-        task.run_lease_token,
-        idempotency_opts(idempotency)
-      )
+    if compensation?(task) do
+      :ok =
+        Journal.Postgres.complete_compensation_task!(
+          task.instance,
+          task,
+          result,
+          task.run_lease_token,
+          idempotency_opts(idempotency)
+        )
 
-    Engine.wake(task.instance, task.run_id)
+      Engine.wake(task.instance, task.run_id)
 
-    if Keyword.get(opts, :idempotency_hit?, false) do
-      Telemetry.execute([:continuum, :activity, :idempotency_hit], %{}, %{
+      Telemetry.execute([:continuum, :compensation, :completed], %{duration_ms: duration}, %{
+        run_id: task.run_id,
+        task_id: task.id,
+        target_activity_id: task.target_activity_id,
+        attempt: task.attempt
+      })
+    else
+      :ok =
+        Journal.Postgres.complete_activity_task!(
+          task.instance,
+          task,
+          result,
+          task.run_lease_token,
+          idempotency_opts(idempotency)
+        )
+
+      Engine.wake(task.instance, task.run_id)
+
+      if Keyword.get(opts, :idempotency_hit?, false) do
+        Telemetry.execute([:continuum, :activity, :idempotency_hit], %{}, %{
+          run_id: task.run_id,
+          task_id: task.id,
+          mfa: task.mfa,
+          attempt: task.attempt,
+          idempotency_key: Keyword.fetch!(idempotency, :key)
+        })
+      end
+
+      Telemetry.execute([:continuum, :activity, :completed], %{duration_ms: duration}, %{
         run_id: task.run_id,
         task_id: task.id,
         mfa: task.mfa,
-        attempt: task.attempt,
-        idempotency_key: Keyword.fetch!(idempotency, :key)
+        attempt: task.attempt
       })
     end
-
-    Telemetry.execute(
-      [:continuum, :activity, :completed],
-      %{duration_ms: System.monotonic_time(:millisecond) - started_at},
-      %{run_id: task.run_id, task_id: task.id, mfa: task.mfa, attempt: task.attempt}
-    )
   end
 
   defp fail_or_retry(task, error, started_at) do
@@ -165,15 +187,38 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp fail(task, error, started_at) do
-    :ok = Journal.Postgres.fail_activity_task!(task.instance, task, error, task.run_lease_token)
-    Engine.wake(task.instance, task.run_id)
+    duration = System.monotonic_time(:millisecond) - started_at
 
-    Telemetry.execute(
-      [:continuum, :activity, :failed],
-      %{duration_ms: System.monotonic_time(:millisecond) - started_at},
-      %{run_id: task.run_id, task_id: task.id, mfa: task.mfa, attempt: task.attempt, error: error}
-    )
+    if compensation?(task) do
+      # Terminal compensation failure does not kill the run: journal the failure
+      # and let the workflow continue per its control flow.
+      :ok =
+        Journal.Postgres.fail_compensation_task!(task.instance, task, error, task.run_lease_token)
+
+      Engine.wake(task.instance, task.run_id)
+
+      Telemetry.execute([:continuum, :compensation, :failed], %{duration_ms: duration}, %{
+        run_id: task.run_id,
+        task_id: task.id,
+        target_activity_id: task.target_activity_id,
+        attempt: task.attempt,
+        error: error
+      })
+    else
+      :ok = Journal.Postgres.fail_activity_task!(task.instance, task, error, task.run_lease_token)
+      Engine.wake(task.instance, task.run_id)
+
+      Telemetry.execute([:continuum, :activity, :failed], %{duration_ms: duration}, %{
+        run_id: task.run_id,
+        task_id: task.id,
+        mfa: task.mfa,
+        attempt: task.attempt,
+        error: error
+      })
+    end
   end
+
+  defp compensation?(task), do: Map.get(task, :kind) == :compensation
 
   defp max_attempts(retry) do
     Keyword.get(retry || [], :max_attempts, 1)

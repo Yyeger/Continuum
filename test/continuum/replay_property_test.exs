@@ -29,6 +29,28 @@ defmodule Continuum.ReplayPropertyTest do
     end
   end
 
+  defmodule SagaPropertyActivity do
+    def run(step), do: {:ok, step}
+  end
+
+  defmodule SagaPropertyComp do
+    def undo(step), do: {:undone, step}
+  end
+
+  defmodule SagaPropertyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      Enum.each(input.steps, fn step ->
+        {:ok, _ref} =
+          activity(SagaPropertyActivity.run(step), compensate: {SagaPropertyComp, :undo, [step]})
+      end)
+
+      compensate_all()
+      {:ok, :done}
+    end
+  end
+
   defmodule MixedOperationFlow do
     use Continuum.Workflow, version: 1
 
@@ -109,6 +131,23 @@ defmodule Continuum.ReplayPropertyTest do
 
       assert Continuum.Test.assert_replays(PatchedMixFlow, %{seed: seed}, history) == expected
       assert_snapshot_replays(PatchedMixFlow, %{seed: seed}, history, expected)
+    end
+  end
+
+  property "saga histories (compensated activities + compensate_all) replay identically and snapshot" do
+    check all(steps <- list_of(integer(-50..50), min_length: 1, max_length: 8), max_runs: 20) do
+      Continuum.Test.reset_in_memory!()
+
+      {:ok, run_id} = Continuum.Test.start_synchronous(SagaPropertyFlow, %{steps: steps})
+      assert {:ok, %{state: :completed, result: {:ok, :done}}} = Continuum.await(run_id, 1_000)
+
+      history = Continuum.Test.history(run_id)
+      assert Enum.count(history, &(&1.type == :compensation_completed)) == length(steps)
+
+      assert Continuum.Test.assert_replays(SagaPropertyFlow, %{steps: steps}, history) ==
+               {:ok, :done}
+
+      assert_snapshot_replays(SagaPropertyFlow, %{steps: steps}, history, {:ok, :done})
     end
   end
 
