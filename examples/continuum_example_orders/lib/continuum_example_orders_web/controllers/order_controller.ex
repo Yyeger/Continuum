@@ -39,7 +39,7 @@ defmodule ContinuumExampleOrdersWeb.OrderController do
   def fraud_review(conn, _params), do: invalid_fraud_review_decision(conn)
 
   defp signal_fraud_review(conn, run_id, signal) do
-    case Continuum.signal(run_id, :fraud_review, signal, instance: :continuum_example_orders) do
+    case Continuum.signal(run_id, :fraud_review, signal, @workflow_opts) do
       :ok ->
         json(conn, %{ok: true})
 
