@@ -97,6 +97,29 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             <div><span>Next wakeup</span><.timestamp value={@run.next_wakeup_at} /></div>
           </section>
 
+          <%= if @run.parent_run_id || @run.continued_from_run_id || @continues_to do %>
+            <section class="co-lineage">
+              <%= if @run.parent_run_id do %>
+                <div>
+                  <span>Parent</span>
+                  <a href={"#{@observer_path}/#{@run.parent_run_id}"}><code><%= @run.parent_run_id %></code></a>
+                </div>
+              <% end %>
+              <%= if @run.continued_from_run_id do %>
+                <div>
+                  <span>Continued from</span>
+                  <a href={"#{@observer_path}/#{@run.continued_from_run_id}"}><code><%= @run.continued_from_run_id %></code></a>
+                </div>
+              <% end %>
+              <%= if @continues_to do %>
+                <div>
+                  <span>Continues to</span>
+                  <a href={"#{@observer_path}/#{@continues_to}"}><code><%= @continues_to %></code></a>
+                </div>
+              <% end %>
+            </section>
+          <% end %>
+
           <section class="co-actions">
             <button id="co-cancel-run" phx-click="cancel" disabled={@run.state in [:completed, :failed, :cancelled]}>Cancel</button>
 
@@ -111,7 +134,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             <h2>Event Timeline</h2>
             <ol class="co-timeline">
               <%= for event <- @events do %>
-                <li>
+                <li class={event_class(event.type)}>
                   <header>
                     <code>#<%= event.seq %></code>
                     <strong><%= event.type %></strong>
@@ -138,16 +161,19 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         socket
         |> assign(:run, run)
         |> assign(:events, events)
+        |> assign(:continues_to, Continuum.Observer.successor_run_id(run_id, instance: instance))
       else
         {:error, :not_found} ->
           socket
           |> assign(:run, nil)
           |> assign(:events, [])
+          |> assign(:continues_to, nil)
 
         {:error, reason} ->
           socket
           |> assign(:run, nil)
           |> assign(:events, [])
+          |> assign(:continues_to, nil)
           |> put_flash(:error, "Observer query failed: #{inspect(reason)}")
       end
     end

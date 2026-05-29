@@ -15,6 +15,12 @@ defmodule Continuum.OpenTelemetry do
       run suspends, completes, fails, is cancelled, or loses its lease
     * a `continuum.activity_attempt` span for each activity attempt, closed
       when the activity completes, fails, or is retried
+    * a `continuum.compensation_attempt` span for each compensation attempt,
+      closed when the compensation completes or fails
+
+  Child-workflow and `continue_as_new` events are recorded as breadcrumbs on the
+  parent/originating run-attempt span; a child's own execution is already
+  captured by its own `continuum.run_attempt` spans, correlated by run id.
 
   Run-attempt spans always include `continuum.run_id`. When the run metadata
   contains a persisted W3C `traceparent`, the span also gets a link to that
@@ -44,6 +50,11 @@ defmodule Continuum.OpenTelemetry do
     [:continuum, :activity, :failed],
     [:continuum, :activity, :retried]
   ]
+  @compensation_start [:continuum, :compensation, :started]
+  @compensation_end [
+    [:continuum, :compensation, :completed],
+    [:continuum, :compensation, :failed]
+  ]
   @breadcrumbs [
     [:continuum, :activity, :scheduled],
     [:continuum, :activity, :idempotency_hit],
@@ -51,10 +62,17 @@ defmodule Continuum.OpenTelemetry do
     [:continuum, :timer, :fired],
     [:continuum, :signal, :awaited],
     [:continuum, :signal, :delivered],
-    [:continuum, :signal, :received]
+    [:continuum, :signal, :received],
+    [:continuum, :compensation, :scheduled],
+    [:continuum, :child, :started],
+    [:continuum, :child, :completed],
+    [:continuum, :child, :failed],
+    [:continuum, :run, :continued_as_new],
+    [:continuum, :patched, :hit]
   ]
 
-  @events [@run_start, @activity_start] ++ @run_end ++ @activity_end ++ @breadcrumbs
+  @events [@run_start, @activity_start, @compensation_start] ++
+            @run_end ++ @activity_end ++ @compensation_end ++ @breadcrumbs
 
   @typedoc "Handler id returned by `setup/1` and accepted by `detach/1`."
   @type handler_id :: term()
@@ -127,6 +145,28 @@ defmodule Continuum.OpenTelemetry do
   end
 
   def handle_event(event, measurements, metadata, state) when event in @activity_end do
+    span = Process.get(activity_span_key(metadata))
+
+    if span_started?(span) do
+      add_event(state, span, event_name(event), event_attributes(measurements, metadata))
+      end_span(state, span, span_status(event), terminal_attributes(event, metadata))
+      Process.delete(activity_span_key(metadata))
+    end
+
+    :ok
+  end
+
+  def handle_event(@compensation_start, _measurements, metadata, state) do
+    span =
+      start_span(state, "continuum.compensation_attempt", compensation_attributes(metadata),
+        links: active_run_link(state.tracer)
+      )
+
+    Process.put(activity_span_key(metadata), span)
+    :ok
+  end
+
+  def handle_event(event, measurements, metadata, state) when event in @compensation_end do
     span = Process.get(activity_span_key(metadata))
 
     if span_started?(span) do
@@ -342,6 +382,16 @@ defmodule Continuum.OpenTelemetry do
     |> Map.merge(mfa_attributes(Map.get(metadata, :mfa)))
   end
 
+  defp compensation_attributes(metadata) do
+    take_attributes(metadata, %{
+      instance: "continuum.instance",
+      run_id: "continuum.run_id",
+      task_id: "continuum.task_id",
+      target_activity_id: "continuum.target_activity_id",
+      attempt: "continuum.attempt"
+    })
+  end
+
   defp terminal_attributes(event, metadata) do
     metadata
     |> take_attributes(%{
@@ -370,7 +420,15 @@ defmodule Continuum.OpenTelemetry do
         fires_at: "continuum.fires_at",
         retry_at: "continuum.retry_at",
         error: "continuum.error",
-        reason: "continuum.reason"
+        reason: "continuum.reason",
+        target_activity_id: "continuum.target_activity_id",
+        parent_run_id: "continuum.parent_run_id",
+        child_run_id: "continuum.child_run_id",
+        from_run_id: "continuum.from_run_id",
+        to_run_id: "continuum.to_run_id",
+        workflow: "continuum.workflow",
+        patch_name: "continuum.patch_name",
+        value: "continuum.value"
       })
     )
   end
@@ -415,6 +473,7 @@ defmodule Continuum.OpenTelemetry do
   defp span_status([:continuum, :run, :lease_lost]), do: :error
   defp span_status([:continuum, :activity, :failed]), do: :error
   defp span_status([:continuum, :activity, :retried]), do: :error
+  defp span_status([:continuum, :compensation, :failed]), do: :error
   defp span_status(_event), do: :unset
 
   @doc false

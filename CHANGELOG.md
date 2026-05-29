@@ -102,6 +102,17 @@
 - Starting a durable run now fails loudly if the workflow module does not
   expose `__continuum_workflow__/0`.
 
+### Observability
+
+- The Observer run-detail timeline now colours `compensation_*`, `child_*`,
+  `run_continued_as_new`, and `patched` events, and the run header links to the
+  `parent_run_id` and the "continued from / continues to" runs of a
+  `continue_as_new` chain.
+- `Continuum.OpenTelemetry` adds a `continuum.compensation_attempt` span and
+  records child-workflow and `continue_as_new` events as breadcrumbs on the
+  originating run-attempt span (a child's own work is captured by its own run
+  spans, correlated by run id).
+
 ### Telemetry additions
 
 - `[:continuum, :run, :unknown_version]`

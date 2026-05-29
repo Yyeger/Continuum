@@ -174,6 +174,61 @@ defmodule Continuum.OpenTelemetryTest do
                     %{"continuum.terminal_event" => "run.suspended"}}
   end
 
+  test "creates and closes a compensation-attempt span" do
+    run_id = Ecto.UUID.generate()
+    task_id = Ecto.UUID.generate()
+
+    Continuum.Telemetry.execute([:continuum, :compensation, :started], %{}, %{
+      run_id: run_id,
+      task_id: task_id,
+      target_activity_id: {:cmd, 0},
+      attempt: 1
+    })
+
+    assert_receive {:span_started, comp_span, "continuum.compensation_attempt", attrs, []}
+    assert attrs["continuum.run_id"] == run_id
+
+    Continuum.Telemetry.execute([:continuum, :compensation, :failed], %{duration_ms: 5}, %{
+      run_id: run_id,
+      task_id: task_id,
+      target_activity_id: {:cmd, 0},
+      error: :boom
+    })
+
+    assert_receive {:span_ended, ^comp_span, :error,
+                    %{"continuum.terminal_event" => "compensation.failed"}}
+  end
+
+  test "records child and continue_as_new breadcrumbs on the run-attempt span" do
+    run_id = Ecto.UUID.generate()
+
+    Continuum.Telemetry.execute([:continuum, :run, :started], %{}, %{
+      instance: Continuum,
+      run_id: run_id,
+      workflow: ActivityFlow,
+      lease_token: 1
+    })
+
+    assert_receive {:span_started, run_span, "continuum.run_attempt", _attrs, []}
+
+    Continuum.Telemetry.execute([:continuum, :child, :started], %{}, %{
+      parent_run_id: run_id,
+      child_run_id: "child-1",
+      workflow: ActivityFlow
+    })
+
+    assert_receive {:span_event, ^run_span, "child.started", child_attrs}
+    assert child_attrs["continuum.child_run_id"] == "child-1"
+
+    Continuum.Telemetry.execute([:continuum, :run, :continued_as_new], %{}, %{
+      from_run_id: run_id,
+      to_run_id: "next-1"
+    })
+
+    assert_receive {:span_event, ^run_span, "run.continued_as_new", cont_attrs}
+    assert cont_attrs["continuum.to_run_id"] == "next-1"
+  end
+
   test "closes each retried activity attempt span" do
     run_id = Ecto.UUID.generate()
     task_id = Ecto.UUID.generate()

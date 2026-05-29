@@ -31,12 +31,7 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   def handle_continue(:run, task) do
     started_at = System.monotonic_time(:millisecond)
 
-    Telemetry.execute([:continuum, :activity, :started], %{}, %{
-      run_id: task.run_id,
-      task_id: task.id,
-      mfa: task.mfa,
-      attempt: task.attempt
-    })
+    emit_started(task)
 
     case idempotency_hit(task) do
       {:hit, result} ->
@@ -219,6 +214,24 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
   end
 
   defp compensation?(task), do: Map.get(task, :kind) == :compensation
+
+  defp emit_started(task) do
+    if compensation?(task) do
+      Telemetry.execute([:continuum, :compensation, :started], %{}, %{
+        run_id: task.run_id,
+        task_id: task.id,
+        target_activity_id: task.target_activity_id,
+        attempt: task.attempt
+      })
+    else
+      Telemetry.execute([:continuum, :activity, :started], %{}, %{
+        run_id: task.run_id,
+        task_id: task.id,
+        mfa: task.mfa,
+        attempt: task.attempt
+      })
+    end
+  end
 
   defp max_attempts(retry) do
     Keyword.get(retry || [], :max_attempts, 1)

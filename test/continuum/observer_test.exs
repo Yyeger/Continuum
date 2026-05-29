@@ -106,6 +106,52 @@ defmodule Continuum.ObserverTest do
     assert_receive {:run_state_changed, ^run_id, :suspended}
   end
 
+  test "exposes parent/child and continue_as_new lineage" do
+    alias Continuum.Schema.Run
+
+    parent = Ecto.UUID.generate()
+    child = Ecto.UUID.generate()
+    next = Ecto.UUID.generate()
+
+    Repo.insert!(%Run{
+      id: parent,
+      workflow: "P",
+      version_hash: "h",
+      state: "running",
+      input: :erlang.term_to_binary(%{})
+    })
+
+    Repo.insert!(%Run{
+      id: child,
+      workflow: "C",
+      version_hash: "h",
+      state: "completed",
+      input: :erlang.term_to_binary(%{}),
+      parent_run_id: parent,
+      correlation_id: child,
+      result: :erlang.term_to_binary({:continued, next})
+    })
+
+    Repo.insert!(%Run{
+      id: next,
+      workflow: "C",
+      version_hash: "h",
+      state: "completed",
+      input: :erlang.term_to_binary(%{}),
+      parent_run_id: parent,
+      correlation_id: child,
+      continued_from_run_id: child
+    })
+
+    assert {:ok, run} = Continuum.Observer.get_run(child)
+    assert run.parent_run_id == parent
+    assert run.correlation_id == child
+    assert run.continued_from_run_id == nil
+
+    assert Continuum.Observer.successor_run_id(child) == next
+    assert Continuum.Observer.successor_run_id(next) == nil
+  end
+
   defp await_postgres(run_id) do
     Continuum.await(run_id, 1_000, journal: Continuum.Runtime.Journal.Postgres)
   end

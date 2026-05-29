@@ -134,6 +134,22 @@ defmodule Continuum.Observer do
   end
 
   @doc """
+  Returns the run id that this run continued into via `continue_as_new`, or nil.
+  """
+  @spec successor_run_id(binary(), keyword()) :: binary() | nil
+  def successor_run_id(run_id, opts \\ []) do
+    case repo_instance(opts) do
+      {:ok, instance} ->
+        instance.repo.one(
+          from(r in Run, where: r.continued_from_run_id == ^run_id, select: r.id)
+        )
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
   Lists decoded journal events for a run ordered by sequence.
   """
   @spec list_events(binary(), keyword()) :: {:ok, [map()]} | {:error, term()}
@@ -277,7 +293,10 @@ defmodule Continuum.Observer do
       lease_token: run.lease_token,
       lease_expires_at: run.lease_expires_at,
       next_wakeup_at: run.next_wakeup_at,
-      retention_until: run.retention_until
+      retention_until: run.retention_until,
+      parent_run_id: run.parent_run_id,
+      correlation_id: run.correlation_id,
+      continued_from_run_id: run.continued_from_run_id
     }
   end
 
