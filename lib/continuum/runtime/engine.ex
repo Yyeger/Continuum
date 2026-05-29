@@ -349,6 +349,9 @@ defmodule Continuum.Runtime.Engine do
       {:continuum_suspend, reason} ->
         suspend_run(state, reason)
 
+      {:continuum_continued_as_new, next_run_id} ->
+        continued_run(state, next_run_id)
+
       kind, reason ->
         stacktrace = __STACKTRACE__
 
@@ -434,6 +437,18 @@ defmodule Continuum.Runtime.Engine do
   rescue
     error ->
       if lease_lost?(:error, error), do: lease_lost(state), else: reraise(error, __STACKTRACE__)
+  end
+
+  defp continued_run(state, next_run_id) do
+    # The run row was already marked completed (with result {:continued, _}) in
+    # the continue_as_new transaction; the engine just acknowledges and stops.
+    # The Dispatcher claims the fresh run on its next poll.
+    :ok =
+      broadcast_run_finished(state.instance, state.run_id, :completed, {:continued, next_run_id})
+
+    Continuum.Observer.broadcast_run_state_changed(state.instance, state.run_id, :completed)
+
+    %{state | status: :completed, result: {:continued, next_run_id}}
   end
 
   defp suspend_run(state, reason) do

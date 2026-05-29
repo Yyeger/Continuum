@@ -24,6 +24,7 @@ defmodule Continuum.Test do
   @type replay_result ::
           {:ok, term()}
           | {:suspended, term()}
+          | {:continued, binary()}
           | {:error, term()}
 
   @doc """
@@ -121,6 +122,9 @@ defmodule Continuum.Test do
     catch
       {token, reason} when token == :continuum_suspend ->
         {:suspended, reason}
+
+      {token, next_run_id} when token == :continuum_continued_as_new ->
+        {:continued, next_run_id}
 
       kind, reason ->
         {:error, {kind, reason, __STACKTRACE__}}

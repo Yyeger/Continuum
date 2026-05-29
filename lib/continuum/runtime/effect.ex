@@ -182,6 +182,50 @@ defmodule Continuum.Runtime.Effect do
   end
 
   @doc """
+  Complete this run as `{:continued, next_run_id}` and start a fresh run on the
+  same workflow with new input. Throws the `:continuum_continued_as_new`
+  sentinel; the engine acknowledges it and stops without re-entering the
+  workflow.
+  """
+  @doc since: "0.3.0"
+  def continue_as_new(input, {:command, command_base}) do
+    ctx = Context.get() || raise_not_in_workflow(:continue_as_new)
+    {ctx, command_id} = assign_command_id(ctx, command_base)
+    Context.put(ctx)
+
+    case snapshot_step(ctx, ctx.cursor) do
+      {:ok, %{effect_type: :continue_as_new} = step} ->
+        if command_matches?(step, command_id) do
+          throw({:continuum_continued_as_new, Map.get(step, :result)})
+        else
+          raise_continue_drift(ctx, step, command_id)
+        end
+
+      {:ok, step} ->
+        raise_continue_drift(ctx, step, command_id)
+
+      :none ->
+        case history_event(ctx, ctx.cursor) do
+          :compacted_gap ->
+            raise_continue_drift(ctx, :snapshot_step, command_id)
+
+          nil ->
+            live_continue_as_new!(ctx, input, command_id)
+
+          %{type: :run_continued_as_new} = event ->
+            if command_matches?(event, command_id) do
+              throw({:continuum_continued_as_new, Map.get(event, :next_run_id)})
+            else
+              raise_continue_drift(ctx, event, command_id)
+            end
+
+          other ->
+            raise_continue_drift(ctx, other, command_id)
+        end
+    end
+  end
+
+  @doc """
   Suspend until the child referenced by `ref` terminates; return its result.
 
   Returns the child's result on completion, `{:error, error}` on child failure,
@@ -766,6 +810,56 @@ defmodule Continuum.Runtime.Effect do
       parent_run_id: ctx.run_id,
       child_run_id: child_run_id
     })
+  end
+
+  # --- continue_as_new -------------------------------------------------------
+
+  defp live_continue_as_new!(%{journal: Continuum.Runtime.Journal.Postgres} = ctx, input, command_id) do
+    next_run_id = deterministic_continue_run_id(ctx.run_id, command_id)
+
+    event = %{
+      type: :run_continued_as_new,
+      next_run_id: next_run_id,
+      next_input_hash: hash_term(input),
+      command_id: command_id,
+      seq: ctx.cursor
+    }
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.continue_as_new!(
+        ctx.instance,
+        ctx.run_id,
+        next_run_id,
+        input,
+        event,
+        ctx.lease_token
+      )
+
+    Telemetry.execute([:continuum, :run, :continued_as_new], %{}, %{
+      from_run_id: ctx.run_id,
+      to_run_id: next_run_id
+    })
+
+    throw({:continuum_continued_as_new, next_run_id})
+  end
+
+  defp live_continue_as_new!(_ctx, _input, _command_id) do
+    raise "continue_as_new requires the Postgres journal (it is durable-only)"
+  end
+
+  defp raise_continue_drift(ctx, expected, _command_id) do
+    raise Continuum.ReplayDriftError,
+      run_id: ctx.run_id,
+      cursor: ctx.cursor,
+      expected: expected,
+      actual: :continue_as_new
+  end
+
+  defp deterministic_continue_run_id(run_id, command_id) do
+    <<u0::48, _::4, u1::12, _::2, u2::62, _rest::binary>> =
+      :crypto.hash(:sha256, :erlang.term_to_binary({:continue_as_new, run_id, command_id}))
+
+    Ecto.UUID.load!(<<u0::48, 5::4, u1::12, 2::2, u2::62>>)
   end
 
   defp deterministic_child_run_id(parent_run_id, command_id, id_opt) do

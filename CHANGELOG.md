@@ -4,6 +4,18 @@
 
 ### New surfaces
 
+- **`continue_as_new/1`.** A tail-call continuation for long-running /
+  cron-style workflows: completes the current run as
+  `result: {:continued, next_run_id}` and starts a fresh run on the same
+  workflow with new input, keeping per-run history bounded. The whole chain
+  shares a `correlation_id` (the chain root's id) and each run records its
+  `continued_from_run_id` predecessor; a continued *child* keeps its
+  `parent_run_id`, and a parent's `await_child` follows the chain forward to the
+  terminal run's real result (never an intermediate `{:continued, _}`). Throws a
+  distinct `:continuum_continued_as_new` sentinel so the engine stops cleanly
+  instead of re-entering the workflow. New event `run_continued_as_new`,
+  telemetry `[:continuum, :run, :continued_as_new]`. Requires the Postgres
+  journal.
 - **Parent/child workflows.** Compose workflows out of child runs:
   - `await child Mod.run(input)` — start a child synchronously, suspend, and
     return its result.

@@ -339,14 +339,21 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp child_terminal_state(child_run_id) do
+    # Follow a `continue_as_new` chain forward to its terminal run so a parent
+    # never sees an intermediate `{:continued, _}` marker as the child result.
+    terminal_id = follow_continued_chain(child_run_id)
+
     case repo().one(
-           from(r in Run, where: r.id == ^child_run_id, select: {r.state, r.result, r.error})
+           from(r in Run, where: r.id == ^terminal_id, select: {r.state, r.result, r.error})
          ) do
       nil ->
         :pending
 
       {"completed", result, _error} ->
-        {:completed, decode_term(result)}
+        case decode_term(result) do
+          {:continued, _next_run_id} -> :pending
+          decoded -> {:completed, decoded}
+        end
 
       {"failed", _result, error} ->
         decoded = decode_term(error)
@@ -354,6 +361,107 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       {_state, _result, _error} ->
         :pending
+    end
+  end
+
+  defp follow_continued_chain(run_id) do
+    sql = """
+    WITH RECURSIVE chain AS (
+      SELECT id, 0 AS depth FROM continuum_runs WHERE id = $1
+      UNION ALL
+      SELECT c.id, ch.depth + 1
+      FROM continuum_runs c
+      JOIN chain ch ON c.continued_from_run_id = ch.id
+    )
+    SELECT id::text FROM chain ORDER BY depth DESC LIMIT 1
+    """
+
+    case repo().query(sql, [Ecto.UUID.dump!(run_id)]) do
+      {:ok, %{rows: [[terminal_id]]}} -> terminal_id
+      _ -> run_id
+    end
+  end
+
+  @doc """
+  Complete the current run as `{:continued, next_run_id}` and insert the fresh
+  continuation run, in one lease-CAS-guarded transaction.
+
+  The new run carries `continued_from_run_id`, the chain's `correlation_id`
+  (the chain root's id), and any `parent_run_id`/`parent_command_id` so a
+  continued child stays a child.
+  """
+  def continue_as_new!(%Instance{} = instance, run_id, next_run_id, next_input, event, lease_token) do
+    with_repo(instance, fn ->
+      continue_as_new_with_repo!(run_id, next_run_id, next_input, event, lease_token)
+    end)
+  end
+
+  defp continue_as_new_with_repo!(run_id, next_run_id, next_input, event, lease_token) do
+    {event_type, payload} = encode_event(event)
+    now = DateTime.utc_now()
+
+    result =
+      repo().transaction(fn ->
+        run = repo().one(from(r in Run, where: r.id == ^run_id, lock: "FOR UPDATE"))
+
+        case run do
+          nil ->
+            repo().rollback({:run_not_found, run_id})
+
+          %Run{state: state} when state not in ["running", "suspended"] ->
+            repo().rollback({:run_not_active, state})
+
+          %Run{} = run ->
+            :ok = validate_lease!(run, lease_token)
+            correlation = run.correlation_id || run.id
+
+            event_changeset =
+              %Event{}
+              |> Ecto.Changeset.change(%{
+                run_id: run_id,
+                seq: event.seq,
+                event_type: event_type,
+                payload: payload,
+                inserted_at: now
+              })
+
+            next_changeset =
+              %Run{}
+              |> Ecto.Changeset.change(%{
+                id: next_run_id,
+                workflow: run.workflow,
+                version_hash: run.version_hash,
+                state: "running",
+                input: encode_term(next_input),
+                correlation_id: correlation,
+                continued_from_run_id: run_id,
+                parent_run_id: run.parent_run_id,
+                parent_command_id: run.parent_command_id,
+                trace_context: run.trace_context
+              })
+
+            with {:ok, _event} <- repo().insert(event_changeset),
+                 {:ok, _next} <- repo().insert(next_changeset),
+                 :ok <-
+                   cas_update_run(run_id, lease_token, %{
+                     state: "completed",
+                     result: encode_term({:continued, next_run_id}),
+                     correlation_id: correlation,
+                     completed_at: now
+                   }) do
+              :ok
+            else
+              {:error, changeset} -> repo().rollback({:continue_as_new_failed, changeset})
+            end
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres continue_as_new! failed: #{inspect(reason)}"
     end
   end
 

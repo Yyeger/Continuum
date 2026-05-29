@@ -163,6 +163,37 @@ defmodule Continuum.Workflow do
   end
 
   @doc """
+  Macro: tail-call continuation — complete this run and start a fresh one on the
+  same workflow with new input.
+
+      def run(%{cycles_done: n} = state) do
+        activity Billing.charge(state.customer_id)
+        timer(days(30))
+
+        if n >= 11 do
+          {:ok, :year_complete}
+        else
+          continue_as_new(%{state | cycles_done: n + 1})
+        end
+      end
+
+  The current run is marked `completed` with `result: {:continued, next_run_id}`;
+  a new run starts with the given input, sharing the chain's `correlation_id`.
+  Use it to keep history bounded for long-running / cron-style workflows.
+  """
+  @doc since: "0.3.0"
+  defmacro continue_as_new(input) do
+    command = command_base(__CALLER__, :continue_as_new, :continue_as_new)
+
+    quote do
+      Continuum.Runtime.Effect.continue_as_new(
+        unquote(input),
+        {:command, unquote(Macro.escape(command))}
+      )
+    end
+  end
+
+  @doc """
   Macro: durable timer.
 
       timer(hours(24))
@@ -251,6 +282,7 @@ defmodule Continuum.Workflow do
           start_child: 3,
           await_child: 1,
           child: 1,
+          continue_as_new: 1,
           seconds: 1,
           minutes: 1,
           hours: 1,
