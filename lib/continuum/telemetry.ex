@@ -20,6 +20,9 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :compensation, :scheduled]`
     * `[:continuum, :compensation, :completed]`
     * `[:continuum, :compensation, :failed]`
+    * `[:continuum, :child, :started]`
+    * `[:continuum, :child, :completed]`
+    * `[:continuum, :child, :failed]`
     * `[:continuum, :activity, :scheduled]`
     * `[:continuum, :activity, :started]`
     * `[:continuum, :activity, :completed]`
@@ -71,6 +74,9 @@ defmodule Continuum.Telemetry do
     [:continuum, :compensation, :scheduled],
     [:continuum, :compensation, :completed],
     [:continuum, :compensation, :failed],
+    [:continuum, :child, :started],
+    [:continuum, :child, :completed],
+    [:continuum, :child, :failed],
     [:continuum, :activity, :scheduled],
     [:continuum, :activity, :started],
     [:continuum, :activity, :completed],

@@ -78,6 +78,10 @@ defmodule Continuum.Workflow do
 
       await signal(:approved)
       await signal(:approved, timeout: hours(24))
+
+  Or wait for a child workflow:
+
+      await child MyApp.AuditFlow.run(%{batch_id: id})
   """
   defmacro await({:signal, _, args}) do
     {name, opts} = parse_signal_args(args)
@@ -89,6 +93,73 @@ defmodule Continuum.Workflow do
         {:command, unquote(Macro.escape(command))}
       )
     end
+  end
+
+  defmacro await({:child, _, [{{:., _, [mod_alias, _fun]}, _, [input]}]}) do
+    start_command = command_base(__CALLER__, :start_child, :child)
+    await_command = command_base(__CALLER__, :await_child, :child)
+
+    quote do
+      ref =
+        Continuum.Runtime.Effect.start_child(
+          unquote(mod_alias),
+          unquote(input),
+          [],
+          {:command, unquote(Macro.escape(start_command))}
+        )
+
+      Continuum.Runtime.Effect.await_child(
+        ref,
+        {:command, unquote(Macro.escape(await_command))}
+      )
+    end
+  end
+
+  @doc """
+  Macro: start a child workflow asynchronously, returning a `%Continuum.ChildRef{}`.
+
+      ref = start_child MyApp.OrderFlow, %{order_id: id}, id: "order-\#{id}"
+      # ... do other work ...
+      result = await_child(ref)
+
+  `opts` accepts `id:` to tie the child's deterministic run id to a key under
+  this parent.
+  """
+  @doc since: "0.3.0"
+  defmacro start_child(workflow, input, opts \\ []) do
+    command = command_base(__CALLER__, :start_child, :child)
+
+    quote do
+      Continuum.Runtime.Effect.start_child(
+        unquote(workflow),
+        unquote(input),
+        unquote(opts),
+        {:command, unquote(Macro.escape(command))}
+      )
+    end
+  end
+
+  @doc """
+  Macro: suspend until a previously `start_child`-ed child terminates.
+
+  Returns the child's result (`{:ok, _}`/`{:error, _}` term), the error on child
+  failure, or `{:error, :child_cancelled}` if the child was cancelled.
+  """
+  @doc since: "0.3.0"
+  defmacro await_child(ref) do
+    command = command_base(__CALLER__, :await_child, :child)
+
+    quote do
+      Continuum.Runtime.Effect.await_child(
+        unquote(ref),
+        {:command, unquote(Macro.escape(command))}
+      )
+    end
+  end
+
+  @doc false
+  defmacro child(_call) do
+    raise "`child` is only valid in the `await child Mod.run(args)` form"
   end
 
   @doc """
@@ -176,6 +247,10 @@ defmodule Continuum.Workflow do
           timer: 1,
           compensate: 1,
           compensate_all: 0,
+          start_child: 2,
+          start_child: 3,
+          await_child: 1,
+          child: 1,
           seconds: 1,
           minutes: 1,
           hours: 1,

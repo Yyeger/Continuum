@@ -1,11 +1,17 @@
 defmodule Continuum.Runtime.SignalRouter do
   @moduledoc """
-  Routes external signals to workflow processes.
+  Routes external signals and child-completion wakeups to workflow processes.
 
   With the Postgres journal, signals are durable: delivery inserts a row into
   `continuum_signals`, emits `pg_notify('continuum_signal', run_id)`, and wakes
   a local engine when one is registered. The engine consumes the mailbox row
   into a journaled `signal_received` event during replay.
+
+  This process also listens on `continuum_run_wake` — emitted when a child run
+  reaches a terminal state — and wakes the parent's local engine so an awaiting
+  parent resumes promptly. No separate listener process: a parent wakeup routes
+  through the same "find local pid in Registry, wake it, else rely on the
+  Dispatcher poll" path as a signal.
   """
 
   use GenServer
@@ -52,6 +58,11 @@ defmodule Continuum.Runtime.SignalRouter do
 
   @impl true
   def handle_info({:notification, _pid, _ref, "continuum_signal", run_id}, state) do
+    route(state.instance, run_id)
+    {:noreply, state}
+  end
+
+  def handle_info({:notification, _pid, _ref, "continuum_run_wake", run_id}, state) do
     route(state.instance, run_id)
     {:noreply, state}
   end
@@ -109,6 +120,7 @@ defmodule Continuum.Runtime.SignalRouter do
       case Postgrex.Notifications.start_link(config) do
         {:ok, notifier} ->
           {:ok, ref} = Postgrex.Notifications.listen(notifier, "continuum_signal")
+          {:ok, _wake_ref} = Postgrex.Notifications.listen(notifier, "continuum_run_wake")
           %{state | notifier: notifier, ref: ref}
 
         {:error, _reason} ->

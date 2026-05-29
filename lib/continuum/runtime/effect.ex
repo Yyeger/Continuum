@@ -138,6 +138,84 @@ defmodule Continuum.Runtime.Effect do
     :ok
   end
 
+  @doc """
+  Start a child workflow asynchronously and return a `%Continuum.ChildRef{}`.
+
+  The child run id is derived deterministically from the parent run id, the
+  start command id, and any `id:` option, so a parent at the same cursor never
+  starts two children on replay. The child inherits the parent's trace context.
+  """
+  @doc since: "0.3.0"
+  def start_child(workflow, input, opts, {:command, command_base}) do
+    ctx = Context.get() || raise_not_in_workflow(:start_child)
+    {ctx, command_id} = assign_command_id(ctx, command_base)
+    Context.put(ctx)
+    effect = {:start_child, workflow, input, opts}
+
+    child_run_id =
+      case snapshot_step(ctx, ctx.cursor) do
+        {:ok, step} ->
+          replay_snapshot_step!(ctx, step, effect, command_id)
+
+        :none ->
+          case history_event(ctx, ctx.cursor) do
+            :compacted_gap ->
+              raise Continuum.ReplayDriftError,
+                run_id: ctx.run_id,
+                cursor: ctx.cursor,
+                expected: :snapshot_step,
+                actual: effect
+
+            nil ->
+              live_start_child!(ctx, workflow, input, opts, command_id)
+
+            event ->
+              replay_event!(ctx, event, effect, command_id)
+          end
+      end
+
+    %Continuum.ChildRef{
+      child_run_id: child_run_id,
+      start_command_id: command_id,
+      workflow: workflow
+    }
+  end
+
+  @doc """
+  Suspend until the child referenced by `ref` terminates; return its result.
+
+  Returns the child's result on completion, `{:error, error}` on child failure,
+  and `{:error, :child_cancelled}` if the child was cancelled.
+  """
+  @doc since: "0.3.0"
+  def await_child(%Continuum.ChildRef{} = ref, {:command, command_base}) do
+    ctx = Context.get() || raise_not_in_workflow(:await_child)
+    {ctx, command_id} = assign_command_id(ctx, command_base)
+    Context.put(ctx)
+    effect = {:await_child, ref.child_run_id}
+
+    case snapshot_step(ctx, ctx.cursor) do
+      {:ok, step} ->
+        replay_snapshot_step!(ctx, step, effect, command_id)
+
+      :none ->
+        case history_event(ctx, ctx.cursor) do
+          :compacted_gap ->
+            raise Continuum.ReplayDriftError,
+              run_id: ctx.run_id,
+              cursor: ctx.cursor,
+              expected: :snapshot_step,
+              actual: effect
+
+          nil ->
+            live_await_child!(ctx, ref, command_id)
+
+          event ->
+            replay_event!(ctx, event, effect, command_id)
+        end
+    end
+  end
+
   # ---------------------------------------------------------------------------
 
   # `{:patched, name}` is the only effect that may return *without advancing the
@@ -587,6 +665,116 @@ defmodule Continuum.Runtime.Effect do
     })
   end
 
+  # --- Child workflows -------------------------------------------------------
+
+  defp live_start_child!(
+         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         workflow,
+         input,
+         opts,
+         command_id
+       ) do
+    child_run_id = deterministic_child_run_id(ctx.run_id, command_id, Keyword.get(opts, :id))
+
+    event = %{
+      type: :child_started,
+      child_run_id: child_run_id,
+      workflow: workflow,
+      input_hash: hash_term(input),
+      command_id: command_id,
+      seq: ctx.cursor
+    }
+
+    child = %{
+      child_run_id: child_run_id,
+      workflow: workflow,
+      input: input,
+      parent_command_id: :erlang.term_to_binary(command_id),
+      trace_context: ctx.trace_context,
+      started_event: event
+    }
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.start_child!(
+        ctx.instance,
+        ctx.run_id,
+        child,
+        ctx.lease_token
+      )
+
+    Context.put(%{ctx | history: ctx.history ++ [event], cursor: ctx.cursor + 1})
+
+    Telemetry.execute([:continuum, :child, :started], %{}, %{
+      parent_run_id: ctx.run_id,
+      child_run_id: child_run_id,
+      workflow: workflow
+    })
+
+    child_run_id
+  end
+
+  defp live_start_child!(_ctx, _workflow, _input, _opts, _command_id) do
+    raise "child workflows require the Postgres journal (start_child is durable-only)"
+  end
+
+  defp live_await_child!(%{journal: Continuum.Runtime.Journal.Postgres} = ctx, ref, command_id) do
+    case Continuum.Runtime.Journal.Postgres.await_child_terminal!(
+           ctx.instance,
+           ctx.run_id,
+           ref.child_run_id,
+           command_id,
+           ctx.cursor,
+           ctx.lease_token
+         ) do
+      {:completed, result, winner_event} ->
+        advance_await_child(ctx, winner_event)
+        emit_child(ctx, :completed, ref.child_run_id)
+        result
+
+      {:failed, error, winner_event} ->
+        advance_await_child(ctx, winner_event)
+        emit_child(ctx, :failed, ref.child_run_id)
+        {:error, error}
+
+      {:cancelled, winner_event} ->
+        advance_await_child(ctx, winner_event)
+        emit_child(ctx, :failed, ref.child_run_id)
+        {:error, :child_cancelled}
+
+      :pending ->
+        throw({:continuum_suspend, {:await_child, ref.child_run_id}})
+    end
+  end
+
+  defp live_await_child!(_ctx, _ref, _command_id) do
+    raise "child workflows require the Postgres journal (await_child is durable-only)"
+  end
+
+  defp advance_await_child(ctx, winner_event) do
+    Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 1})
+  end
+
+  defp emit_child(ctx, :completed, child_run_id) do
+    Telemetry.execute([:continuum, :child, :completed], %{}, %{
+      parent_run_id: ctx.run_id,
+      child_run_id: child_run_id
+    })
+  end
+
+  defp emit_child(ctx, :failed, child_run_id) do
+    Telemetry.execute([:continuum, :child, :failed], %{}, %{
+      parent_run_id: ctx.run_id,
+      child_run_id: child_run_id
+    })
+  end
+
+  defp deterministic_child_run_id(parent_run_id, command_id, id_opt) do
+    <<u0::48, _::4, u1::12, _::2, u2::62, _rest::binary>> =
+      :crypto.hash(:sha256, :erlang.term_to_binary({parent_run_id, command_id, id_opt}))
+
+    Ecto.UUID.load!(<<u0::48, 5::4, u1::12, 2::2, u2::62>>)
+  end
+
   defp maybe_wrap_activity(raw, {:activity, mfa, _opts}, opts, command_id) do
     case Keyword.get(opts, :compensate) do
       nil -> raw
@@ -938,6 +1126,41 @@ defmodule Continuum.Runtime.Effect do
        when etid == ltid,
        do: {:ok, {:error, error}}
 
+  defp match_event(
+         _ctx,
+         %{type: :child_started, child_run_id: child_run_id},
+         {:start_child, _workflow, _input, _opts},
+         _command_id
+       ),
+       do: {:ok, child_run_id}
+
+  defp match_event(
+         _ctx,
+         %{type: :child_completed, child_run_id: ecid, result: result},
+         {:await_child, lcid},
+         _command_id
+       )
+       when ecid == lcid,
+       do: {:ok, result}
+
+  defp match_event(
+         _ctx,
+         %{type: :child_failed, child_run_id: ecid, error: error},
+         {:await_child, lcid},
+         _command_id
+       )
+       when ecid == lcid,
+       do: {:ok, {:error, error}}
+
+  defp match_event(
+         _ctx,
+         %{type: :child_cancelled, child_run_id: ecid},
+         {:await_child, lcid},
+         _command_id
+       )
+       when ecid == lcid,
+       do: {:ok, {:error, :child_cancelled}}
+
   defp match_event(_ctx, _, _, _), do: :mismatch
 
   defp assign_command_id(ctx, base) do
@@ -985,6 +1208,8 @@ defmodule Continuum.Runtime.Effect do
   defp effect_shape({:await_signal, name, _opts}), do: {:await_signal, name}
   defp effect_shape({:timer, _ms}), do: {:timer, :timer}
   defp effect_shape({:compensation, target_id, _mfa}), do: {:compensation, target_id}
+  defp effect_shape({:start_child, workflow, _input, _opts}), do: {:start_child, workflow}
+  defp effect_shape({:await_child, child_run_id}), do: {:await_child, child_run_id}
 
   defp snapshot_step(ctx, cursor) do
     case Map.get(ctx.snapshot_steps || %{}, cursor) do

@@ -4,6 +4,27 @@
 
 ### New surfaces
 
+- **Parent/child workflows.** Compose workflows out of child runs:
+  - `await child Mod.run(input)` — start a child synchronously, suspend, and
+    return its result.
+  - `start_child Mod, input, opts` — start a child asynchronously, returning a
+    `%Continuum.ChildRef{}` (`opts` accepts `id:` for a parent-scoped key).
+  - `await_child(ref)` — suspend until that child terminates.
+
+  Child run ids are derived deterministically from the parent run id, the start
+  command id, and any `id:` option, so a parent never starts two children on
+  replay. Children carry their own lease and run independently; when a child
+  reaches a terminal state it sets the parent's `next_wakeup_at` and emits
+  `pg_notify('continuum_run_wake', parent)` in the same transaction. The
+  existing `SignalRouter` now also `LISTEN`s `continuum_run_wake` and wakes a
+  local parent engine — **no new runtime process**. Cancelling a parent cascades
+  (bounded by `config :continuum, max_child_depth: 10`) to all in-flight
+  descendants, clearing their leases so no post-cancel child events can be
+  appended. New events `child_started` / `child_completed` / `child_failed` /
+  `child_cancelled`, telemetry `[:continuum, :child, :started | :completed |
+  :failed]`, and four nullable `continuum_runs` columns (`parent_run_id`,
+  `parent_command_id`, `correlation_id`, `continued_from_run_id`). Child
+  workflows require the Postgres journal.
 - **Compensation / saga DSL.** `activity/2` accepts a `compensate:` `{m, f, a}`
   option; a successful (`{:ok, value}`) compensated activity returns
   `{:ok, %Continuum.ActivityRef{}}` carrying the compensation handle (activities
@@ -54,6 +75,10 @@
 
 - Added `continuum_workflow_versions`, keyed by `(workflow, version_hash)`,
   with the loaded `entrypoint` module and `registered_at` timestamp.
+- `20260801000000_continuum_v0_3` adds four nullable `continuum_runs` columns
+  (`parent_run_id`, `parent_command_id`, `correlation_id`,
+  `continued_from_run_id`) plus partial indexes on the non-null ids. Old
+  `SELECT *` code keeps working; top-level non-continued runs leave them NULL.
 
 ### Behavior changes operators should know about
 

@@ -212,6 +212,152 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   @doc """
+  Start a child workflow run and journal `child_started` to the parent.
+
+  In one transaction (CAS-guarded by the parent's lease): insert the child run
+  row with `parent_run_id`/`parent_command_id`/`correlation_id` set and append
+  the `child_started` event to the parent's history. The child run is left
+  runnable for the dispatcher to claim.
+  """
+  def start_child!(%Instance{} = instance, parent_run_id, child, lease_token) do
+    with_repo(instance, fn -> start_child_with_repo!(parent_run_id, child, lease_token) end)
+  end
+
+  defp start_child_with_repo!(parent_run_id, child, lease_token) do
+    metadata = workflow_metadata(child.workflow)
+    {event_type, payload} = encode_event(child.started_event)
+    now = DateTime.utc_now()
+
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(parent_run_id, lease_token)
+
+        child_changeset =
+          %Run{}
+          |> Ecto.Changeset.change(%{
+            id: child.child_run_id,
+            workflow: metadata.workflow,
+            version_hash: metadata.version_hash,
+            state: "running",
+            input: encode_term(child.input),
+            parent_run_id: parent_run_id,
+            parent_command_id: child.parent_command_id,
+            correlation_id: child.child_run_id,
+            trace_context: child.trace_context
+          })
+
+        event_changeset =
+          %Event{}
+          |> Ecto.Changeset.change(%{
+            run_id: parent_run_id,
+            seq: child.started_event.seq,
+            event_type: event_type,
+            payload: payload,
+            inserted_at: now
+          })
+
+        with {:ok, _child} <- repo().insert(child_changeset),
+             {:ok, _event} <- repo().insert(event_changeset) do
+          :ok
+        else
+          {:error, changeset} -> repo().rollback({:start_child_failed, changeset})
+        end
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres start_child! failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Resolve a child's terminal state into the parent's history.
+
+  Locks the parent (CAS by lease). If the child run is terminal, appends the
+  matching `child_completed`/`child_failed`/`child_cancelled` event to the
+  parent and returns the decoded outcome; otherwise returns `:pending`.
+  """
+  def await_child_terminal!(%Instance{} = instance, parent_run_id, child_run_id, command_id, seq, lease_token) do
+    with_repo(instance, fn ->
+      await_child_terminal_with_repo!(parent_run_id, child_run_id, command_id, seq, lease_token)
+    end)
+  end
+
+  defp await_child_terminal_with_repo!(parent_run_id, child_run_id, command_id, seq, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(parent_run_id, lease_token)
+
+        case child_terminal_state(child_run_id) do
+          {:completed, child_result} ->
+            event = %{
+              type: :child_completed,
+              child_run_id: child_run_id,
+              result: child_result,
+              command_id: command_id,
+              seq: seq
+            }
+
+            {:completed, child_result, insert_event!(parent_run_id, event)}
+
+          {:failed, error} ->
+            event = %{
+              type: :child_failed,
+              child_run_id: child_run_id,
+              error: error,
+              command_id: command_id,
+              seq: seq
+            }
+
+            {:failed, error, insert_event!(parent_run_id, event)}
+
+          {:cancelled} ->
+            event = %{
+              type: :child_cancelled,
+              child_run_id: child_run_id,
+              command_id: command_id,
+              seq: seq
+            }
+
+            {:cancelled, insert_event!(parent_run_id, event)}
+
+          :pending ->
+            :pending
+        end
+      end)
+
+    case result do
+      {:ok, value} ->
+        value
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres await_child_terminal! failed: #{inspect(reason)}"
+    end
+  end
+
+  defp child_terminal_state(child_run_id) do
+    case repo().one(
+           from(r in Run, where: r.id == ^child_run_id, select: {r.state, r.result, r.error})
+         ) do
+      nil ->
+        :pending
+
+      {"completed", result, _error} ->
+        {:completed, decode_term(result)}
+
+      {"failed", _result, error} ->
+        decoded = decode_term(error)
+        if decoded in [:cancelled, :parent_cancelled], do: {:cancelled}, else: {:failed, decoded}
+
+      {_state, _result, _error} ->
+        :pending
+    end
+  end
+
+  @doc """
   Schedule a compensation activity task.
 
   Reuses the activity-task append path: the `compensation_scheduled` event and
@@ -456,6 +602,9 @@ defmodule Continuum.Runtime.Journal.Postgres do
           set: [fired: true]
         )
 
+        # Cascade: cancel all in-flight descendant child runs, bounded by depth.
+        cancel_descendants!(run_id)
+
         case repo().update_all(
                leased_run_query(run_id, lease_token),
                set: [
@@ -465,18 +614,109 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  next_wakeup_at: nil
                ]
              ) do
-          {1, _} -> :ok
+          {1, _} -> maybe_wake_parent(run_id)
           {0, _} -> repo().rollback({:cancel_failed, :lease_mismatch})
         end
       end)
 
     case result do
-      {:ok, :ok} ->
+      {:ok, parent_run_id} ->
         Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :failed, :cancelled)
+        wake_parent(instance, parent_run_id)
         :ok
 
       {:error, reason} ->
         raise "Continuum.Runtime.Journal.Postgres cancel_run! failed: #{inspect(reason)}"
+    end
+  end
+
+  defp cancel_descendants!(run_id) do
+    case descendant_run_ids(run_id) do
+      [] ->
+        :ok
+
+      descendant_ids ->
+        cancelled = encode_term(:parent_cancelled)
+        now = DateTime.utc_now()
+
+        repo().update_all(
+          from(t in ActivityTask,
+            where: t.run_id in ^descendant_ids and t.state in ["available", "leased"]
+          ),
+          set: [state: "discarded", lease_owner: nil, lease_expires_at: nil, error: cancelled]
+        )
+
+        repo().update_all(
+          from(t in Timer, where: t.run_id in ^descendant_ids and t.fired == false),
+          set: [fired: true]
+        )
+
+        # Clear the lease so any live descendant engine fails its next write and
+        # stops cleanly — no post-cancel child events can be appended.
+        repo().update_all(
+          from(r in Run, where: r.id in ^descendant_ids and r.state in ["running", "suspended"]),
+          set: [
+            state: "failed",
+            error: cancelled,
+            completed_at: now,
+            next_wakeup_at: nil,
+            lease_owner: nil,
+            lease_token: nil,
+            lease_expires_at: nil
+          ]
+        )
+
+        :ok
+    end
+  end
+
+  defp descendant_run_ids(run_id) do
+    max_depth = Application.get_env(:continuum, :max_child_depth, 10)
+
+    sql = """
+    WITH RECURSIVE descendants AS (
+      SELECT id, 1 AS depth FROM continuum_runs WHERE parent_run_id = $1
+      UNION ALL
+      SELECT c.id, d.depth + 1
+      FROM continuum_runs c
+      JOIN descendants d ON c.parent_run_id = d.id
+      WHERE d.depth < $2
+    )
+    SELECT id::text FROM descendants
+    """
+
+    case repo().query(sql, [Ecto.UUID.dump!(run_id), max_depth]) do
+      {:ok, %{rows: rows}} -> Enum.map(rows, fn [id] -> id end)
+      _ -> []
+    end
+  end
+
+  defp maybe_wake_parent(run_id) do
+    case repo().one(from(r in Run, where: r.id == ^run_id, select: r.parent_run_id)) do
+      nil ->
+        nil
+
+      parent_run_id ->
+        repo().update_all(
+          from(r in Run, where: r.id == ^parent_run_id),
+          set: [next_wakeup_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)]
+        )
+
+        repo().query("SELECT pg_notify('continuum_run_wake', $1)", [parent_run_id])
+        parent_run_id
+    end
+  end
+
+  defp wake_parent(_instance, nil), do: :ok
+  defp wake_parent(instance, parent_run_id), do: Continuum.Runtime.Engine.wake(instance, parent_run_id)
+
+  defp run_in_transaction!(fun) do
+    case repo().transaction(fun) do
+      {:ok, value} ->
+        value
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres transaction failed: #{inspect(reason)}"
     end
   end
 
@@ -1256,32 +1496,52 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   @impl true
   def complete!(%Instance{} = instance, run_id, result, lease_token) do
-    with_repo(instance, fn ->
-      :ok =
-        cas_update_run(run_id, lease_token, %{
-          state: "completed",
-          result: encode_term(result),
-          completed_at: DateTime.utc_now()
-        })
+    parent_run_id =
+      with_repo(instance, fn ->
+        parent =
+          run_in_transaction!(fn ->
+            :ok =
+              cas_update_run(run_id, lease_token, %{
+                state: "completed",
+                result: encode_term(result),
+                completed_at: DateTime.utc_now()
+              })
 
-      Snapshotter.maybe_snapshot(instance, run_id, lease_token)
-      Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
-    end)
+            maybe_wake_parent(run_id)
+          end)
+
+        Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+        Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
+        parent
+      end)
+
+    wake_parent(instance, parent_run_id)
+    :ok
   end
 
   @impl true
   def fail!(%Instance{} = instance, run_id, error, lease_token) do
-    with_repo(instance, fn ->
-      :ok =
-        cas_update_run(run_id, lease_token, %{
-          state: "failed",
-          error: encode_term(error),
-          completed_at: DateTime.utc_now()
-        })
+    parent_run_id =
+      with_repo(instance, fn ->
+        parent =
+          run_in_transaction!(fn ->
+            :ok =
+              cas_update_run(run_id, lease_token, %{
+                state: "failed",
+                error: encode_term(error),
+                completed_at: DateTime.utc_now()
+              })
 
-      Snapshotter.maybe_snapshot(instance, run_id, lease_token)
-      broadcast_failed(instance, run_id, error)
-    end)
+            maybe_wake_parent(run_id)
+          end)
+
+        Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+        broadcast_failed(instance, run_id, error)
+        parent
+      end)
+
+    wake_parent(instance, parent_run_id)
+    :ok
   end
 
   def mark_unknown_version!(%Instance{} = instance, run_id, error, lease_token) do

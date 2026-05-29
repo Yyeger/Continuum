@@ -20,5 +20,9 @@ defmodule Continuum.Schema.Run do
     field(:lease_expires_at, :utc_datetime_usec)
     field(:next_wakeup_at, :utc_datetime_usec)
     field(:retention_until, :utc_datetime_usec)
+    field(:parent_run_id, :binary_id)
+    field(:parent_command_id, :binary)
+    field(:correlation_id, :binary_id)
+    field(:continued_from_run_id, :binary_id)
   end
 end
