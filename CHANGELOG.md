@@ -4,6 +4,15 @@
 
 ### New surfaces
 
+- `Continuum.Test.Paranoid` — the `--paranoid` re-replay safety net. Enable it
+  for a whole run with `CONTINUUM_PARANOID=1 mix test` (or
+  `config :continuum, :paranoid_replay, true`); the default is off so ordinary
+  `mix test` stays fast. When enabled, a telemetry handler re-replays every
+  completed in-memory run from its journaled history and flags any drift or
+  differing result. `verify_run!/4` is the strict, raising contract for
+  asserting a specific run re-replays identically; `assert_histories_match!/2`
+  compares two histories on `(event_type, decoded_payload, command_id)`,
+  excluding DB-stamped fields.
 - `Continuum.VersionRegistry` now resolves durable `(workflow, version_hash)`
   pairs to loaded workflow entrypoints. The hot-path registry is backed by
   `:persistent_term`; a short-lived boot task upserts loaded workflow versions
