@@ -29,7 +29,14 @@ defmodule Continuum.Runtime.TimerWheelTest do
       Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 5}, journal: Postgres)
 
     assert_eventually(fn ->
-      Repo.aggregate(Timer, :count) == 1
+      case Repo.one(from(r in Run, where: r.id == ^run_id)) do
+        %Run{state: "suspended", next_wakeup_at: next_wakeup_at}
+        when not is_nil(next_wakeup_at) ->
+          Repo.aggregate(Timer, :count) == 1
+
+        _ ->
+          false
+      end
     end)
 
     run = Repo.one!(from(r in Run, where: r.id == ^run_id))
