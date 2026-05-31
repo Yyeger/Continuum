@@ -45,7 +45,11 @@ defmodule ContinuumExampleOrders.SmokeTest do
         ]
       )
 
-    IO.inspect(%{approved: approved, rejected: rejected}, label: "smoke")
+    subscription = run_subscription!("subscription-smoke-#{suffix}", workflow_opts, instance)
+
+    IO.inspect(%{approved: approved, rejected: rejected, subscription: subscription},
+      label: "smoke"
+    )
   end
 
   defp run_order!(order_id, decision, workflow_opts, instance, expected_events) do
@@ -89,6 +93,50 @@ defmodule ContinuumExampleOrders.SmokeTest do
 
   defp wait_for_event!(_instance, run_id, event_type, 0) do
     raise "run #{run_id} did not journal #{event_type}"
+  end
+
+  defp run_subscription!(subscription_id, workflow_opts, instance) do
+    input = %{
+      "subscription_id" => subscription_id,
+      "cycles_done" => 0,
+      "max_cycles" => 2,
+      "amount_cents" => 500
+    }
+
+    {:ok, run_id} = Continuum.start(ContinuumExampleOrders.SubscriptionFlow, input, workflow_opts)
+    IO.puts("started subscription #{run_id}")
+
+    {:ok, %{state: :completed, result: {:continued, next_run_id}}} =
+      Continuum.await(run_id, 15_000, workflow_opts)
+
+    {:ok, %{state: :completed, result: {:ok, result}}} =
+      Continuum.await(next_run_id, 15_000, workflow_opts)
+
+    root_events =
+      instance
+      |> Continuum.Runtime.Journal.Postgres.load(run_id)
+      |> Enum.map(& &1.type)
+
+    next_events =
+      instance
+      |> Continuum.Runtime.Journal.Postgres.load(next_run_id)
+      |> Enum.map(& &1.type)
+
+    unless :run_continued_as_new in root_events do
+      raise "subscription root did not continue_as_new: #{inspect(root_events)}"
+    end
+
+    unless result.cycles_done == 2 do
+      raise "subscription completed with unexpected result: #{inspect(result)}"
+    end
+
+    %{
+      root_run_id: run_id,
+      next_run_id: next_run_id,
+      result: result,
+      root_events: root_events,
+      next_events: next_events
+    }
   end
 end
 

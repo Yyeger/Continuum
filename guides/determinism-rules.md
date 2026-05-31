@@ -102,6 +102,17 @@ that still has active runs. Prefer one of these patterns:
 * use `Continuum.Test.assert_replays/3` with committed golden histories before
   shipping workflow edits
 
+## Generated Version Entrypoints
+
+`use Continuum.Workflow` generates a hidden `V_<hash>` module for the compiled
+workflow body. Durable Postgres runs execute and resume through that generated
+entrypoint, so old loaded code can continue to service in-flight histories after
+the public workflow module is recompiled.
+
+The generated body has the same determinism scan as the public module. Same
+module references such as `__MODULE__.helper(input)` are rewritten to the
+generated entrypoint so helper calls stay pinned to the old body during replay.
+
 ## Side Effects
 
 `Continuum.side_effect/1` is the escape hatch for deterministic values that are
@@ -120,6 +131,21 @@ uses the same command identity and replay cursor as every other effect.
 `continue_as_new/1` journals `run_continued_as_new` and then terminates the
 current engine with a dedicated sentinel. Code after it in the same branch is
 not executed. Treat it as a tail call.
+
+Use `mix continuum.archive_continued_chains` to remove expired non-tail cycles
+once your retention policy allows it. The task never deletes the live tail.
+
+## Parallel Compensation
+
+`compensate_all()` remains sequential LIFO. `compensate_all(mode: :parallel)`
+schedules every pending compensation before suspending and then resumes when
+each scheduled compensation has a terminal journal event. Parallel mode trades
+strict rollback ordering for lower latency; use it only when compensations are
+independent.
+
+Parallel compensation is still deterministic because the scheduled
+compensations and their terminal events are journaled. Replays consume the
+journaled batch instead of scheduling new work.
 
 ## Golden-History Test
 

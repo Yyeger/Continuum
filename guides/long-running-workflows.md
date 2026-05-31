@@ -9,7 +9,7 @@ unbounded event history.
 
 ```elixir
 defmodule MyApp.SubscriptionFlow do
-  use Continuum.Workflow, version: 1
+  use Continuum.Workflow, version: 1, snapshot_threshold: 500
 
   def run(%{customer_id: customer_id, cycles_done: cycles_done} = state) do
     {:ok, _charge} = activity Billing.charge(customer_id)
@@ -46,6 +46,14 @@ terminal result.
 `continue_as_new/1` bounds the history of each physical run; it does not delete
 older runs in the chain. Use the existing workflow retention settings and your
 operator cleanup policy to bound storage.
+
+v0.4 adds `mix continuum.archive_continued_chains`, a dry-run-by-default task
+that deletes expired non-tail cycles and their dependent rows. See
+[`guides/operations.md`](./operations.md) for the safety rules and examples.
+
+Long-running loops are also good candidates for snapshots. A per-workflow
+`snapshot_threshold:` keeps the setting local to the loop instead of enabling
+snapshots globally.
 
 ## Crash Safety
 

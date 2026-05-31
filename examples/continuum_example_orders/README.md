@@ -3,7 +3,8 @@
 Minimal Phoenix example app for Continuum. It starts an order checkout
 workflow, waits for a fraud-review signal, then ships or compensates the
 payment capture. It also includes a parent/child batch workflow that fans out
-one order child per input order.
+one order child per input order, plus a subscription-style `continue_as_new`
+workflow with a per-workflow snapshot threshold.
 
 The application supervises a named Continuum instance after
 `ContinuumExampleOrders.Repo`, matching the required startup order for
@@ -48,8 +49,9 @@ The Observer stylesheet is served directly from Continuum's
 endpoint. Host apps may alternatively copy the file into their own
 `priv/static` directory.
 
-Snapshots are intentionally not demonstrated in this app. They remain
-experimental and opt-in; see `../../guides/snapshots.md` and
+`ContinuumExampleOrders.SubscriptionFlow` opts into snapshots with
+`snapshot_threshold: 2` to demonstrate the v0.4 per-workflow setting. Snapshots
+remain opt-in; see `../../guides/snapshots.md` and
 `../../bench/snapshot_bench.exs`.
 
 ## Smoke Test
@@ -104,6 +106,14 @@ Continuum.start(
 Use the Observer to find the child run ids, then send each child its
 `:fraud_review` signal. Cancelling the batch cascades to any in-flight child
 orders.
+
+## Subscription Demo
+
+`ContinuumExampleOrders.SubscriptionFlow` demonstrates `continue_as_new` for a
+bounded subscription loop. Each run bills one cycle, waits on a short timer, and
+continues as a fresh run until `max_cycles` is reached. The smoke script starts a
+two-cycle subscription and asserts the root run journals
+`run_continued_as_new`.
 
 Manual crash-resume check:
 

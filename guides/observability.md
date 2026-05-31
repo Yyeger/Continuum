@@ -39,6 +39,17 @@ span events on the active run-attempt span when they happen in the same process.
 Some runtime events happen in separate processes after the run has suspended;
 those still carry `continuum.run_id` as attributes for backend correlation.
 
+Child workflow and `continue_as_new` lifecycle events are recorded as span
+events on the originating run-attempt span when that span is active. Continuum
+does not currently create a separate long-lived `continuum.child_attempt` span;
+the child's own work is represented by its own `continuum.run_attempt` spans and
+correlated by run id, parent run id, and trace context.
+
+Snapshot telemetry keeps the stable `[:continuum, :snapshot, :taken]` and
+`[:continuum, :snapshot, :skipped]` names. `:taken` metadata includes
+`format_version` and `compacted_prefix_length` so operators can distinguish v0.4
+format-versioned snapshots from older unversioned payloads.
+
 The current CI suite tests the bridge with a fake tracer so Continuum can keep
-OpenTelemetry optional. Before tagging v0.2, run a smoke test in an application
+OpenTelemetry optional. Before tagging a release, run a smoke test in an application
 that includes `:opentelemetry`, `:opentelemetry_api`, and your exporter.

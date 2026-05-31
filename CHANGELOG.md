@@ -30,6 +30,9 @@
   for the compiled workflow body. Public workflow modules stay as the start
   target, while durable Postgres runs execute and resume through the generated
   hash-specific entrypoint.
+- Added v0.4 migration and operations documentation, plus an example
+  `SubscriptionFlow` that combines `continue_as_new` with a per-workflow
+  snapshot threshold.
 
 ### Migrations
 

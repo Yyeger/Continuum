@@ -17,7 +17,8 @@ defmodule ContinuumExampleOrders.Application do
           repo: ContinuumExampleOrders.Repo,
           workflow_modules: [
             ContinuumExampleOrders.OrderFlow,
-            ContinuumExampleOrders.BatchOrders
+            ContinuumExampleOrders.BatchOrders,
+            ContinuumExampleOrders.SubscriptionFlow
           ]
         ) ++
         [
