@@ -17,9 +17,30 @@ defmodule Continuum.WorkflowCompileTest do
       meta = CleanFlow.__continuum_workflow__()
       assert meta.module == CleanFlow
       assert meta.version == 1
+      assert meta.snapshot_threshold == nil
       assert is_binary(meta.version_hash)
       assert byte_size(meta.version_hash) == 64
       refute function_exported?(CleanFlow, :child_spec, 1)
+    end
+
+    test "snapshot_threshold is stored in workflow metadata" do
+      defmodule SnapshotThresholdFlow do
+        use Continuum.Workflow, version: 1, snapshot_threshold: 500
+
+        def run(_input), do: :ok
+      end
+
+      assert SnapshotThresholdFlow.__continuum_workflow__().snapshot_threshold == 500
+    end
+
+    test "invalid snapshot_threshold refuses to compile" do
+      assert_raise ArgumentError, ~r/expected :snapshot_threshold/, fn ->
+        defmodule BadSnapshotThresholdFlow do
+          use Continuum.Workflow, version: 1, snapshot_threshold: 0
+
+          def run(_input), do: :ok
+        end
+      end
     end
 
     test "a workflow that calls DateTime.utc_now refuses to compile" do

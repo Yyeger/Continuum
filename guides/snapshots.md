@@ -26,6 +26,17 @@ roughly 200 additional events since the previous snapshot. `:snapshot_max_size_b
 is a safety cap for the encoded snapshot payload; oversized snapshots are
 skipped and emit `[:continuum, :snapshot, :skipped]`.
 
+Workflows can override the app default:
+
+```elixir
+defmodule MyApp.SubscriptionFlow do
+  use Continuum.Workflow, version: 1, snapshot_threshold: 500
+end
+```
+
+Resolution order is workflow option, then runtime/app configuration, then
+`:infinity`.
+
 ## What Gets Compacted
 
 Continuum compacts completed effect shapes only:

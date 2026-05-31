@@ -17,6 +17,19 @@ defmodule Continuum.Runtime.SnapshotterTest do
     end
   end
 
+  defmodule PerWorkflowSnapshotFlow do
+    use Continuum.Workflow, version: 1, snapshot_threshold: 1
+
+    def run(input) do
+      result =
+        Enum.reduce(input.steps, 0, fn step, acc ->
+          Continuum.side_effect(fn -> acc + step end)
+        end)
+
+      {:ok, result}
+    end
+  end
+
   defmodule LargeSnapshotFlow do
     use Continuum.Workflow, version: 1
 
@@ -71,6 +84,50 @@ defmodule Continuum.Runtime.SnapshotterTest do
                journal: Postgres,
                snapshot: snapshot
              )
+  end
+
+  test "per-workflow snapshot threshold applies when app config is infinity" do
+    with_snapshot_threshold(:infinity, fn ->
+      steps = [1, 2]
+
+      {:ok, run_id} =
+        Continuum.Runtime.Engine.start_run(PerWorkflowSnapshotFlow, %{steps: steps},
+          journal: Postgres
+        )
+
+      assert {:ok, %{state: :completed, result: {:ok, 3}}} =
+               Continuum.await(run_id, 1_000, journal: Postgres)
+
+      :ok =
+        Snapshotter.snapshot_once(Instance.default(), run_id, lease_token: lease_token(run_id))
+
+      row = Repo.one!(Snapshot)
+      snapshot = Continuum.Snapshot.decode(row.payload)
+
+      assert row.through_seq == 1
+      assert snapshot.through_seq == 1
+    end)
+  end
+
+  test "app snapshot threshold still applies when workflow does not set one" do
+    with_snapshot_threshold(1, fn ->
+      steps = [1, 2]
+
+      {:ok, run_id} =
+        Continuum.Runtime.Engine.start_run(SnapshotFlow, %{steps: steps}, journal: Postgres)
+
+      assert {:ok, %{state: :completed, result: {:ok, 3}}} =
+               Continuum.await(run_id, 1_000, journal: Postgres)
+
+      :ok =
+        Snapshotter.snapshot_once(Instance.default(), run_id, lease_token: lease_token(run_id))
+
+      row = Repo.one!(Snapshot)
+      snapshot = Continuum.Snapshot.decode(row.payload)
+
+      assert row.through_seq == 1
+      assert snapshot.through_seq == 1
+    end)
   end
 
   test "compacts a Postgres activity scheduled/completed pair and emits taken telemetry" do
@@ -210,6 +267,17 @@ defmodule Continuum.Runtime.SnapshotterTest do
 
   defp lease_token(run_id) do
     Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+  end
+
+  defp with_snapshot_threshold(threshold, fun) do
+    previous = Application.get_env(:continuum, :snapshot_threshold, :infinity)
+    Application.put_env(:continuum, :snapshot_threshold, threshold)
+
+    try do
+      fun.()
+    after
+      Application.put_env(:continuum, :snapshot_threshold, previous)
+    end
   end
 
   defp assert_eventually(fun, attempts \\ 20)

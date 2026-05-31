@@ -12,6 +12,9 @@
   envelope. Legacy unversioned v0.2/v0.3 snapshot blobs still decode as format
   v1, and unsupported future formats raise a clear `ArgumentError` instead of
   failing as a raw term decode.
+- `use Continuum.Workflow` accepts `snapshot_threshold: positive_integer |
+  :infinity`. The snapshotter resolves per-workflow threshold first, then
+  runtime/app config, then `:infinity`.
 
 ### Migrations
 

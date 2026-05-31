@@ -274,6 +274,12 @@ defmodule Continuum.Workflow do
     retention = Keyword.get(opts, :retention, {:days, 30})
     logical_workflow = Keyword.get(opts, :workflow, Keyword.get(opts, :logical_workflow))
 
+    snapshot_threshold =
+      case Keyword.fetch(opts, :snapshot_threshold) do
+        {:ok, threshold} -> Continuum.Runtime.Snapshotter.normalize_threshold!(threshold)
+        :error -> nil
+      end
+
     quote do
       require Continuum
 
@@ -304,6 +310,7 @@ defmodule Continuum.Workflow do
       @continuum_workflow_version unquote(version)
       @continuum_workflow_retention unquote(retention)
       @continuum_logical_workflow unquote(logical_workflow)
+      @continuum_snapshot_threshold unquote(snapshot_threshold)
     end
   end
 
@@ -369,6 +376,7 @@ defmodule Continuum.Workflow.BeforeCompile do
     version = Module.get_attribute(env.module, :continuum_workflow_version)
     retention = Module.get_attribute(env.module, :continuum_workflow_retention)
     logical_workflow = Module.get_attribute(env.module, :continuum_logical_workflow) || env.module
+    snapshot_threshold = Module.get_attribute(env.module, :continuum_snapshot_threshold)
     hash = compute_version_hash(env.module)
 
     quote do
@@ -378,6 +386,7 @@ defmodule Continuum.Workflow.BeforeCompile do
           entrypoint: __MODULE__,
           version: unquote(version),
           retention: unquote(Macro.escape(retention)),
+          snapshot_threshold: unquote(snapshot_threshold),
           version_hash: unquote(hash)
         }
       end

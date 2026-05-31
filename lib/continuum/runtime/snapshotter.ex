@@ -30,12 +30,7 @@ defmodule Continuum.Runtime.Snapshotter do
   def snapshot_once(instance_or_name, run_id, opts \\ []) do
     instance = Instance.lookup(instance_or_name)
     config = config(opts, instance)
-
-    if config.threshold == :infinity do
-      :ok
-    else
-      take_snapshot(instance, run_id, Keyword.get(opts, :lease_token), config)
-    end
+    take_snapshot(instance, run_id, Keyword.get(opts, :lease_token), config)
   end
 
   @impl true
@@ -55,8 +50,10 @@ defmodule Continuum.Runtime.Snapshotter do
 
   defp take_snapshot(instance, run_id, lease_token, config) do
     run = config.journal.get_run(instance, run_id)
+    threshold = threshold_for_run(run, config)
 
     with %{version_hash: version_hash} <- run,
+         true <- threshold != :infinity,
          {base_snapshot, events} <-
            load_snapshot_window(config.journal, instance, run_id, lease_token),
          {base_snapshot, events} <-
@@ -68,7 +65,7 @@ defmodule Continuum.Runtime.Snapshotter do
              base_snapshot,
              events
            ),
-         true <- length(events) >= config.threshold,
+         true <- length(events) >= threshold,
          {:ok, snapshot} <- Snapshot.compact(run_id, version_hash, events, base: base_snapshot),
          :ok <- persist_snapshot(config.journal, instance, snapshot, config) do
       Telemetry.execute(
@@ -171,15 +168,34 @@ defmodule Continuum.Runtime.Snapshotter do
     }
   end
 
-  defp normalize_threshold!(:infinity), do: :infinity
+  @doc false
+  def normalize_threshold!(:infinity), do: :infinity
 
-  defp normalize_threshold!(threshold) when is_integer(threshold) and threshold > 0 do
+  def normalize_threshold!(threshold) when is_integer(threshold) and threshold > 0 do
     threshold
   end
 
-  defp normalize_threshold!(other) do
+  def normalize_threshold!(other) do
     raise ArgumentError,
           "expected :snapshot_threshold to be :infinity or a positive integer, got: #{inspect(other)}"
+  end
+
+  defp threshold_for_run(nil, _config), do: :infinity
+
+  defp threshold_for_run(run, config) do
+    workflow_snapshot_threshold(run) || config.threshold
+  end
+
+  defp workflow_snapshot_threshold(%{workflow: workflow, version_hash: version_hash}) do
+    with {:ok, %{entrypoint: entrypoint}} <-
+           Continuum.VersionRegistry.resolve(workflow, version_hash),
+         true <- function_exported?(entrypoint, :__continuum_workflow__, 0),
+         threshold <- Map.get(entrypoint.__continuum_workflow__(), :snapshot_threshold),
+         true <- not is_nil(threshold) do
+      threshold
+    else
+      _ -> nil
+    end
   end
 
   defp default_journal(%{repo: nil}), do: Journal.InMemory
