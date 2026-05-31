@@ -227,12 +227,6 @@ spawning more, sending signals, and cancelling. See
 [`guides/observer.md`](./guides/observer.md) for production mount
 instructions.
 
-## What's deliberately out of v0.3
-
-Replay-stepping debugger inside the Observer, search attributes, cluster
-distribution, `mix continuum.audit`, and the Oban adapter. Each is on the
-roadmap; see [`ROADMAP.md`](./ROADMAP.md) for the phased plan.
-
 ## Guides
 
 The ExDoc guides cover the current surface:

@@ -1,7 +1,7 @@
 defmodule Continuum.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/continuum-elixir/continuum"
 
   def project do
@@ -52,7 +52,7 @@ defmodule Continuum.MixProject do
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
       files:
-        ~w(lib priv guides mix.exs README.md LICENSE CHANGELOG.md MIGRATING_v0_1_to_v0_2.md MIGRATING_v0_2_to_v0_3.md)
+        ~w(lib priv guides mix.exs README.md LICENSE CHANGELOG.md MIGRATING_v0_1_to_v0_2.md MIGRATING_v0_2_to_v0_3.md MIGRATING_v0_3_to_v0_4.md)
     ]
   end
 
@@ -70,6 +70,7 @@ defmodule Continuum.MixProject do
         "guides/long-running-workflows.md",
         "guides/patching.md",
         "guides/workflow-versioning.md",
+        "guides/operations.md",
         "guides/observability.md",
         "guides/observer.md",
         "guides/snapshots.md",

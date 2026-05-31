@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.4.0 — 2026-05-31 — "Hardening & ergonomics"
+
 ### Changed
 
 - Replay contexts now keep an indexed in-process history (`:array`) for cursor
@@ -45,9 +47,9 @@
 - `mix run bench/snapshot_bench.exs 10000` on 2026-05-31 reported raw replay
   21 ms, snapshot replay 16 ms, and a 1.3x speedup for 10,000 side-effect
   events after indexed history landed. The old 7.2x snapshot advantage was
-  largely measuring inefficient raw replay, so the remaining >=10x snapshot
-  graduation target still needs either a different compaction win or formal
-  acceptance in the snapshot-stabilization step.
+  largely measuring inefficient raw replay; v0.4 formally accepts the lower
+  speedup because raw replay is now much faster and snapshot payload format
+  stability is the user-facing graduation.
 - Added `bench/replay_hot_path_bench.exs`. At 10,000 logical mixed operations
   (12,500 events across side effects, activities, patch markers, and saga
   compensations), current raw replay is 89 ms / 7.17 us per event; snapshot
