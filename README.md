@@ -7,11 +7,11 @@ replay, single dependency. Write a multi-step business process as straight-line
 Elixir code. Failures, restarts, and node death cause the workflow to resume
 exactly where it left off.
 
-> **Status:** v0.3 (pre-1.0). v0.3 adds the "real workflow" surface:
-> compensation/saga DSL, parent/child workflows, `continue_as_new`, journaled
-> `patched?/1`, and content-addressed workflow dispatch. APIs may still change
-> before 1.0; pin to a specific 0.x in production. Upgrading from v0.2? See
-> [`MIGRATING_v0_2_to_v0_3.md`](./MIGRATING_v0_2_to_v0_3.md).
+> **Status:** v0.4 (pre-1.0). v0.4 stabilizes snapshots, adds workflow-level
+> snapshot thresholds, cleanup Mix tasks, parallel compensation, and generated
+> version entrypoints. APIs may still change before 1.0; pin to a specific 0.x
+> in production. Upgrading from v0.3? See
+> [`MIGRATING_v0_3_to_v0_4.md`](./MIGRATING_v0_3_to_v0_4.md).
 
 ## Quickstart
 
@@ -54,7 +54,7 @@ end
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.3"},
+    {:continuum, "~> 0.4"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -164,6 +164,21 @@ v0.3 adds:
   changed code. See
   [`guides/workflow-versioning.md`](./guides/workflow-versioning.md).
 
+v0.4 adds:
+
+- **Stable snapshot payload format** — snapshots use a versioned envelope and
+  store `format_version` in `continuum_snapshots`. Workflows can opt in with
+  `snapshot_threshold:` on `use Continuum.Workflow`.
+- **Operator cleanup tasks** — `mix continuum.gc_versions` and
+  `mix continuum.archive_continued_chains` are dry-run by default and documented
+  in [`guides/operations.md`](./guides/operations.md).
+- **Parallel compensation** — `compensate_all(mode: :parallel)` schedules all
+  pending compensations before suspending. The no-arg form remains sequential
+  LIFO.
+- **Generated workflow entrypoints** — `use Continuum.Workflow` creates a hidden
+  `V_<hash>` module for durable version dispatch while keeping the public module
+  as the start target.
+
 ## Parent/Child Example
 
 ```elixir
@@ -233,18 +248,22 @@ The ExDoc guides cover the current surface:
 - *Long-running workflows* (`continue_as_new`)
 - *Patching workflows*
 - *Workflow versioning*
+- *Operations*
 - *Observer*
 - *Observability / OpenTelemetry bridge*
-- *Experimental snapshots* (opt-in long-history compaction)
+- *Snapshots* (opt-in long-history compaction)
 
-Upgrading from v0.2? See
-[`MIGRATING_v0_2_to_v0_3.md`](./MIGRATING_v0_2_to_v0_3.md). Upgrading from
-v0.1 first? See
+Upgrading from v0.3? See
+[`MIGRATING_v0_3_to_v0_4.md`](./MIGRATING_v0_3_to_v0_4.md). Upgrading from
+v0.2 first? See
+[`MIGRATING_v0_2_to_v0_3.md`](./MIGRATING_v0_2_to_v0_3.md). Upgrading from v0.1
+first? See
 [`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md).
 
 See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 for a Phoenix app exercising activity -> signal/timeout -> compensation,
-parent/child batches, Observer, and OpenTelemetry.
+parent/child batches, `continue_as_new`, per-workflow snapshots, Observer, and
+OpenTelemetry.
 
 ## License
 
