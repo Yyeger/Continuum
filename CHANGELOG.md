@@ -19,6 +19,9 @@
   cleanup task for `continuum_workflow_versions`. It deletes only with
   `--execute`, preserves loaded workflow hashes, and treats running,
   suspended, and stuck-unknown-version runs as pins.
+- Added `mix continuum.archive_continued_chains --repo MyApp.Repo --older-than
+  Nd`, a dry-run-by-default deletion task for expired non-tail
+  `continue_as_new` cycles and their dependent rows.
 
 ### Migrations
 
