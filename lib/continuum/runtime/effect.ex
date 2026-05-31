@@ -832,7 +832,7 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     }
 
-    :ok =
+    correlation_id =
       Continuum.Runtime.Journal.Postgres.continue_as_new!(
         ctx.instance,
         ctx.run_id,
@@ -844,7 +844,8 @@ defmodule Continuum.Runtime.Effect do
 
     Telemetry.execute([:continuum, :run, :continued_as_new], %{}, %{
       from_run_id: ctx.run_id,
-      to_run_id: next_run_id
+      to_run_id: next_run_id,
+      correlation_id: correlation_id
     })
 
     throw({:continuum_continued_as_new, next_run_id})
@@ -969,17 +970,24 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp replay_patched_step(ctx, %{effect_type: :patched} = step, patch_name, command_id) do
-    if command_matches?(step, command_id) and Map.get(step, :shape) == patch_name do
-      Context.put(%{ctx | cursor: ctx.cursor + Map.fetch!(step, :advance_by)})
-      value = Map.get(step, :result)
-      emit_patched(ctx, patch_name, value)
-      value
-    else
-      raise Continuum.ReplayDriftError,
-        run_id: ctx.run_id,
-        cursor: ctx.cursor,
-        expected: step,
-        actual: {:patched, patch_name}
+    cond do
+      command_matches?(step, command_id) and Map.get(step, :shape) == patch_name ->
+        Context.put(%{ctx | cursor: ctx.cursor + Map.fetch!(step, :advance_by)})
+        value = Map.get(step, :result)
+        emit_patched(ctx, patch_name, value)
+        value
+
+      command_matches?(step, command_id) ->
+        raise Continuum.ReplayDriftError,
+          run_id: ctx.run_id,
+          cursor: ctx.cursor,
+          expected: step,
+          actual: {:patched, patch_name}
+
+      true ->
+        # A compacted `patched` marker for a different command site sits here;
+        # this call did not exist when the history was recorded.
+        patched_miss(ctx, patch_name)
     end
   end
 

@@ -117,6 +117,62 @@ defmodule Continuum.PatchedTest do
     end
   end
 
+  test "a compacted patched marker for another command_id returns false without advancing" do
+    old_marker_command = {:patched, __MODULE__, {:run, 1}, 9, "old-patch", 0}
+
+    ctx =
+      forge_ctx("patched-snapshot-miss", [])
+      |> Map.put(:history_offset, 1)
+      |> Map.put(:snapshot_steps, %{
+        0 => %{
+          effect_type: :patched,
+          command_id: old_marker_command,
+          shape: :old_feature,
+          result: true,
+          advance_by: 1
+        }
+      })
+
+    Context.put(ctx)
+
+    try do
+      new_marker_base = {:patched, __MODULE__, {:run, 1}, 10, "new-patch"}
+      assert false == Effect.run({:patched, :new_feature}, {:command, new_marker_base})
+      assert Context.get().cursor == 0
+    after
+      Context.clear()
+    end
+  end
+
+  test "a compacted patched marker for the same command_id but different patch name drifts" do
+    command = {:patched, __MODULE__, {:run, 1}, 9, "patch", 0}
+
+    ctx =
+      forge_ctx("patched-snapshot-drift", [])
+      |> Map.put(:history_offset, 1)
+      |> Map.put(:snapshot_steps, %{
+        0 => %{
+          effect_type: :patched,
+          command_id: command,
+          shape: :old_feature,
+          result: true,
+          advance_by: 1
+        }
+      })
+
+    Context.put(ctx)
+
+    try do
+      base = {:patched, __MODULE__, {:run, 1}, 9, "patch"}
+
+      assert_raise Continuum.ReplayDriftError, fn ->
+        Effect.run({:patched, :new_feature}, {:command, base})
+      end
+    after
+      Context.clear()
+    end
+  end
+
   test "patched? at the live tail journals value true exactly once" do
     ctx = forge_ctx("patched-live", [])
     Context.put(ctx)

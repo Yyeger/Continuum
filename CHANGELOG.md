@@ -90,7 +90,8 @@
 - `20260801000000_continuum_v0_3` adds four nullable `continuum_runs` columns
   (`parent_run_id`, `parent_command_id`, `correlation_id`,
   `continued_from_run_id`) plus partial indexes on the non-null ids. Old
-  `SELECT *` code keeps working; top-level non-continued runs leave them NULL.
+  `SELECT *` code keeps working; existing rows are backfilled with
+  `correlation_id = id`.
 
 ### Behavior changes operators should know about
 
@@ -122,7 +123,11 @@
 
 ### Telemetry additions
 
+- `[:continuum, :run, :continued_as_new]`
 - `[:continuum, :run, :unknown_version]`
+- `[:continuum, :child, :started | :completed | :failed]`
+- `[:continuum, :compensation, :scheduled | :started | :completed | :failed]`
+- `[:continuum, :patched, :hit]`
 
 ### Documentation
 

@@ -222,11 +222,13 @@ defmodule Continuum.OpenTelemetryTest do
 
     Continuum.Telemetry.execute([:continuum, :run, :continued_as_new], %{}, %{
       from_run_id: run_id,
-      to_run_id: "next-1"
+      to_run_id: "next-1",
+      correlation_id: run_id
     })
 
     assert_receive {:span_event, ^run_span, "run.continued_as_new", cont_attrs}
     assert cont_attrs["continuum.to_run_id"] == "next-1"
+    assert cont_attrs["continuum.correlation_id"] == run_id
   end
 
   test "closes each retried activity attempt span" do

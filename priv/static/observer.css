@@ -200,6 +200,39 @@
   padding: 12px 0;
 }
 
+.co-timeline .co-event {
+  border-left: 4px solid #bec8d2;
+  padding-left: 12px;
+}
+
+.co-event-activity {
+  border-left-color: #2364aa;
+}
+
+.co-event-signal {
+  border-left-color: #6f42c1;
+}
+
+.co-event-timer {
+  border-left-color: #7a4d00;
+}
+
+.co-event-compensation {
+  border-left-color: #b42318;
+}
+
+.co-event-child {
+  border-left-color: #0f766e;
+}
+
+.co-event-continued {
+  border-left-color: #475569;
+}
+
+.co-event-patched {
+  border-left-color: #9a3412;
+}
+
 .co-timeline header {
   align-items: center;
   display: flex;

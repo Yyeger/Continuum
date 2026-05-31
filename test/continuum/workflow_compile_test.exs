@@ -69,6 +69,24 @@ defmodule Continuum.WorkflowCompileTest do
         end
       end
     end
+
+    test "await child shorthand requires Mod.run(input)" do
+      assert_raise ArgumentError, ~r/await child Mod\.run\(input\)/, fn ->
+        compile_workflow("BadAwaitChildFun", """
+        def run(input) do
+          await child OtherFlow.other(input)
+        end
+        """)
+      end
+
+      assert_raise ArgumentError, ~r/await child Mod\.run\(input\)/, fn ->
+        compile_workflow("BadAwaitChildArity", """
+        def run(input) do
+          await child OtherFlow.run(input, :extra)
+        end
+        """)
+      end
+    end
   end
 
   describe "version hash stability" do

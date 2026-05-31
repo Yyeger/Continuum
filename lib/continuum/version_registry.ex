@@ -90,16 +90,24 @@ defmodule Continuum.VersionRegistry do
 
   @doc since: "0.3.0"
   @doc """
-  Look up the latest registered metadata for a logical workflow module.
+  Look up registered metadata for a workflow module.
 
-  This preserves the v0.1 helper shape. Resume dispatch must use `resolve/2`.
+  This preserves the v0.1 helper shape for callers that only have one loaded
+  version. When multiple entrypoints are registered for the same logical
+  workflow, there is intentionally no "latest" ordering in the content-addressed
+  registry; resume dispatch must use `resolve/2` with the journaled hash.
   """
   @spec lookup(module()) :: nil | map()
   def lookup(module) when is_atom(module) do
-    entries()
-    |> Map.values()
-    |> Enum.filter(&(&1.workflow == module))
-    |> Enum.max_by(& &1.version_hash, fn -> nil end)
+    case ensure_registered(module) do
+      {:ok, entry} ->
+        entry
+
+      {:error, _reason} ->
+        entries()
+        |> Map.values()
+        |> Enum.find(&(&1.workflow == module))
+    end
   end
 
   @doc since: "0.3.0"

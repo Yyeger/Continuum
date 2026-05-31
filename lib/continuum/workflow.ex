@@ -79,7 +79,8 @@ defmodule Continuum.Workflow do
       await signal(:approved)
       await signal(:approved, timeout: hours(24))
 
-  Or wait for a child workflow:
+  Or wait for a child workflow. The shorthand accepts exactly
+  `child Mod.run(input)`; use `start_child/3` for other setup shapes.
 
       await child MyApp.AuditFlow.run(%{batch_id: id})
   """
@@ -95,7 +96,7 @@ defmodule Continuum.Workflow do
     end
   end
 
-  defmacro await({:child, _, [{{:., _, [mod_alias, _fun]}, _, [input]}]}) do
+  defmacro await({:child, _, [{{:., _, [mod_alias, :run]}, _, [input]}]}) do
     start_command = command_base(__CALLER__, :start_child, :child)
     await_command = command_base(__CALLER__, :await_child, :child)
 
@@ -113,6 +114,12 @@ defmodule Continuum.Workflow do
         {:command, unquote(Macro.escape(await_command))}
       )
     end
+  end
+
+  defmacro await({:child, _, [_other]}) do
+    raise ArgumentError,
+          "`await child ...` expects exactly `await child Mod.run(input)`; " <>
+            "use `start_child/3` and `await_child/1` for other child workflow shapes"
   end
 
   @doc """

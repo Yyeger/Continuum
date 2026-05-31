@@ -24,7 +24,8 @@ It also adds `continuum_workflow_versions`, keyed by
 `(workflow, version_hash)`, with the loaded entrypoint module and registration
 time. The table is populated by each Continuum instance on boot.
 
-Top-level, non-continued v0.2-style runs leave the new columns `NULL`.
+Existing runs are backfilled with `correlation_id = id`; new runs use their own
+id as the correlation id until a continuation chain propagates it.
 
 ## Behavior Changes
 

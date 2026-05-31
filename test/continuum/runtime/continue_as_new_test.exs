@@ -68,6 +68,14 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
              Continuum.await(r1.id, 2_000, journal: Postgres)
   end
 
+  test "a single-iteration run uses its own id as correlation_id" do
+    {:ok, run_id} = Continuum.start(CycleFlow, %{n: 1, max: 1}, journal: Postgres)
+
+    pump_until(fn -> run_state(run_id) == "completed" end)
+
+    assert Repo.one(from(r in Run, where: r.id == ^run_id, select: r.correlation_id)) == run_id
+  end
+
   test "replaying a single iteration reaches the continue_as_new sentinel cleanly" do
     {:ok, root} = Continuum.start(CycleFlow, %{n: 1, max: 3}, journal: Postgres)
     pump(root)

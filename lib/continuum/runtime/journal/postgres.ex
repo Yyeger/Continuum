@@ -36,6 +36,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         version_hash: metadata.version_hash,
         state: "running",
         input: encode_term(input),
+        correlation_id: run_id,
         trace_context: Keyword.get(opts, :trace_context)
       })
 
@@ -463,7 +464,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                      correlation_id: correlation,
                      completed_at: now
                    }) do
-              :ok
+              correlation
             else
               {:error, changeset} -> repo().rollback({:continue_as_new_failed, changeset})
             end
@@ -471,8 +472,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
       end)
 
     case result do
-      {:ok, :ok} ->
-        :ok
+      {:ok, correlation} ->
+        correlation
 
       {:error, reason} ->
         raise "Continuum.Runtime.Journal.Postgres continue_as_new! failed: #{inspect(reason)}"

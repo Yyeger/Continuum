@@ -19,7 +19,7 @@ defmodule Continuum do
     * `await/2` — block until a workflow completes (test/synchronous use)
     * `now/0`, `uuid4/0`, `random/0`, `side_effect/1` — deterministic primitives
       callable from workflow code
-    * `patched?/1` — v0.1 compatibility stub for future workflow patches
+    * `patched?/1` — journaled patch marker for compatible workflow changes
   """
 
   alias Continuum.Runtime.{Context, Effect}

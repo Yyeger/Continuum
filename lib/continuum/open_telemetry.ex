@@ -426,6 +426,7 @@ defmodule Continuum.OpenTelemetry do
         child_run_id: "continuum.child_run_id",
         from_run_id: "continuum.from_run_id",
         to_run_id: "continuum.to_run_id",
+        correlation_id: "continuum.correlation_id",
         workflow: "continuum.workflow",
         patch_name: "continuum.patch_name",
         value: "continuum.value"
