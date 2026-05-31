@@ -1,7 +1,7 @@
-# Experimental Snapshots
+# Snapshots
 
-Snapshots are an opt-in v0.2 feature for workflows with very long histories.
-They reduce the cost of repeatedly loading, decoding, and matching old journal
+Snapshots are an opt-in feature for workflows with very long histories. They
+reduce the cost of repeatedly loading, decoding, and matching old journal
 events. They do not snapshot a BEAM continuation.
 
 Workflow code still re-executes from the top on every resume. A snapshot is a
@@ -47,9 +47,16 @@ would match too broadly and could hide replay drift.
 
 ## Operational Notes
 
-Snapshots are experimental in v0.2. Keep them disabled unless you have a
-workflow whose replay cost is dominated by old journal history. For dogfooding,
-run your replay tests both with and without snapshots and compare results.
+Keep snapshots disabled unless you have a workflow whose replay cost is
+dominated by old journal history. For high-value workflows, run replay tests
+both with and without snapshots and compare results.
 
 The table is `continuum_snapshots`. Payloads are opaque Erlang external terms
-and are not a public persistence format yet.
+inside a versioned Continuum envelope. v0.4 writes format version `1`, stores
+that value in `continuum_snapshots.format_version`, and still reads legacy
+v0.2/v0.3 unversioned payloads as version `1`. Future snapshot shape changes
+must either decode version `1` or raise a clear unsupported-format error.
+
+Snapshots are not a deserialization boundary for untrusted input. Continuum
+decodes snapshot blobs that it previously wrote to the application's database;
+do not accept arbitrary external snapshot payloads.

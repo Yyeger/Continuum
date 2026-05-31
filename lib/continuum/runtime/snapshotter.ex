@@ -77,7 +77,13 @@ defmodule Continuum.Runtime.Snapshotter do
           event_count: map_size(snapshot.steps_by_seq),
           size_bytes: Snapshot.encoded_size(snapshot)
         },
-        %{instance: instance.name, run_id: run_id, through_seq: snapshot.through_seq}
+        %{
+          instance: instance.name,
+          run_id: run_id,
+          through_seq: snapshot.through_seq,
+          format_version: Snapshot.format_version(),
+          compacted_prefix_length: map_size(snapshot.steps_by_seq)
+        }
       )
     else
       nil ->

@@ -151,6 +151,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
           run_id: snapshot.run_id,
           through_seq: snapshot.through_seq,
           version_hash: snapshot.version_hash,
+          format_version: Continuum.Snapshot.format_version(),
           payload: Continuum.Snapshot.encode(snapshot),
           taken_at: snapshot.taken_at
         }

@@ -8,6 +8,7 @@ defmodule Continuum.Schema.Snapshot do
     field(:run_id, :binary_id)
     field(:through_seq, :integer)
     field(:version_hash, :binary)
+    field(:format_version, :integer)
     field(:payload, :binary)
     field(:taken_at, :utc_datetime_usec)
   end

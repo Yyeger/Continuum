@@ -1,12 +1,15 @@
 defmodule Continuum.Snapshot do
   @moduledoc """
-  Experimental compacted history prefix for long-running workflows.
+  Compacted history prefix for long-running workflows.
 
   A snapshot does not capture a BEAM continuation. Workflow code still runs
   from the top; the snapshot only replaces an old prefix of raw journal events
   with compacted steps that validate the requested effect and return the
   previously journaled result.
   """
+
+  @format_version 1
+  @envelope_tag :continuum_snapshot
 
   defstruct [
     :run_id,
@@ -34,11 +37,32 @@ defmodule Continuum.Snapshot do
 
   @doc "Encode a snapshot for storage."
   @spec encode(t()) :: binary()
-  def encode(%__MODULE__{} = snapshot), do: :erlang.term_to_binary(snapshot)
+  def encode(%__MODULE__{} = snapshot) do
+    :erlang.term_to_binary({@envelope_tag, @format_version, snapshot})
+  end
 
   @doc "Decode a stored snapshot payload."
   @spec decode(binary()) :: t()
-  def decode(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
+  def decode(binary) when is_binary(binary) do
+    case :erlang.binary_to_term(binary) do
+      {@envelope_tag, @format_version, %__MODULE__{} = snapshot} ->
+        snapshot
+
+      {@envelope_tag, version, _payload} ->
+        raise ArgumentError,
+              "snapshot format version #{inspect(version)} is not supported by this release"
+
+      %__MODULE__{} = snapshot ->
+        snapshot
+
+      other ->
+        raise ArgumentError, "invalid Continuum snapshot payload: #{inspect(other)}"
+    end
+  end
+
+  @doc "Current snapshot payload format version."
+  @spec format_version() :: pos_integer()
+  def format_version, do: @format_version
 
   @doc "Return the encoded size in bytes."
   @spec encoded_size(t()) :: non_neg_integer()

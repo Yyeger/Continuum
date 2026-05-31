@@ -59,6 +59,7 @@ defmodule Continuum.Runtime.SnapshotterTest do
     snapshot = Continuum.Snapshot.decode(row.payload)
 
     assert row.through_seq == 5
+    assert row.format_version == Continuum.Snapshot.format_version()
     assert snapshot.through_seq == 5
     assert map_size(snapshot.steps_by_seq) == 6
 
@@ -121,6 +122,8 @@ defmodule Continuum.Runtime.SnapshotterTest do
     assert measurements.event_count == 1
     assert metadata.run_id == run_id
     assert metadata.through_seq == 1
+    assert metadata.format_version == Continuum.Snapshot.format_version()
+    assert metadata.compacted_prefix_length == 1
 
     assert {:ok, {:ok, 11}} =
              Continuum.Test.replay(ActivitySnapshotFlow, %{seed: 5}, [],

@@ -15,6 +15,7 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "PRIMARY KEY (activity_module, idempotency_key)"
       assert source =~ "add :trace_context, :bytea"
       assert source =~ "create table(:continuum_snapshots"
+      assert source =~ "add :format_version, :smallint, null: false, default: 1"
       assert source =~ "continuum_snapshots_latest_idx"
       assert source =~ "create table(:continuum_workflow_versions"
       assert source =~ "PRIMARY KEY (workflow, version_hash)"
@@ -25,6 +26,7 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "continuum_runs_parent_idx"
       assert source =~ "continuum_runs_correlation_idx"
       assert source =~ "continuum_runs_continued_from_idx"
+      assert source =~ "continuum_runs_correlation_completed_idx"
     end)
   end
 

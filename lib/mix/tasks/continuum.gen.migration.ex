@@ -126,6 +126,12 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         \"\"\"
 
         execute \"\"\"
+        CREATE INDEX continuum_runs_correlation_completed_idx
+          ON continuum_runs (correlation_id, completed_at)
+          WHERE correlation_id IS NOT NULL
+        \"\"\"
+
+        execute \"\"\"
         CREATE TABLE continuum_events (
           run_id uuid NOT NULL,
           seq bigint NOT NULL,
@@ -204,6 +210,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :run_id, :uuid, null: false
           add :through_seq, :bigint, null: false
           add :version_hash, :bytea, null: false
+          add :format_version, :smallint, null: false, default: 1
           add :payload, :bytea, null: false
           add :taken_at, :utc_datetime_usec, null: false, default: fragment("now()")
         end

@@ -8,6 +8,16 @@
   reads and live-tail appends. This removes the replay hot path's repeated
   `Enum.at/2` scans and `history ++ [event]` list rebuilds while leaving the
   journal append path unchanged.
+- Snapshot payloads now use a versioned `{:continuum_snapshot, 1, snapshot}`
+  envelope. Legacy unversioned v0.2/v0.3 snapshot blobs still decode as format
+  v1, and unsupported future formats raise a clear `ArgumentError` instead of
+  failing as a raw term decode.
+
+### Migrations
+
+- Added `continuum_snapshots.format_version smallint NOT NULL DEFAULT 1`, plus
+  `continuum_runs_correlation_completed_idx` for the v0.4 continued-chain
+  archival task.
 
 ### Benchmarks
 
