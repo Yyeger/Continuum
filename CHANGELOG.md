@@ -15,6 +15,10 @@
 - `use Continuum.Workflow` accepts `snapshot_threshold: positive_integer |
   :infinity`. The snapshotter resolves per-workflow threshold first, then
   runtime/app config, then `:infinity`.
+- Added `mix continuum.gc_versions --repo MyApp.Repo`, a dry-run-by-default
+  cleanup task for `continuum_workflow_versions`. It deletes only with
+  `--execute`, preserves loaded workflow hashes, and treats running,
+  suspended, and stuck-unknown-version runs as pins.
 
 ### Migrations
 

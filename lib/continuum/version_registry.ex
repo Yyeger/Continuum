@@ -61,6 +61,16 @@ defmodule Continuum.VersionRegistry do
     end
   end
 
+  @doc since: "0.4.0"
+  @doc """
+  Return the loaded workflow-version entries currently known to this BEAM.
+  """
+  @spec entries() :: [entry()]
+  def entries do
+    entry_map()
+    |> Map.values()
+  end
+
   @doc since: "0.3.0"
   @doc """
   Backwards-compatible registration helper for tests and old callers.
@@ -104,7 +114,7 @@ defmodule Continuum.VersionRegistry do
         entry
 
       {:error, _reason} ->
-        entries()
+        entry_map()
         |> Map.values()
         |> Enum.find(&(&1.workflow == module))
     end
@@ -118,7 +128,7 @@ defmodule Continuum.VersionRegistry do
   def resolve(workflow, version_hash) do
     workflow_string = workflow_string(workflow)
 
-    case Map.get(entries(), {workflow_string, version_hash}) ||
+    case Map.get(entry_map(), {workflow_string, version_hash}) ||
            discover(workflow_string, version_hash) do
       nil ->
         {:error, :unknown_version}
@@ -209,7 +219,7 @@ defmodule Continuum.VersionRegistry do
   end
 
   defp put_entry(%{workflow_string: workflow, version_hash: hash} = entry) do
-    :persistent_term.put(@registry_key, Map.put(entries(), {workflow, hash}, entry))
+    :persistent_term.put(@registry_key, Map.put(entry_map(), {workflow, hash}, entry))
     entry
   end
 
@@ -223,7 +233,7 @@ defmodule Continuum.VersionRegistry do
     end)
   end
 
-  defp entries do
+  defp entry_map do
     :persistent_term.get(@registry_key, %{})
   end
 
