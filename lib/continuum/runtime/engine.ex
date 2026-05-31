@@ -365,9 +365,25 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
-  defp resolve_workflow_entrypoint(%{resume?: false} = state) do
-    _ = Continuum.VersionRegistry.ensure_registered(state.workflow_module)
-    {:ok, state}
+  defp resolve_workflow_entrypoint(
+         %{
+           resume?: false,
+           journal: Continuum.Runtime.Journal.Postgres
+         } = state
+       ) do
+    case Continuum.VersionRegistry.ensure_registered(state.workflow_module) do
+      {:ok, %{entrypoint: entrypoint, workflow_string: workflow, version_hash: version_hash}} ->
+        {:ok,
+         %{
+           state
+           | workflow_module: entrypoint,
+             workflow: workflow,
+             version_hash: version_hash
+         }}
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
   end
 
   defp resolve_workflow_entrypoint(%{journal: Continuum.Runtime.Journal.Postgres} = state) do

@@ -61,12 +61,13 @@ defmodule Continuum.Replay.PostgresTest do
       {:ok, _} = Continuum.await(run_id, 1_000, journal: Postgres)
 
       events = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
+      entrypoint = TwoStepPgFlow.__continuum_entrypoint__()
 
       ctx = %Continuum.Runtime.Context{
         run_id: "pg-replay-test",
         history: events,
         cursor: 0,
-        workflow_module: TwoStepPgFlow,
+        workflow_module: entrypoint,
         lease_token: nil,
         journal: Postgres
       }
@@ -74,7 +75,7 @@ defmodule Continuum.Replay.PostgresTest do
       Continuum.Runtime.Context.put(ctx)
 
       try do
-        result = TwoStepPgFlow.run(%{seed: 5})
+        result = entrypoint.run(%{seed: 5})
         assert result == {:ok, 11}
       after
         Continuum.Runtime.Context.clear()

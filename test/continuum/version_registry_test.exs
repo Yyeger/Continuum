@@ -63,17 +63,20 @@ defmodule Continuum.VersionRegistryTest do
     assert {:ok, b} = Continuum.VersionRegistry.ensure_registered(HelperA)
 
     assert a.workflow == LogicalFlow
-    assert a.entrypoint == SameA
+    assert a.entrypoint == SameA.__continuum_entrypoint__()
     assert b.workflow == LogicalFlow
-    assert b.entrypoint == HelperA
+    assert b.entrypoint == HelperA.__continuum_entrypoint__()
 
-    assert {:ok, %{entrypoint: SameA}} =
+    same_a_entrypoint = SameA.__continuum_entrypoint__()
+    helper_a_entrypoint = HelperA.__continuum_entrypoint__()
+
+    assert {:ok, %{entrypoint: ^same_a_entrypoint}} =
              Continuum.VersionRegistry.resolve(
                LogicalFlow,
                SameA.__continuum_workflow__().version_hash
              )
 
-    assert {:ok, %{entrypoint: HelperA}} =
+    assert {:ok, %{entrypoint: ^helper_a_entrypoint}} =
              Continuum.VersionRegistry.resolve(
                inspect(LogicalFlow),
                HelperA.__continuum_workflow__().version_hash

@@ -20,6 +20,14 @@ defmodule Continuum.WorkflowCompileTest do
       assert meta.snapshot_threshold == nil
       assert is_binary(meta.version_hash)
       assert byte_size(meta.version_hash) == 64
+      assert meta.entrypoint == CleanFlow.__continuum_entrypoint__()
+      assert meta.entrypoint != CleanFlow
+      assert function_exported?(meta.entrypoint, :run, 1)
+
+      generated_meta = meta.entrypoint.__continuum_workflow__()
+      assert generated_meta.module == CleanFlow
+      assert generated_meta.entrypoint == meta.entrypoint
+      assert generated_meta.version_hash == meta.version_hash
       refute function_exported?(CleanFlow, :child_spec, 1)
     end
 
@@ -326,7 +334,9 @@ defmodule Continuum.WorkflowCompileTest do
     end
     """
 
-    [{mod, _}] = Code.compile_string(src)
+    mod = Module.concat(__MODULE__, module_suffix)
+    modules = Code.compile_string(src)
+    assert Enum.any?(modules, fn {compiled, _bytecode} -> compiled == mod end)
     mod.__continuum_workflow__().version_hash
   end
 

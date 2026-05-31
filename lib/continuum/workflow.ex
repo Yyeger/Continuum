@@ -390,21 +390,90 @@ defmodule Continuum.Workflow.BeforeCompile do
     logical_workflow = Module.get_attribute(env.module, :continuum_logical_workflow) || env.module
     snapshot_threshold = Module.get_attribute(env.module, :continuum_snapshot_threshold)
     hash = compute_version_hash(env.module)
+    generated_module = Module.concat(env.module, :"V_#{hash}")
+    generated_definitions = generated_definitions(env.module, generated_module)
+
+    metadata = %{
+      module: logical_workflow,
+      source_module: env.module,
+      version: version,
+      retention: retention,
+      snapshot_threshold: snapshot_threshold,
+      version_hash: hash
+    }
 
     quote do
+      defmodule unquote(generated_module) do
+        @moduledoc false
+        unquote_splicing(generated_definitions)
+
+        @doc false
+        def __continuum_workflow__ do
+          %{
+            module: unquote(metadata.module),
+            source_module: unquote(metadata.source_module),
+            entrypoint: __MODULE__,
+            version: unquote(metadata.version),
+            retention: unquote(Macro.escape(metadata.retention)),
+            snapshot_threshold: unquote(metadata.snapshot_threshold),
+            version_hash: unquote(metadata.version_hash)
+          }
+        end
+
+        @doc false
+        def __continuum_entrypoint__, do: __MODULE__
+      end
+
       def __continuum_workflow__ do
         %{
-          module: unquote(logical_workflow),
-          entrypoint: __MODULE__,
-          version: unquote(version),
-          retention: unquote(Macro.escape(retention)),
-          snapshot_threshold: unquote(snapshot_threshold),
-          version_hash: unquote(hash)
+          module: unquote(metadata.module),
+          source_module: unquote(metadata.source_module),
+          entrypoint: unquote(generated_module),
+          version: unquote(metadata.version),
+          retention: unquote(Macro.escape(metadata.retention)),
+          snapshot_threshold: unquote(metadata.snapshot_threshold),
+          version_hash: unquote(metadata.version_hash)
         }
       end
 
-      def __continuum_entrypoint__, do: __MODULE__
+      def __continuum_entrypoint__, do: unquote(generated_module)
     end
+  end
+
+  defp generated_definitions(module, generated_module) do
+    module
+    |> Module.definitions_in()
+    |> Enum.sort()
+    |> Enum.flat_map(fn {name, arity} ->
+      case Module.get_definition(module, {name, arity}) do
+        {:v1, kind, _meta, clauses} when kind in [:def, :defp] ->
+          Enum.map(clauses, &definition_ast(kind, name, &1, module, generated_module))
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp definition_ast(kind, name, {meta, args, guards, body}, module, generated_module) do
+    args = rewrite_self_references(args, module, generated_module)
+    guards = rewrite_self_references(guards, module, generated_module)
+    body = rewrite_self_references(body, module, generated_module)
+
+    head =
+      case List.wrap(guards) do
+        [] -> {name, meta, args}
+        guards -> {:when, meta, [{name, meta, args} | List.flatten(guards)]}
+      end
+
+    {kind, meta, [head, [do: body]]}
+  end
+
+  defp rewrite_self_references(ast, module, generated_module) do
+    Macro.prewalk(ast, fn
+      ^module -> generated_module
+      other -> other
+    end)
   end
 
   defp compute_version_hash(module) do

@@ -96,6 +96,12 @@ defmodule Continuum.Test do
   """
   @spec replay(module(), term(), [map()], keyword()) :: replay_result()
   def replay(workflow_module, input, history, opts \\ []) do
+    workflow_module
+    |> do_replay(input, history, opts)
+    |> maybe_replay_generated_entrypoint(workflow_module, input, history, opts)
+  end
+
+  defp do_replay(workflow_module, input, history, opts) do
     run_id = Keyword.get(opts, :run_id, "continuum-replay")
     journal = Keyword.get(opts, :journal, Journal.InMemory)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -131,6 +137,59 @@ defmodule Continuum.Test do
     after
       Context.clear()
     end
+  end
+
+  defp maybe_replay_generated_entrypoint(
+         {:error, {:error, %Continuum.ReplayDriftError{expected: expected}, _stacktrace}} =
+           result,
+         workflow_module,
+         input,
+         history,
+         opts
+       ) do
+    entrypoint = expected_entrypoint(expected)
+
+    if entrypoint && entrypoint != workflow_module do
+      do_replay(entrypoint, input, history, opts)
+    else
+      result
+    end
+  end
+
+  defp maybe_replay_generated_entrypoint(result, _workflow_module, _input, _history, _opts) do
+    result
+  end
+
+  defp expected_entrypoint(expected) when is_map(expected) do
+    expected
+    |> Map.get(:command_id, Map.get(expected, "command_id"))
+    |> command_entrypoint()
+  end
+
+  defp expected_entrypoint(_expected), do: nil
+
+  defp command_entrypoint(module) when is_atom(module) do
+    if generated_workflow_entrypoint?(module) and function_exported?(module, :run, 1) do
+      module
+    end
+  end
+
+  defp command_entrypoint(tuple) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.find_value(&command_entrypoint/1)
+  end
+
+  defp command_entrypoint(list) when is_list(list),
+    do: Enum.find_value(list, &command_entrypoint/1)
+
+  defp command_entrypoint(_other), do: nil
+
+  defp generated_workflow_entrypoint?(module) do
+    metadata = module.__continuum_workflow__()
+    metadata.entrypoint == module and Map.get(metadata, :source_module, module) != module
+  rescue
+    UndefinedFunctionError -> false
   end
 
   @doc """

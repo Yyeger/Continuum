@@ -4,35 +4,40 @@ Continuum stores a content hash for every workflow run. On resume, the engine
 dispatches through the run row's `(workflow, version_hash)` pair instead of
 blindly calling the latest module with that name.
 
-## The v0.3 Entrypoint Pattern
+## Generated Entrypoints
 
-v0.3 uses an explicit entrypoint pattern. Keep old concrete workflow modules
-loaded while runs that started on them are still active, and point newer
-concrete modules at the same logical workflow:
+`use Continuum.Workflow` generates a hash-keyed entrypoint module for the
+workflow body that was compiled:
 
 ```elixir
-defmodule MyApp.OrderFlow.V1 do
-  use Continuum.Workflow, version: 1, workflow: MyApp.OrderFlow
-
-  def run(input), do: ...
-end
-
-defmodule MyApp.OrderFlow.V2 do
-  use Continuum.Workflow, version: 2, workflow: MyApp.OrderFlow
+defmodule MyApp.OrderFlow do
+  use Continuum.Workflow, version: 2
 
   def run(input), do: ...
 end
 ```
 
-Start new runs with the concrete entrypoint you want:
+Compiling that module also defines a hidden entrypoint named like
+`MyApp.OrderFlow.V_<hash>`. Start runs with the public workflow module:
 
 ```elixir
-{:ok, run_id} = Continuum.start(MyApp.OrderFlow.V2, input)
+{:ok, run_id} = Continuum.start(MyApp.OrderFlow, input)
 ```
 
-Both versions register as the logical workflow `MyApp.OrderFlow`, each with its
-own hash-specific entrypoint. A suspended V1 run resumes on V1 even after V2 is
-loaded.
+The run row stores the logical workflow and the content hash. Fresh durable runs
+delegate to the current generated entrypoint, and resumed durable runs resolve
+the journaled `(workflow, version_hash)` back to the generated entrypoint that
+matches the old body. A suspended run therefore resumes on old code even after a
+new version of the public module is loaded.
+
+`__continuum_entrypoint__/0` returns the generated module for the currently
+loaded public module. The generated modules are hidden from ExDoc with
+`@moduledoc false`; keep old releases or generated beam files available until
+runs that need those hashes have completed or been cancelled.
+
+You can still use `workflow: MyApp.LogicalFlow` when several public modules
+should share a logical workflow identity, but ordinary version upgrades no
+longer require hand-written `V1`/`V2` wrapper modules.
 
 ## Durable Registry
 
@@ -47,7 +52,7 @@ Configure boot-time registration explicitly when your app can:
 Continuum.children(
   name: :orders_continuum,
   repo: MyApp.Repo,
-  workflow_modules: [MyApp.OrderFlow.V1, MyApp.OrderFlow.V2]
+  workflow_modules: [MyApp.OrderFlow]
 )
 ```
 
