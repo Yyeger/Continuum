@@ -20,6 +20,8 @@ defmodule Continuum.Runtime.Context do
     :trace_context,
     :instance,
     :journal,
+    :history_index,
+    :history_count,
     command_counts: %{},
     snapshot_steps: %{},
     history_offset: 0,
@@ -35,6 +37,8 @@ defmodule Continuum.Runtime.Context do
           trace_context: binary() | nil,
           instance: Continuum.Runtime.Instance.t() | nil,
           journal: module(),
+          history_index: :array.array() | nil,
+          history_count: non_neg_integer() | nil,
           command_counts: map(),
           snapshot_steps: map(),
           history_offset: non_neg_integer(),
@@ -42,10 +46,20 @@ defmodule Continuum.Runtime.Context do
         }
 
   @doc "Set the current context for this process."
-  def put(%__MODULE__{} = ctx), do: Process.put(@key, ctx)
+  def put(%__MODULE__{} = ctx), do: Process.put(@key, ensure_history_index(ctx))
 
   @doc "Read the current context, or nil if not in a workflow process."
-  def get, do: Process.get(@key)
+  def get do
+    case Process.get(@key) do
+      %__MODULE__{} = ctx ->
+        ctx = ensure_history_index(ctx)
+        Process.put(@key, ctx)
+        ctx
+
+      nil ->
+        nil
+    end
+  end
 
   @doc "Clear the context."
   def clear, do: Process.delete(@key)
@@ -61,7 +75,10 @@ defmodule Continuum.Runtime.Context do
   def next_event do
     ctx = get!()
 
-    case Enum.at(ctx.history, ctx.cursor) do
+    case history_event(ctx, ctx.cursor) do
+      :compacted_gap ->
+        :tail
+
       nil ->
         :tail
 
@@ -69,6 +86,50 @@ defmodule Continuum.Runtime.Context do
         Process.put(@key, %{ctx | cursor: ctx.cursor + 1})
         {:ok, event}
     end
+  end
+
+  @doc false
+  def ensure_history_index(%__MODULE__{history_index: index} = ctx) when not is_nil(index),
+    do: ctx
+
+  def ensure_history_index(%__MODULE__{} = ctx) do
+    history = ctx.history || []
+
+    %{
+      ctx
+      | history_index: :array.from_list(history, nil),
+        history_count: length(history)
+    }
+  end
+
+  @doc false
+  def history_event(%__MODULE__{} = ctx, cursor) do
+    ctx = ensure_history_index(ctx)
+    offset = ctx.history_offset || 0
+    index = cursor - offset
+
+    cond do
+      cursor < offset ->
+        :compacted_gap
+
+      index < 0 or index >= (ctx.history_count || 0) ->
+        nil
+
+      true ->
+        :array.get(index, ctx.history_index)
+    end
+  end
+
+  @doc false
+  def append_history(%__MODULE__{} = ctx, event) do
+    ctx = ensure_history_index(ctx)
+    count = ctx.history_count || 0
+
+    %{
+      ctx
+      | history_index: :array.set(count, event, ctx.history_index),
+        history_count: count + 1
+    }
   end
 
   defp get! do

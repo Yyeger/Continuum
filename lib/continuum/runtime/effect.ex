@@ -350,8 +350,12 @@ defmodule Continuum.Runtime.Effect do
 
   defp journal_live!(ctx, effect, result, command_id) do
     event = encode_event(effect, result, ctx.cursor, command_id)
-    new_history = ctx.history ++ [event]
-    new_ctx = %{ctx | history: new_history, cursor: ctx.cursor + 1}
+
+    new_ctx =
+      ctx
+      |> Context.append_history(event)
+      |> Map.put(:cursor, ctx.cursor + 1)
+
     Context.put(new_ctx)
     apply(ctx.journal, :append!, [ctx.instance, ctx.run_id, event, ctx.lease_token])
   end
@@ -490,7 +494,11 @@ defmodule Continuum.Runtime.Effect do
            ctx.lease_token
          ) do
       {:ok, payload, winner_event} ->
-        Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 1})
+        Context.put(
+          ctx
+          |> Context.append_history(winner_event)
+          |> Map.put(:cursor, ctx.cursor + 1)
+        )
 
         Telemetry.execute([:continuum, :signal, :received], %{}, %{
           run_id: ctx.run_id,
@@ -564,7 +572,11 @@ defmodule Continuum.Runtime.Effect do
            ctx.lease_token
          ) do
       {:ok, payload, winner_event} ->
-        Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 2})
+        Context.put(
+          ctx
+          |> Context.append_history(winner_event)
+          |> Map.put(:cursor, ctx.cursor + 2)
+        )
 
         Telemetry.execute([:continuum, :signal, :received], %{}, %{
           run_id: ctx.run_id,
@@ -574,7 +586,12 @@ defmodule Continuum.Runtime.Effect do
         payload
 
       {:timeout, winner_event} ->
-        Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 2})
+        Context.put(
+          ctx
+          |> Context.append_history(winner_event)
+          |> Map.put(:cursor, ctx.cursor + 2)
+        )
+
         :timeout
 
       :none ->
@@ -749,7 +766,11 @@ defmodule Continuum.Runtime.Effect do
         ctx.lease_token
       )
 
-    Context.put(%{ctx | history: ctx.history ++ [event], cursor: ctx.cursor + 1})
+    Context.put(
+      ctx
+      |> Context.append_history(event)
+      |> Map.put(:cursor, ctx.cursor + 1)
+    )
 
     Telemetry.execute([:continuum, :child, :started], %{}, %{
       parent_run_id: ctx.run_id,
@@ -798,7 +819,11 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp advance_await_child(ctx, winner_event) do
-    Context.put(%{ctx | history: ctx.history ++ [winner_event], cursor: ctx.cursor + 1})
+    Context.put(
+      ctx
+      |> Context.append_history(winner_event)
+      |> Map.put(:cursor, ctx.cursor + 1)
+    )
   end
 
   defp emit_child(ctx, :completed, child_run_id) do
@@ -941,7 +966,13 @@ defmodule Continuum.Runtime.Effect do
     }
 
     :ok = apply(ctx.journal, :append!, [ctx.instance, ctx.run_id, event, ctx.lease_token])
-    Context.put(%{ctx | history: ctx.history ++ [event], cursor: ctx.cursor + 1})
+
+    Context.put(
+      ctx
+      |> Context.append_history(event)
+      |> Map.put(:cursor, ctx.cursor + 1)
+    )
+
     emit_patched(ctx, patch_name, true)
     true
   end
@@ -1337,15 +1368,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp history_event(ctx, cursor) do
-    offset = ctx.history_offset || 0
-
-    cond do
-      cursor < offset ->
-        :compacted_gap
-
-      true ->
-        Enum.at(ctx.history, cursor - offset)
-    end
+    Context.history_event(ctx, cursor)
   end
 
   defp hash_term(term) do

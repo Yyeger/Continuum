@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Replay contexts now keep an indexed in-process history (`:array`) for cursor
+  reads and live-tail appends. This removes the replay hot path's repeated
+  `Enum.at/2` scans and `history ++ [event]` list rebuilds while leaving the
+  journal append path unchanged.
+
+### Benchmarks
+
+- `mix run bench/snapshot_bench.exs 10000` on 2026-05-31 reported raw replay
+  21 ms, snapshot replay 16 ms, and a 1.3x speedup for 10,000 side-effect
+  events after indexed history landed. The old 7.2x snapshot advantage was
+  largely measuring inefficient raw replay, so the remaining >=10x snapshot
+  graduation target still needs either a different compaction win or formal
+  acceptance in the snapshot-stabilization step.
+- Added `bench/replay_hot_path_bench.exs`. At 10,000 logical mixed operations
+  (12,500 events across side effects, activities, patch markers, and saga
+  compensations), current raw replay is 89 ms / 7.17 us per event; snapshot
+  replay is 89 ms over the compacted prefix.
+
 ## v0.3.0 — 2026-05-29 — "Real workflows"
 
 ### New surfaces
