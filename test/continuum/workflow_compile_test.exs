@@ -265,6 +265,59 @@ defmodule Continuum.WorkflowCompileTest do
     end
   end
 
+  describe "compensation warnings" do
+    test "warns when compensate_all is paired with an uncompensated activity" do
+      output =
+        capture_io(:standard_error, fn ->
+          compile_workflow("MissingCompensation", """
+          def run(input) do
+            activity __MODULE__.do_work(input)
+            compensate_all()
+          end
+
+          def do_work(input), do: input
+          """)
+        end)
+
+      assert output =~ "uses compensate_all"
+      assert output =~ "activity without `compensate:`"
+      assert output =~ "compensate: :none"
+    end
+
+    test "does not warn when the activity has compensation" do
+      output =
+        capture_io(:standard_error, fn ->
+          compile_workflow("CompensatedActivity", """
+          def run(input) do
+            activity __MODULE__.do_work(input), compensate: {__MODULE__, :undo, [input]}
+            compensate_all()
+          end
+
+          def do_work(input), do: {:ok, input}
+          def undo(input), do: input
+          """)
+        end)
+
+      refute output =~ "activity without `compensate:`"
+    end
+
+    test "does not warn when the activity explicitly opts out" do
+      output =
+        capture_io(:standard_error, fn ->
+          compile_workflow("CompensationOptOut", """
+          def run(input) do
+            activity __MODULE__.do_work(input), compensate: :none
+            compensate_all()
+          end
+
+          def do_work(input), do: input
+          """)
+        end)
+
+      refute output =~ "activity without `compensate:`"
+    end
+  end
+
   defp compile_and_get_hash(module_suffix, body) do
     src = """
     defmodule Continuum.WorkflowCompileTest.#{module_suffix} do

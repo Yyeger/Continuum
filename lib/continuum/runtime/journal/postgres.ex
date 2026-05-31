@@ -493,6 +493,63 @@ defmodule Continuum.Runtime.Journal.Postgres do
     with_repo(instance, fn -> schedule_activity_with_repo!(run_id, event, task, lease_token) end)
   end
 
+  def schedule_compensations!(%Instance{} = instance, run_id, scheduled, lease_token) do
+    with_repo(instance, fn ->
+      schedule_compensations_with_repo!(run_id, scheduled, lease_token)
+    end)
+  end
+
+  defp schedule_compensations_with_repo!(run_id, scheduled, lease_token) do
+    result =
+      repo().transaction(fn ->
+        lock_and_validate_run!(run_id, lease_token)
+        now = DateTime.utc_now()
+
+        Enum.each(scheduled, fn %{event: event, task: task} ->
+          {event_type, payload} = encode_event(event)
+
+          event_changeset =
+            %Event{}
+            |> Ecto.Changeset.change(%{
+              run_id: run_id,
+              seq: event.seq,
+              event_type: event_type,
+              payload: payload,
+              inserted_at: now
+            })
+
+          task_changeset =
+            %ActivityTask{}
+            |> Ecto.Changeset.change(%{
+              id: task.id,
+              run_id: run_id,
+              seq: task.seq,
+              mfa: encode_term(task),
+              attempt: 1,
+              state: "available"
+            })
+
+          with {:ok, _event} <- repo().insert(event_changeset),
+               {:ok, _task} <- repo().insert(task_changeset) do
+            :ok
+          else
+            {:error, changeset} ->
+              repo().rollback({:compensation_batch_schedule_failed, changeset})
+          end
+        end)
+
+        :ok
+      end)
+
+    case result do
+      {:ok, :ok} ->
+        :ok
+
+      {:error, reason} ->
+        raise "Continuum.Runtime.Journal.Postgres schedule_compensations! failed: #{inspect(reason)}"
+    end
+  end
+
   def complete_compensation_task!(%Instance{} = instance, task, result, lease_token, opts \\ []) do
     with_repo(instance, fn ->
       complete_compensation_task_with_repo!(task, result, lease_token, opts)
@@ -542,7 +599,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       target_activity_id: task.target_activity_id,
       result: result,
       command_id: Map.get(task, :command_id),
-      seq: task.seq + 1
+      seq: compensation_terminal_seq(task)
     }
   end
 
@@ -554,7 +611,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         error: error,
         attempt: task.attempt,
         command_id: Map.get(task, :command_id),
-        seq: task.seq + 1
+        seq: compensation_terminal_seq(task)
       }
 
       activity_task_result!(
@@ -1551,12 +1608,13 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp insert_event!(run_id, event) do
     {event_type, payload} = encode_event(event)
+    seq = event.seq || next_seq(run_id)
 
     changeset =
       %Event{}
       |> Ecto.Changeset.change(%{
         run_id: run_id,
-        seq: event.seq,
+        seq: seq,
         event_type: event_type,
         payload: payload,
         inserted_at: DateTime.utc_now()
@@ -1695,6 +1753,9 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp decode_snapshot(%Snapshot{payload: payload}) do
     Continuum.Snapshot.decode(payload)
   end
+
+  defp compensation_terminal_seq(%{parallel_batch?: true}), do: nil
+  defp compensation_terminal_seq(task), do: task.seq + 1
 
   defp cas_update_run(run_id, lease_token, updates) do
     query = leased_run_query(run_id, lease_token)

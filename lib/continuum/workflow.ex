@@ -254,10 +254,20 @@ defmodule Continuum.Workflow do
   """
   @doc since: "0.3.0"
   defmacro compensate_all do
+    quote do
+      compensate_all([])
+    end
+  end
+
+  @doc since: "0.4.0"
+  defmacro compensate_all(opts) do
     command = command_base(__CALLER__, :compensate_all, :compensate_all)
 
     quote do
-      Continuum.Runtime.Effect.compensate_all({:command, unquote(Macro.escape(command))})
+      Continuum.Runtime.Effect.compensate_all(
+        {:command, unquote(Macro.escape(command))},
+        unquote(opts)
+      )
     end
   end
 
@@ -291,6 +301,7 @@ defmodule Continuum.Workflow do
           timer: 1,
           compensate: 1,
           compensate_all: 0,
+          compensate_all: 1,
           start_child: 2,
           start_child: 3,
           await_child: 1,
@@ -364,6 +375,7 @@ defmodule Continuum.Workflow.OnDef do
     end
 
     Continuum.AstCheck.check_helper_calls(body, env, name, length(args || []))
+    Continuum.AstCheck.check_compensation_warnings(body, env, name, length(args || []))
   end
 
   def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok

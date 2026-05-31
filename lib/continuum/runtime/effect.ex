@@ -135,9 +135,23 @@ defmodule Continuum.Runtime.Effect do
   the LIFO index. Returns `:ok`.
   """
   @doc since: "0.3.0"
-  def compensate_all({:command, command_base}) do
+  def compensate_all(command, opts \\ [])
+
+  def compensate_all({:command, command_base}, opts) do
     ctx = Context.get() || raise_not_in_workflow(:compensate_all)
-    run_compensate_all(ctx.compensation_stack, command_base, 0)
+
+    case Keyword.get(opts, :mode, :sequential) do
+      :sequential ->
+        run_compensate_all(ctx.compensation_stack, command_base, 0)
+
+      :parallel ->
+        run_parallel_compensate_all(ctx.compensation_stack, command_base)
+
+      other ->
+        raise ArgumentError,
+              "expected compensate_all mode to be :sequential or :parallel, got: #{inspect(other)}"
+    end
+
     :ok
   end
 
@@ -619,6 +633,188 @@ defmodule Continuum.Runtime.Effect do
     run_compensate_all(rest, command_base, index + 1)
   end
 
+  defp run_parallel_compensate_all([], _command_base), do: :ok
+
+  defp run_parallel_compensate_all(stack, command_base) do
+    ctx = Context.get()
+    {ctx, items} = parallel_compensation_items(ctx, stack, command_base)
+    Context.put(ctx)
+
+    if ctx.journal == Continuum.Runtime.Journal.Postgres do
+      do_parallel_compensations(items)
+    else
+      Enum.each(items, fn item ->
+        _result = do_compensation(item.target_id, item.mfa, item.command_id)
+        mark_compensated(item.target_id)
+      end)
+    end
+  end
+
+  defp parallel_compensation_items(ctx, stack, command_base) do
+    Enum.map_reduce(Enum.with_index(stack), ctx, fn {{target_id, mfa}, index}, acc ->
+      item_base =
+        command_base
+        |> :erlang.append_element(target_id)
+        |> :erlang.append_element(index)
+
+      {acc, command_id} = assign_command_id(acc, item_base)
+      {%{target_id: target_id, mfa: mfa, index: index, command_id: command_id}, acc}
+    end)
+    |> then(fn {items, ctx} -> {ctx, items} end)
+  end
+
+  defp do_parallel_compensations(items) do
+    ctx = Context.get()
+
+    case history_event(ctx, ctx.cursor) do
+      :compacted_gap ->
+        raise Continuum.ReplayDriftError,
+          run_id: ctx.run_id,
+          cursor: ctx.cursor,
+          expected: :snapshot_step,
+          actual: {:compensate_all, :parallel}
+
+      nil ->
+        live_parallel_compensations!(ctx, items)
+
+      _event ->
+        replay_parallel_compensations!(ctx, items)
+    end
+  end
+
+  defp live_parallel_compensations!(ctx, items) do
+    scheduled =
+      Enum.map(items, fn item ->
+        task_id = Ecto.UUID.generate()
+        {mod, _fun, args} = item.mfa
+        seq = ctx.cursor + item.index
+
+        event = %{
+          type: :compensation_scheduled,
+          target_activity_id: item.target_id,
+          mfa: item.mfa,
+          attempt: 1,
+          command_id: item.command_id,
+          seq: seq
+        }
+
+        task = %{
+          id: task_id,
+          seq: seq,
+          kind: :compensation,
+          target_activity_id: item.target_id,
+          mfa: item.mfa,
+          opts: [],
+          retry: retry_policy(mod, []),
+          timeout_ms: timeout_ms(mod, []),
+          idempotency_key: idempotency_key(mod, args, []),
+          command_id: item.command_id,
+          parallel_batch?: true
+        }
+
+        %{event: event, task: task}
+      end)
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.schedule_compensations!(
+        ctx.instance,
+        ctx.run_id,
+        scheduled,
+        ctx.lease_token
+      )
+
+    Enum.each(scheduled, fn %{event: event, task: task} ->
+      Telemetry.execute([:continuum, :compensation, :scheduled], %{}, %{
+        run_id: ctx.run_id,
+        target_activity_id: event.target_activity_id,
+        task_id: task.id,
+        mfa: event.mfa,
+        seq: event.seq
+      })
+    end)
+
+    throw({:continuum_suspend, {:parallel_compensation_pending, Enum.map(items, & &1.target_id)}})
+  end
+
+  defp replay_parallel_compensations!(ctx, items) do
+    expected_by_command = Map.new(items, &{&1.command_id, &1})
+
+    with {:ok, cursor, pending} <- replay_parallel_schedules(ctx, items, expected_by_command),
+         {:ok, cursor} <- replay_parallel_terminals(ctx, cursor, pending) do
+      Context.put(%{ctx | cursor: cursor})
+      Enum.each(items, &mark_compensated(&1.target_id))
+      :ok
+    else
+      :pending ->
+        throw(
+          {:continuum_suspend, {:parallel_compensation_pending, Enum.map(items, & &1.target_id)}}
+        )
+
+      {:mismatch, event} ->
+        raise Continuum.ReplayDriftError,
+          run_id: ctx.run_id,
+          cursor: ctx.cursor,
+          expected: event,
+          actual: {:compensate_all, :parallel}
+    end
+  end
+
+  defp replay_parallel_schedules(ctx, items, expected_by_command) do
+    Enum.reduce_while(items, {:ok, ctx.cursor}, fn item, {:ok, cursor} ->
+      case history_event(ctx, cursor) do
+        %{type: :compensation_scheduled, target_activity_id: target_id} = event ->
+          cond do
+            target_id != item.target_id ->
+              {:halt, {:mismatch, event}}
+
+            not command_matches?(event, item.command_id) ->
+              {:halt, {:mismatch, event}}
+
+            not Map.has_key?(expected_by_command, Map.get(event, :command_id)) ->
+              {:halt, {:mismatch, event}}
+
+            true ->
+              {:cont, {:ok, cursor + 1}}
+          end
+
+        nil ->
+          {:halt, :pending}
+
+        other ->
+          {:halt, {:mismatch, other}}
+      end
+    end)
+    |> case do
+      {:ok, cursor} -> {:ok, cursor, expected_by_command}
+      other -> other
+    end
+  end
+
+  defp replay_parallel_terminals(_ctx, cursor, pending) when map_size(pending) == 0 do
+    {:ok, cursor}
+  end
+
+  defp replay_parallel_terminals(ctx, cursor, pending) do
+    case history_event(ctx, cursor) do
+      %{type: type} = event when type in [:compensation_completed, :compensation_failed] ->
+        command_id = Map.get(event, :command_id)
+
+        case Map.pop(pending, command_id) do
+          {nil, _pending} ->
+            {:mismatch, event}
+
+          {_item, pending} ->
+            replay_parallel_terminals(ctx, cursor + 1, pending)
+        end
+
+      nil ->
+        :pending
+
+      other ->
+        {:mismatch, other}
+    end
+  end
+
   defp do_compensation(target_id, mfa, command_id) do
     ctx = Context.get()
     effect = {:compensation, target_id, mfa}
@@ -904,7 +1100,7 @@ defmodule Continuum.Runtime.Effect do
 
   defp maybe_wrap_activity(raw, {:activity, mfa, _opts}, opts, command_id) do
     case Keyword.get(opts, :compensate) do
-      nil -> raw
+      value when value in [nil, :none] -> raw
       compensate_mfa -> wrap_compensated(raw, mfa, compensate_mfa, command_id)
     end
   end

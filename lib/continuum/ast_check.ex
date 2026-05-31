@@ -176,7 +176,67 @@ defmodule Continuum.AstCheck do
     end
   end
 
+  @doc false
+  @spec check_compensation_warnings(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
+  def check_compensation_warnings(ast, env, caller_fun, caller_arity) do
+    if compensate_all_call?(ast) do
+      ast
+      |> uncompensated_activity_calls()
+      |> Enum.each(&warn_uncompensated_activity(&1, env, caller_fun, caller_arity))
+    end
+
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
+
+  defp compensate_all_call?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        {:compensate_all, _meta, args} = node, _found when is_list(args) -> {node, true}
+        node, found -> {node, found}
+      end)
+
+    found?
+  end
+
+  defp uncompensated_activity_calls(ast) do
+    {_ast, calls} =
+      Macro.prewalk(ast, [], fn
+        {:activity, meta, args} = node, acc when is_list(args) ->
+          if compensated_or_opted_out?(args) do
+            {node, acc}
+          else
+            {node, [%{line: Keyword.get(meta, :line)} | acc]}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(calls)
+  end
+
+  defp compensated_or_opted_out?([_call, opts]) when is_list(opts) do
+    Keyword.has_key?(opts, :compensate)
+  end
+
+  defp compensated_or_opted_out?(_args), do: false
+
+  defp warn_uncompensated_activity(call, env, caller_fun, caller_arity) do
+    IO.warn(
+      """
+      Continuum workflow uses compensate_all but has an activity without `compensate:`.
+
+      Add `compensate: {Mod, :fun, args}` to make rollback explicit, or use
+      `compensate: :none` to mark this activity as intentionally not compensated.
+      """,
+      [
+        {env.module, caller_fun, caller_arity,
+         [file: to_charlist(env.file || "nofile"), line: call.line || env.line || 0]}
+      ]
+    )
+  end
 
   defp external_calls(ast, env) do
     {_, calls} =

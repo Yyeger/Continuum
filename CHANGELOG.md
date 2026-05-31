@@ -22,6 +22,10 @@
 - Added `mix continuum.archive_continued_chains --repo MyApp.Repo --older-than
   Nd`, a dry-run-by-default deletion task for expired non-tail
   `continue_as_new` cycles and their dependent rows.
+- `compensate_all(mode: :parallel)` schedules all pending compensation tasks
+  before suspending, then resumes once every scheduled compensation has a
+  terminal journal event. `compensate: :none` explicitly opts an activity out of
+  the new missing-compensation compile warning.
 
 ### Migrations
 

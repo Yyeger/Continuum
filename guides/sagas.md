@@ -71,8 +71,15 @@ Continuum.unwrap(charge) # {:ok, value}
 * `compensate_all/0` walks the pending compensations in **LIFO** order. It is
   ideal in a `rescue` clause to unwind everything done so far.
 
-Compensations run **sequentially**, newest first. (Parallel compensation is a
-later milestone.)
+Sequential compensation is the default because it preserves rollback order.
+Use `compensate_all(mode: :parallel)` when compensations are independent and
+latency matters more than LIFO ordering. Parallel mode schedules every pending
+compensation before the workflow suspends; completion order is whatever the
+activity workers journal.
+
+If a workflow clause calls `compensate_all` and has an activity without
+`compensate:`, Continuum emits a compile-time warning. Add a compensation MFA or
+use `compensate: :none` to mark the activity as intentionally not rolled back.
 
 ## Idempotent compensations
 

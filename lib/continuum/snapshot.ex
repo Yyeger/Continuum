@@ -191,6 +191,7 @@ defmodule Continuum.Snapshot do
 
   defp step_from(%{type: :compensation_scheduled, target_activity_id: tid} = event, rest) do
     with {:ok, next} <- next_event(event, rest),
+         :ok <- not_parallel_compensation_batch?(next),
          :ok <- same_command?(event, next) do
       case next.type do
         :compensation_completed ->
@@ -251,6 +252,11 @@ defmodule Continuum.Snapshot do
   end
 
   defp step_from(%{type: type, seq: seq}, _rest), do: {:error, {:unsupported_event, type, seq}}
+
+  defp not_parallel_compensation_batch?(%{type: :compensation_scheduled}),
+    do: {:incomplete, :parallel_compensation_batch}
+
+  defp not_parallel_compensation_batch?(_next), do: :ok
 
   defp next_event(event, []) do
     {:incomplete, {event.type, event.seq}}
