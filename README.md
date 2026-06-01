@@ -10,8 +10,7 @@ exactly where it left off.
 > **Status:** v0.4 (pre-1.0). v0.4 stabilizes snapshots, adds workflow-level
 > snapshot thresholds, cleanup Mix tasks, parallel compensation, and generated
 > version entrypoints. APIs may still change before 1.0; pin to a specific 0.x
-> in production. Upgrading from v0.3? See
-> [`MIGRATING_v0_3_to_v0_4.md`](./MIGRATING_v0_3_to_v0_4.md).
+> in production.
 
 ## Quickstart
 
@@ -247,12 +246,7 @@ The ExDoc guides cover the current surface:
 - *Observability / OpenTelemetry bridge*
 - *Snapshots* (opt-in long-history compaction)
 
-Upgrading from v0.3? See
-[`MIGRATING_v0_3_to_v0_4.md`](./MIGRATING_v0_3_to_v0_4.md). Upgrading from
-v0.2 first? See
-[`MIGRATING_v0_2_to_v0_3.md`](./MIGRATING_v0_2_to_v0_3.md). Upgrading from v0.1
-first? See
-[`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md).
+Upgrading versions? See [`migration guides`](./guides/migrations/)
 
 See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 for a Phoenix app exercising activity -> signal/timeout -> compensation,
