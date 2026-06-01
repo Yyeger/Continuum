@@ -92,22 +92,26 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
     Mix.Task.rerun("continuum.partitions.drop_old", [])
     assert partition_exists?(partition)
     assert_received {:mix_shell, :info, ["Would clean 1 activity_results rows"]}
-    assert_received {:mix_shell, :info, [dry_run_message]}
-    assert dry_run_message == "Would drop #{partition}"
+    assert_received {:mix_shell, :info, ["Would drop " <> ^partition]}
     assert activity_results_count() == 1
 
-    assert_received {:telemetry, [:continuum, :partition, :dropped], %{count: 1},
-                     %{dry_run?: true}}
+    assert_received {:telemetry, [:continuum, :partition, :dropped], %{count: dry_run_count},
+                     %{dry_run?: true, partitions: dry_run_partitions}}
+
+    assert partition in dry_run_partitions
+    assert dry_run_count == length(dry_run_partitions)
 
     Mix.Task.rerun("continuum.partitions.drop_old", ["--execute"])
     refute partition_exists?(partition)
     assert_received {:mix_shell, :info, ["Cleaned 1 activity_results rows"]}
-    assert_received {:mix_shell, :info, [drop_message]}
-    assert drop_message == "Dropped #{partition}"
+    assert_received {:mix_shell, :info, ["Dropped " <> ^partition]}
     assert activity_results_count() == 0
 
-    assert_received {:telemetry, [:continuum, :partition, :dropped], %{count: 1},
-                     %{dry_run?: false}}
+    assert_received {:telemetry, [:continuum, :partition, :dropped], %{count: execute_count},
+                     %{dry_run?: false, partitions: execute_partitions}}
+
+    assert partition in execute_partitions
+    assert execute_count == length(execute_partitions)
   end
 
   defp insert_event(run_id, seq, payload, inserted_at) do
