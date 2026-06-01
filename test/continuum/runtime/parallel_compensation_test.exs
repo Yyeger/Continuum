@@ -34,6 +34,19 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
     end
   end
 
+  defmodule SingletonParallelFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      {:ok, _first} =
+        activity(Activities.first(input.pid), compensate: {Activities, :undo_first, [input.pid]})
+
+      compensate_all(mode: :parallel)
+      after_compensation = Continuum.side_effect(fn -> :after_parallel_compensation end)
+      {:ok, after_compensation}
+    end
+  end
+
   test "parallel compensate_all schedules all compensations before any complete" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(ParallelFlow, %{pid: self()}, journal: Postgres)
@@ -64,6 +77,51 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
     assert length(scheduled_indexes) == 2
     assert length(completed_indexes) == 2
     assert Enum.max(scheduled_indexes) < Enum.min(completed_indexes)
+  end
+
+  test "single parallel compensation replays from compacted snapshot step" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(SingletonParallelFlow, %{pid: self()}, journal: Postgres)
+
+    assert_eventually(fn -> event_count(run_id, "activity_scheduled") == 1 end)
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "parallel-singleton", batch_size: 1)
+    assert_receive {:activity, :first}
+
+    assert_eventually(fn -> event_count(run_id, "compensation_scheduled") == 1 end)
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "parallel-singleton", batch_size: 1)
+    assert_receive {:compensated, :first}
+
+    assert {:ok, %{state: :completed, result: {:ok, :after_parallel_compensation}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    history = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
+
+    assert Enum.map(history, & &1.type) == [
+             :activity_scheduled,
+             :activity_completed,
+             :compensation_scheduled,
+             :compensation_completed,
+             :side_effect
+           ]
+
+    prefix = Enum.take(history, 4)
+    remaining = Enum.drop(history, 4)
+
+    {:ok, snapshot} =
+      Continuum.Snapshot.compact(
+        "parallel-singleton",
+        SingletonParallelFlow.__continuum_workflow__().version_hash,
+        prefix
+      )
+
+    assert {:ok, {:ok, :after_parallel_compensation}} =
+             Continuum.Test.replay(
+               SingletonParallelFlow,
+               %{pid: self()},
+               remaining,
+               snapshot: snapshot,
+               journal: Postgres
+             )
   end
 
   defp event_count(run_id, type) do

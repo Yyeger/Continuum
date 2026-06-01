@@ -666,20 +666,42 @@ defmodule Continuum.Runtime.Effect do
   defp do_parallel_compensations(items) do
     ctx = Context.get()
 
-    case history_event(ctx, ctx.cursor) do
-      :compacted_gap ->
-        raise Continuum.ReplayDriftError,
-          run_id: ctx.run_id,
-          cursor: ctx.cursor,
-          expected: :snapshot_step,
-          actual: {:compensate_all, :parallel}
+    case snapshot_step(ctx, ctx.cursor) do
+      {:ok, step} ->
+        replay_parallel_snapshot_step!(ctx, step, items)
 
-      nil ->
-        live_parallel_compensations!(ctx, items)
+      :none ->
+        case history_event(ctx, ctx.cursor) do
+          :compacted_gap ->
+            raise Continuum.ReplayDriftError,
+              run_id: ctx.run_id,
+              cursor: ctx.cursor,
+              expected: :snapshot_step,
+              actual: {:compensate_all, :parallel}
 
-      _event ->
-        replay_parallel_compensations!(ctx, items)
+          nil ->
+            live_parallel_compensations!(ctx, items)
+
+          _event ->
+            replay_parallel_compensations!(ctx, items)
+        end
     end
+  end
+
+  defp replay_parallel_snapshot_step!(ctx, step, [
+         %{target_id: target_id, mfa: mfa, command_id: command_id}
+       ]) do
+    _result = replay_snapshot_step!(ctx, step, {:compensation, target_id, mfa}, command_id)
+    mark_compensated(target_id)
+    :ok
+  end
+
+  defp replay_parallel_snapshot_step!(ctx, step, items) do
+    raise Continuum.ReplayDriftError,
+      run_id: ctx.run_id,
+      cursor: ctx.cursor,
+      expected: step,
+      actual: {:compensate_all, :parallel, length(items)}
   end
 
   defp live_parallel_compensations!(ctx, items) do
