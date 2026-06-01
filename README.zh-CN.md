@@ -6,13 +6,9 @@
 把多步业务流程当作普通的直线式 Elixir 代码来写。即便发生失败、重启或节点宕机，
 工作流也会从上次中断的位置精确恢复执行。
 
-> **状态：** v0.2（1.0 之前）。v0.1 的重放、租约/隔离令牌、定时器、信号、
-> 工作进程池等核心保持不变。v0.2 新增了可选的 Phoenix LiveView **Observer**、
-> 可选启用的 **OpenTelemetry** 桥、**命名多实例** 监督，以及实验性、按需启用的
-> **历史快照**。同时偿还了 v0.1 留下的债务：按月分区、活动幂等性副表、
-> 基于 ETS 缓存的 TimerWheel、按进程的 Repo 配置、辅助模块的 AST 扫描、
-> 持久化的 trace 上下文。1.0 之前 API 仍可能调整；生产环境请固定到具体的 0.x
-> 版本
+> **状态：** v0.4（1.0 之前）。v0.4 稳定了快照功能，并新增了工作流级别的快照
+> 阈值、清理类 Mix 任务、并行补偿，以及生成式版本入口模块。1.0 之前 API 仍可能
+> 调整；生产环境请固定到具体的 0.x 版本。
 
 ## 快速开始
 
@@ -25,11 +21,15 @@ defmodule MyApp.OrderFlow do
 
     {:ok, charge} =
       activity Payments.charge(id, validated.total),
-        retry: [max_attempts: 5, backoff: :exponential]
+        retry: [max_attempts: 5, backoff: :exponential],
+        compensate: {Payments, :refund, [id]}
 
     case await signal(:fraud_review, timeout: hours(24)) do
       :approved -> activity Fulfillment.ship(id)
-      :rejected -> {:error, %{charge: charge, reason: :fraud_rejected}}
+      :rejected ->
+        compensate(charge)
+        {:error, :fraud_rejected}
+
       :timeout  -> activity Fulfillment.ship(id)
     end
   end
@@ -51,7 +51,7 @@ end
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.2"},
+    {:continuum, "~> 0.4"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -87,9 +87,9 @@ def start(_type, _args) do
 end
 ```
 
-## v0.2 的能力一览
+## 能力一览
 
-v0.1 的核心保持不变：
+v0.1/v0.2 的核心保持不变：
 
 - **确定性重放**，使用结构化的游标身份。重放漂移会抛出
   `Continuum.ReplayDriftError`，绝不会发生静默损坏。
@@ -107,7 +107,7 @@ v0.1 的核心保持不变：
   `await signal(name, timeout: ms)` 以确定性的方式解决信号/超时之间的竞态。
 - **启动时恢复** 救回孤立的运行、活动任务及到期定时器，且不会窃取仍在运行的
   远端租约。
-- **崩溃存活能力** —— 在工作流执行中途强杀引擎进程,调度器会重新租约该运行,
+- **崩溃存活能力** —— 在工作流执行中途强杀引擎进程，调度器会重新租约该运行，
   重放会基于已写入日志的历史完成剩余执行。
 - **代码生成器**：`mix continuum.gen.{migration,workflow,activity}`。
 - **`Continuum.Test`** —— 用于快速单元测试的内存日志、面向集成测试的 Postgres
@@ -140,6 +140,53 @@ v0.2 新增：
 - **按进程的 Repo 配置**，通过 `Continuum.children/1` 传入。
 - **持久化的 W3C `traceparent`**，存储在 `continuum_runs.trace_context`。
 
+v0.3 新增：
+
+- **补偿 / Saga DSL** —— 为活动附加 `compensate:`，然后使用 `compensate/1` 或
+  `compensate_all/0` 以确定性的 LIFO 顺序回滚已完成的工作。详见
+  [`guides/sagas.md`](./guides/sagas.md)。
+- **父子工作流** —— `await child Mod.run(input)`、`start_child/3` 与
+  `await_child/1`，用于持久化的组合以及 fan-out/fan-in。详见
+  [`guides/child-workflows.md`](./guides/child-workflows.md)。
+- **`continue_as_new/1`** —— 结束当前运行并以全新历史启动后继运行，适用于长时间
+  运行的循环。详见
+  [`guides/long-running-workflows.md`](./guides/long-running-workflows.md)。
+- **带日志记录的 `Continuum.patched?/1`** —— 为兼容的工作流改动提供安全的原地
+  补丁标记。详见 [`guides/patching.md`](./guides/patching.md)。
+- **内容寻址的工作流分发** —— 恢复时通过 `Continuum.VersionRegistry` 解析运行
+  所存储的 `(workflow, version_hash)`，并将缺失的代码标记为
+  `:stuck_unknown_version`，而不是静默地用已变更的代码重放。详见
+  [`guides/workflow-versioning.md`](./guides/workflow-versioning.md)。
+
+v0.4 新增：
+
+- **稳定的快照负载格式** —— 快照使用带版本的封装，并在 `continuum_snapshots`
+  中存储 `format_version`。工作流可通过在 `use Continuum.Workflow` 上设置
+  `snapshot_threshold:` 来按需启用。
+- **运维清理任务** —— `mix continuum.gc_versions` 与
+  `mix continuum.archive_continued_chains` 默认以 dry-run（仅预览）方式运行，
+  并在 [`guides/operations.md`](./guides/operations.md) 中说明。
+- **并行补偿** —— `compensate_all(mode: :parallel)` 会在挂起之前调度所有待执行的
+  补偿。无参形式仍为顺序 LIFO。
+- **生成式工作流入口** —— `use Continuum.Workflow` 会创建一个隐藏的 `V_<hash>`
+  模块用于持久化的版本分发，同时保留公共模块作为启动目标。
+
+## 父子工作流示例
+
+```elixir
+defmodule MyApp.BatchFlow do
+  use Continuum.Workflow, version: 1
+
+  def run(%{order_ids: ids}) do
+    ids
+    |> Enum.map(fn id ->
+      start_child MyApp.OrderFlow, %{order_id: id}, id: id
+    end)
+    |> Enum.map(&await_child/1)
+  end
+end
+```
+
 ## Observer
 
 可选的 `Continuum.Observer` LiveView 会列出所有运行、按运行渲染日志事件
@@ -170,32 +217,30 @@ MIX_ENV=test iex -S mix run dev/observer_demo.exs
 新的运行、发送信号或取消运行。生产环境的挂载方式见
 [`guides/observer.md`](./guides/observer.md)。
 
-## v0.2 故意不包含的内容
-
-补偿/Saga DSL、父子工作流、`continue_as_new`、带日志记录的真正
-`patched?/1`、Observer 内的重放单步调试器、搜索属性、集群分发、
-`mix continuum.audit`，以及 Oban 适配器。这些都在路线图中；分阶段计划见
-[`ROADMAP.md`](./ROADMAP.md)。
-
 ## 指南
 
-ExDoc 中的指南覆盖 v0.2 的全部界面：
+ExDoc 中的指南覆盖当前的全部能力面：
 
 - *你的第一个工作流*
 - *活动、重试与幂等性*
 - *幂等性*（跨运行的作用域、剩余崩溃窗口）
 - *确定性规则与重放漂移*（包含辅助模块告警与 `trusted_modules`）
 - *多实例 Continuum*（通过 `Continuum.children/1` 启动命名实例）
+- *Saga 与补偿*
+- *子工作流*
+- *长时间运行的工作流*（`continue_as_new`）
+- *为工作流打补丁*
+- *工作流版本管理*
+- *运维*
 - *Observer*
 - *可观测性 / OpenTelemetry 桥*
-- *实验性快照*（按需启用的长历史压缩）
+- *快照*（按需启用的长历史压缩）
 
-从 v0.1 升级？参见
-[`MIGRATING_v0_1_to_v0_2.md`](./MIGRATING_v0_1_to_v0_2.md)。
+升级版本？参见 [`迁移指南`](./guides/migrations/)。
 
 [`examples/continuum_example_orders`](./examples/continuum_example_orders)
-是一个 Phoenix 示例应用，演示了 "活动 → 带超时的信号 → 活动" 的流程，并在
-`scripts/smoke_test.exs` 中提供了人工验证崩溃恢复的脚本。
+是一个 Phoenix 示例应用，演示了 活动 → 信号/超时 → 补偿、父子批处理、
+`continue_as_new`、按工作流的快照、Observer 以及 OpenTelemetry。
 
 ## 许可证
 

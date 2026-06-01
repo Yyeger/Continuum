@@ -89,7 +89,7 @@ def start(_type, _args) do
 end
 ```
 
-## What ships in v0.3
+## What ships
 
 The v0.1/v0.2 core remains:
 
