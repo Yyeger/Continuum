@@ -265,6 +265,12 @@ defmodule Continuum.Runtime.Engine do
   @impl true
   def init({workflow_module, input, run_id, opts}) do
     journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.InMemory)
+    # Load the adapter before any function_exported?/3 capability checks below
+    # (start_run/5, get_run/2). A not-yet-loaded module fails those checks
+    # silently, which would drop namespace/attributes on start or the resumed
+    # trace context on resume (the resume path skips start_run, so guarding only
+    # there is not enough).
+    Code.ensure_loaded(journal)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     trace_context = initial_trace_context(opts)
 
@@ -683,8 +689,6 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp start_run(journal, instance, run_id, workflow_module, input, trace_context, opts) do
-    Code.ensure_loaded(journal)
-
     if function_exported?(journal, :start_run, 5) do
       journal.start_run(instance, run_id, workflow_module, input,
         trace_context: trace_context,
