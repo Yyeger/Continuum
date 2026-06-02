@@ -123,6 +123,7 @@ defmodule Continuum.Runtime.Recovery do
         lease_expires_at = NULL,
         available_at = now()
     WHERE state = 'leased'
+      AND lease_expires_at < now()
     RETURNING id
     """
 

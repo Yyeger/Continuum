@@ -95,7 +95,7 @@ defmodule Continuum.Runtime.RecoveryTest do
     assert DateTime.compare(recovered.lease_expires_at, DateTime.utc_now()) == :gt
   end
 
-  test "requeues activity tasks leased by a crashed worker" do
+  test "does not requeue activity tasks with a live worker lease" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 6}, journal: Postgres)
 
@@ -108,6 +108,18 @@ defmodule Continuum.Runtime.RecoveryTest do
     Repo.update_all(
       from(t in ActivityTask, where: t.id == ^task.id),
       set: [state: "leased", lease_owner: "dead-node", lease_expires_at: future_time()]
+    )
+
+    assert {:ok, %{activity_tasks: 0}} = Recovery.recover_once()
+
+    recovered = Repo.one!(ActivityTask)
+    assert recovered.state == "leased"
+    assert recovered.lease_owner == "dead-node"
+    assert recovered.lease_expires_at != nil
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [lease_expires_at: past_time()]
     )
 
     assert {:ok, %{activity_tasks: 1}} = Recovery.recover_once()

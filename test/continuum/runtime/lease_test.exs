@@ -251,6 +251,20 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
   end
 
   test "engine stops itself when the heartbeater detects a stolen lease" do
+    test_pid = self()
+
+    handler_id =
+      :telemetry.attach(
+        "lease-heartbeater-lost-test",
+        [:continuum, :lease, :lost],
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(SuspendedPgFlow, %{}, journal: Postgres)
 
@@ -268,6 +282,11 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
     assert stolen_token > original.lease_token
 
     assert :ok = Heartbeater.renew_once(Continuum.Runtime.Instance.default())
+
+    assert_receive {:telemetry, [:continuum, :lease, :lost], %{},
+                    %{run_id: ^run_id, owner: _, lease_token: _}},
+                   1_000
+
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
     assert_eventually(fn -> Registry.lookup(Continuum.Runtime.Registry, run_id) == [] end)
   end

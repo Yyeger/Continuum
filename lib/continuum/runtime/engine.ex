@@ -224,12 +224,39 @@ defmodule Continuum.Runtime.Engine do
 
   def wake(instance, run_id) do
     case GenServer.whereis(via(instance, run_id)) do
-      nil -> {:error, :not_found}
+      nil -> wake_remote(instance, run_id)
       pid -> GenServer.cast(pid, :wake)
     end
   end
 
   defp via(instance, run_id), do: {:via, Registry, {instance.registry, run_id}}
+
+  defp wake_remote(instance, run_id) do
+    case pg_members(instance, run_id) do
+      [] ->
+        {:error, :not_found}
+
+      [pid | _] ->
+        Telemetry.execute([:continuum, :run, :forwarded], %{}, %{
+          instance: instance.name,
+          run_id: run_id,
+          from_node: node(),
+          to_node: node(pid)
+        })
+
+        GenServer.cast(pid, :wake)
+    end
+  end
+
+  defp pg_members(instance, run_id) do
+    :pg.get_members(:continuum, pg_group(instance, run_id))
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
+  defp pg_group(instance, run_id), do: {instance.name, run_id}
 
   # ---------------------------------------------------------------------------
   # GenServer callbacks
@@ -247,6 +274,7 @@ defmodule Continuum.Runtime.Engine do
 
     {lease_owner, lease_token} = acquire_lease(instance, journal, run_id, opts)
     trace_context = resume_trace_context(journal, instance, run_id, trace_context, opts)
+    join_pg(instance, run_id)
 
     state = %__MODULE__{
       run_id: run_id,
@@ -311,6 +339,12 @@ defmodule Continuum.Runtime.Engine do
   end
 
   def handle_info({:continuum_lease_lost, _run_id, _token}, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    leave_pg(state.instance, state.run_id)
+    :ok
+  end
 
   # ---------------------------------------------------------------------------
   # Replay loop
@@ -612,6 +646,22 @@ defmodule Continuum.Runtime.Engine do
     if Process.whereis(instance.heartbeater) do
       Continuum.Runtime.Lease.Heartbeater.track(instance, lease, self())
     end
+  end
+
+  defp join_pg(instance, run_id) do
+    :pg.join(:continuum, pg_group(instance, run_id), self())
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp leave_pg(instance, run_id) do
+    :pg.leave(:continuum, pg_group(instance, run_id), self())
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   defp untrack_lease(%{instance: instance, run_id: run_id, lease_token: token})

@@ -10,7 +10,7 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
   use GenServer
   require Logger
 
-  alias Continuum.Runtime.Lease
+  alias Continuum.{Runtime.Lease, Telemetry}
 
   @default_interval_ms 10_000
   @default_ttl_seconds 30
@@ -52,6 +52,7 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
     state = %{
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
       ttl_seconds: Keyword.get(opts, :ttl_seconds, @default_ttl_seconds),
+      instance: instance.name,
       repo: instance.repo,
       leases: %{},
       refs: %{}
@@ -114,6 +115,13 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
           acc
 
         {:error, :lost} ->
+          Telemetry.execute([:continuum, :lease, :lost], %{}, %{
+            instance: acc.instance,
+            run_id: run_id,
+            owner: entry.owner,
+            lease_token: entry.token
+          })
+
           send(entry.pid, {:continuum_lease_lost, run_id, entry.token})
           untrack_run(acc, run_id)
 

@@ -15,6 +15,7 @@ defmodule Continuum.Application do
 
     children =
       [
+        pg_child(),
         {Phoenix.PubSub, name: instance.pubsub},
         {Registry, keys: :unique, name: instance.registry},
         child(Continuum.VersionRegistry, instance),
@@ -43,5 +44,13 @@ defmodule Continuum.Application do
 
   defp child(module, instance) do
     Supervisor.child_spec({module, instance: instance}, id: {module, instance.name})
+  end
+
+  defp pg_child do
+    %{
+      id: {:pg, :continuum},
+      start: {:pg, :start_link, [:continuum]},
+      type: :worker
+    }
   end
 end
