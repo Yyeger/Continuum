@@ -6,9 +6,9 @@
 把多步业务流程当作普通的直线式 Elixir 代码来写。即便发生失败、重启或节点宕机，
 工作流也会从上次中断的位置精确恢复执行。
 
-> **状态：** v0.4（1.0 之前）。v0.4 稳定了快照功能，并新增了工作流级别的快照
-> 阈值、清理类 Mix 任务、并行补偿，以及生成式版本入口模块。1.0 之前 API 仍可能
-> 调整；生产环境请固定到具体的 0.x 版本。
+> **状态：** v0.5（1.0 之前）。v0.5 新增了集群感知的唤醒路由、命名空间、搜索
+> 属性、结构化运行查询，以及 `mix continuum.audit`。1.0 之前 API 仍可能调整；
+> 生产环境请固定到具体的 0.x 版本。
 
 ## 快速开始
 
@@ -51,7 +51,7 @@ end
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.4"},
+    {:continuum, "~> 0.5"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -171,6 +171,22 @@ v0.4 新增：
 - **生成式工作流入口** —— `use Continuum.Workflow` 会创建一个隐藏的 `V_<hash>`
   模块用于持久化的版本分发，同时保留公共模块作为启动目标。
 
+v0.5 新增：
+
+- **集群感知的唤醒路由** —— Continuum 会启动一个 `:pg` scope，引擎将存活运行的
+  pid 注册进去，以便跨节点转发唤醒。Postgres 租约与隔离令牌仍是写入的唯一权威；
+  组建 Erlang 集群仍由宿主应用自行负责。详见
+  [`guides/clustering.md`](./guides/clustering.md)。
+- **命名空间** —— 以 `namespace: "tenant-a"` 启动运行，并在该软租户边界内进行
+  查询/列表。单个运行的操作仍以全局 `run_id` 为键。详见
+  [`guides/namespaces.md`](./guides/namespaces.md)。
+- **搜索属性与结构化查询** —— 启动时传入 `attributes: %{...}`，通过
+  `Continuum.set_attributes/3` 更新元数据，并使用 `Continuum.query/1,2` 进行检索。
+  详见 [`guides/search-and-query.md`](./guides/search-and-query.md)。
+- **`mix continuum.audit`** —— 一个只读的运维任务，用于查看已加载的工作流版本、
+  陈旧的补丁标记，以及卡在未知版本的运行。详见
+  [`guides/auditing.md`](./guides/auditing.md)。
+
 ## 父子工作流示例
 
 ```elixir
@@ -226,21 +242,27 @@ ExDoc 中的指南覆盖当前的全部能力面：
 - *幂等性*（跨运行的作用域、剩余崩溃窗口）
 - *确定性规则与重放漂移*（包含辅助模块告警与 `trusted_modules`）
 - *多实例 Continuum*（通过 `Continuum.children/1` 启动命名实例）
+- *集群部署*
+- *命名空间*
+- *搜索属性与结构化查询*
 - *Saga 与补偿*
 - *子工作流*
 - *长时间运行的工作流*（`continue_as_new`）
 - *为工作流打补丁*
 - *工作流版本管理*
 - *运维*
+- *审计*
 - *Observer*
 - *可观测性 / OpenTelemetry 桥*
 - *快照*（按需启用的长历史压缩）
 
-升级版本？参见 [`迁移指南`](./guides/migrations/)。
+升级版本？参见 [`迁移指南`](./guides/migrations/) 以及
+[`MIGRATING_v0_4_to_v0_5.md`](./MIGRATING_v0_4_to_v0_5.md)。
 
 [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 是一个 Phoenix 示例应用，演示了 活动 → 信号/超时 → 补偿、父子批处理、
-`continue_as_new`、按工作流的快照、Observer 以及 OpenTelemetry。
+`continue_as_new`、按工作流的快照、Observer 以及 OpenTelemetry。其冒烟脚本还
+覆盖了 v0.5 的命名空间与 `Continuum.query/1`。
 
 ## 许可证
 
