@@ -10,6 +10,7 @@ defmodule Continuum.Schema.Run do
     field(:version_hash, :binary)
     field(:state, :string)
     field(:input, :binary)
+    field(:attributes, :map, default: %{})
     field(:result, :binary)
     field(:error, :binary)
     field(:trace_context, :binary)

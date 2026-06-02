@@ -66,6 +66,22 @@ defmodule Continuum.Journal.PostgresTest do
       assert Postgres.get_run(Continuum.Runtime.Instance.default(), run_id).trace_context ==
                trace_context
     end
+
+    test "stores search attributes as JSONB metadata" do
+      run_id = generate_uuid()
+
+      :ok =
+        Postgres.start_run(
+          Continuum.Runtime.Instance.default(),
+          run_id,
+          SomeWorkflow,
+          %{foo: :bar},
+          attributes: %{region: "eu", customer_tier: 3}
+        )
+
+      run = Postgres.get_run(Continuum.Runtime.Instance.default(), run_id)
+      assert run.attributes == %{"region" => "eu", "customer_tier" => 3}
+    end
   end
 
   describe "append!/3 and load/1" do

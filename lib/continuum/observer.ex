@@ -19,9 +19,6 @@ defmodule Continuum.Observer do
   alias Continuum.Schema.{Event, Run}
 
   @runs_topic "continuum:runs"
-  @default_per_page 25
-  @max_per_page 100
-
   @type run_state :: :running | :suspended | :completed | :failed | :cancelled
 
   @doc """
@@ -82,42 +79,7 @@ defmodule Continuum.Observer do
   """
   @spec list_runs(keyword()) :: {:ok, map()} | {:error, term()}
   def list_runs(opts \\ []) do
-    with {:ok, instance} <- repo_instance(opts) do
-      page = opts |> Keyword.get(:page, 1) |> positive_integer(1)
-
-      per_page =
-        opts |> Keyword.get(:per_page, @default_per_page) |> positive_integer(@default_per_page)
-
-      per_page = min(per_page, @max_per_page)
-      offset = (page - 1) * per_page
-
-      query =
-        Run
-        |> filter_state(Keyword.get(opts, :state))
-        |> filter_workflow(Keyword.get(opts, :workflow))
-        |> filter_search(Keyword.get(opts, :search))
-
-      total = instance.repo.one(from(r in query, select: count(r.id)))
-
-      entries =
-        instance.repo.all(
-          from(r in query,
-            order_by: [desc: r.started_at, desc: r.id],
-            limit: ^per_page,
-            offset: ^offset
-          )
-        )
-        |> Enum.map(&decode_run/1)
-
-      {:ok,
-       %{
-         entries: entries,
-         page: page,
-         per_page: per_page,
-         total: total,
-         total_pages: max(ceil_div(total, per_page), 1)
-       }}
-    end
+    Continuum.Query.list(opts)
   end
 
   @doc """
@@ -125,12 +87,7 @@ defmodule Continuum.Observer do
   """
   @spec get_run(binary(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_run(run_id, opts \\ []) do
-    with {:ok, instance} <- repo_instance(opts) do
-      case instance.repo.one(from(r in Run, where: r.id == ^run_id)) do
-        nil -> {:error, :not_found}
-        run -> {:ok, decode_run(run)}
-      end
-    end
+    Continuum.Query.get_run(run_id, opts)
   end
 
   @doc """
@@ -231,73 +188,6 @@ defmodule Continuum.Observer do
     end
   end
 
-  defp filter_state(query, nil), do: query
-  defp filter_state(query, ""), do: query
-
-  defp filter_state(query, state) do
-    state = state |> to_string() |> String.downcase()
-
-    case state do
-      "cancelled" ->
-        cancelled = encode_term(:cancelled)
-        from(r in query, where: r.state == "failed" and r.error == ^cancelled)
-
-      "failed" ->
-        cancelled = encode_term(:cancelled)
-
-        from(r in query,
-          where: r.state == "failed" and (is_nil(r.error) or r.error != ^cancelled)
-        )
-
-      _ ->
-        from(r in query, where: r.state == ^state)
-    end
-  end
-
-  defp filter_workflow(query, nil), do: query
-  defp filter_workflow(query, ""), do: query
-
-  defp filter_workflow(query, workflow) do
-    pattern = "%#{workflow}%"
-    from(r in query, where: ilike(r.workflow, ^pattern))
-  end
-
-  defp filter_search(query, nil), do: query
-  defp filter_search(query, ""), do: query
-
-  defp filter_search(query, search) do
-    pattern = "%#{search}%"
-
-    from(r in query,
-      where: fragment("?::text ILIKE ?", r.id, ^pattern) or ilike(r.workflow, ^pattern)
-    )
-  end
-
-  defp decode_run(%Run{} = run) do
-    error = decode_term(run.error)
-
-    %{
-      id: run.id,
-      run_id: run.id,
-      workflow: run.workflow,
-      state: display_state(run.state, error),
-      input: decode_term(run.input),
-      result: decode_term(run.result),
-      error: error,
-      trace_context: run.trace_context,
-      started_at: run.started_at,
-      completed_at: run.completed_at,
-      lease_owner: run.lease_owner,
-      lease_token: run.lease_token,
-      lease_expires_at: run.lease_expires_at,
-      next_wakeup_at: run.next_wakeup_at,
-      retention_until: run.retention_until,
-      parent_run_id: run.parent_run_id,
-      correlation_id: run.correlation_id,
-      continued_from_run_id: run.continued_from_run_id
-    }
-  end
-
   defp decode_event(%Event{} = event) do
     type = String.to_atom(event.event_type)
     payload = decode_term(event.payload)
@@ -322,11 +212,6 @@ defmodule Continuum.Observer do
 
   defp decode_term(other), do: other
 
-  defp display_state("failed", :cancelled), do: :cancelled
-  defp display_state(state, _error), do: String.to_atom(state)
-
-  defp encode_term(term), do: :erlang.term_to_binary(term)
-
   defp normalize_signal_name(name) when is_atom(name), do: {:ok, name}
 
   defp normalize_signal_name(name) when is_binary(name) do
@@ -337,18 +222,4 @@ defmodule Continuum.Observer do
   rescue
     ArgumentError -> {:error, {:unknown_signal, name}}
   end
-
-  defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
-
-  defp positive_integer(value, fallback) when is_binary(value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 -> int
-      _ -> fallback
-    end
-  end
-
-  defp positive_integer(_value, fallback), do: fallback
-
-  defp ceil_div(0, _denominator), do: 0
-  defp ceil_div(numerator, denominator), do: div(numerator + denominator - 1, denominator)
 end

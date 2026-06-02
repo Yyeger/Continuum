@@ -36,6 +36,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         version_hash: metadata.version_hash,
         state: "running",
         input: encode_term(input),
+        attributes: normalize_attributes(Keyword.get(opts, :attributes, %{})),
         correlation_id: run_id,
         trace_context: Keyword.get(opts, :trace_context)
       })
@@ -55,6 +56,23 @@ defmodule Continuum.Runtime.Journal.Postgres do
         raise ArgumentError,
               "expected #{inspect(workflow)} to use Continuum.Workflow before starting a durable run, got: #{inspect(reason)}"
     end
+  end
+
+  defp normalize_attributes(nil), do: %{}
+
+  defp normalize_attributes(attributes) when is_map(attributes) do
+    case Jason.encode(attributes) do
+      {:ok, json} ->
+        Jason.decode!(json)
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "expected :attributes to be JSON-encodable map data, got: #{inspect(reason)}"
+    end
+  end
+
+  defp normalize_attributes(other) do
+    raise ArgumentError, "expected :attributes to be a map, got: #{inspect(other)}"
   end
 
   @impl true
@@ -1889,6 +1907,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       result: decode_term(run.result),
       error: decode_term(run.error),
       input: decode_term(run.input),
+      attributes: run.attributes || %{},
       version_hash: run.version_hash,
       trace_context: run.trace_context
     }

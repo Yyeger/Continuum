@@ -23,10 +23,12 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "add :parent_command_id, :bytea"
       assert source =~ "add :correlation_id, :uuid"
       assert source =~ "add :continued_from_run_id, :uuid"
+      assert source =~ "add :attributes, :map, null: false, default: %{}"
       assert source =~ "continuum_runs_parent_idx"
       assert source =~ "continuum_runs_correlation_idx"
       assert source =~ "continuum_runs_continued_from_idx"
       assert source =~ "continuum_runs_correlation_completed_idx"
+      assert source =~ "continuum_runs_attributes_gin_idx"
     end)
   end
 

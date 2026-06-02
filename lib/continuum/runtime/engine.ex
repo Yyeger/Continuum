@@ -269,7 +269,7 @@ defmodule Continuum.Runtime.Engine do
     trace_context = initial_trace_context(opts)
 
     unless Keyword.get(opts, :resume, false) do
-      :ok = start_run(journal, instance, run_id, workflow_module, input, trace_context)
+      :ok = start_run(journal, instance, run_id, workflow_module, input, trace_context, opts)
     end
 
     {lease_owner, lease_token} = acquire_lease(instance, journal, run_id, opts)
@@ -682,9 +682,12 @@ defmodule Continuum.Runtime.Engine do
     %{state | status: :lease_lost}
   end
 
-  defp start_run(journal, instance, run_id, workflow_module, input, trace_context) do
+  defp start_run(journal, instance, run_id, workflow_module, input, trace_context, opts) do
     if function_exported?(journal, :start_run, 5) do
-      journal.start_run(instance, run_id, workflow_module, input, trace_context: trace_context)
+      journal.start_run(instance, run_id, workflow_module, input,
+        trace_context: trace_context,
+        attributes: Keyword.get(opts, :attributes, %{})
+      )
     else
       journal.start_run(instance, run_id, workflow_module, input)
     end

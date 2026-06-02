@@ -79,6 +79,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :version_hash, :bytea, null: false
           add :state, :text, null: false
           add :input, :bytea, null: false
+          add :attributes, :map, null: false, default: %{}
           add :result, :bytea
           add :error, :bytea
           add :trace_context, :bytea
@@ -129,6 +130,11 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         CREATE INDEX continuum_runs_correlation_completed_idx
           ON continuum_runs (correlation_id, completed_at)
           WHERE correlation_id IS NOT NULL
+        \"\"\"
+
+        execute \"\"\"
+        CREATE INDEX continuum_runs_attributes_gin_idx
+          ON continuum_runs USING gin (attributes)
         \"\"\"
 
         execute \"\"\"

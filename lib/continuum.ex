@@ -17,6 +17,8 @@ defmodule Continuum do
     * `signal/3` — deliver an external signal to a running workflow
     * `cancel/2` — cancel a running workflow
     * `await/2` — block until a workflow completes (test/synchronous use)
+    * `query/1` and `get_run/2` — inspect durable runs
+    * `set_attributes/3` — externally update run search attributes
     * `now/0`, `uuid4/0`, `random/0`, `side_effect/1` — deterministic primitives
       callable from workflow code
     * `patched?/1` — journaled patch marker for compatible workflow changes
@@ -102,9 +104,10 @@ defmodule Continuum do
   @doc """
   Start a new workflow run.
 
-  Options include `:instance` for selecting a named Continuum instance and
+  Options include `:instance` for selecting a named Continuum instance,
   `:trace_context` for persisting an opaque W3C traceparent binary that
-  observability integrations can use to link resumed run attempts.
+  observability integrations can use to link resumed run attempts, and
+  `:attributes` for JSON-encodable search metadata stored on the run row.
   """
   @spec start(workflow_module(), input(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def start(workflow_module, input, opts \\ []) do
@@ -142,6 +145,45 @@ defmodule Continuum do
   @spec await(run_id(), timeout(), keyword()) :: {:ok, map()} | {:error, term()}
   def await(run_id, timeout \\ 5_000, opts \\ []) do
     Continuum.Runtime.Engine.await(run_id, timeout, opts)
+  end
+
+  @doc """
+  Query durable runs with a closed, structured query spec.
+
+  See `Continuum.Query` for supported `:where`, `:order_by`, and pagination
+  options. Querying requires a Postgres-backed Continuum instance.
+  """
+  @spec query(keyword()) :: {:ok, map()} | {:error, term()}
+  def query(opts \\ []) do
+    Continuum.Query.list(opts)
+  end
+
+  @doc """
+  Query durable runs for a named Continuum instance.
+  """
+  @spec query(atom() | Continuum.Runtime.Instance.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def query(instance, opts) do
+    Continuum.Query.list(Keyword.put(opts, :instance, instance))
+  end
+
+  @doc """
+  Load one durable run by id.
+  """
+  @spec get_run(run_id(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
+  def get_run(run_id, opts \\ []) do
+    Continuum.Query.get_run(run_id, opts)
+  end
+
+  @doc """
+  Merge JSON-encodable search attributes into a durable run row.
+
+  This is external metadata. It is not journaled and workflow code cannot read
+  it during replay.
+  """
+  @spec set_attributes(run_id(), map(), keyword()) :: :ok | {:error, term()}
+  def set_attributes(run_id, attributes, opts \\ []) do
+    Continuum.Query.set_attributes(run_id, attributes, opts)
   end
 
   # ---------------------------------------------------------------------------
