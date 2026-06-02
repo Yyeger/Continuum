@@ -10,40 +10,45 @@ defmodule Continuum.Cluster.ActivityNodeDeathTest do
       run_id =
         peer_call(peer_a, Continuum.Test.ClusterScenarios, :start_activity_run, [
           %{test_pid: test_pid, value: 7},
-          [lease_ttl_seconds: 1]
+          [lease_ttl_seconds: 30]
         ])
 
       wait_until(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
 
       assert {:ok, 1} =
-               peer_call(peer_a, ActivityWorker.Dispatcher, :dispatch_once, [
-                 [owner: "activity-a", batch_size: 1, ttl_seconds: 1]
-               ])
+               dispatch_until_claimed(peer_a, ActivityWorker.Dispatcher,
+                 owner: "activity-a",
+                 batch_size: 1,
+                 ttl_seconds: 30
+               )
 
       assert_receive {:cluster_activity_started, node_a}, 5_000
       assert String.contains?(Atom.to_string(node_a), "activity_a")
 
+      # Node A dies mid-activity (the activity is parked in Process.sleep(:infinity)),
+      # so its run and task leases are left dangling. Rather than wait out a real
+      # lease TTL, fast-forward both to expired via SQL — the same trick the
+      # single-node lease/recovery tests use — so node B deterministically recovers
+      # the orphaned work.
       stop_peer(peer_a)
-
-      wait_until(fn ->
-        task = Repo.one!(ActivityTask)
-
-        task.state == "leased" and
-          DateTime.compare(task.lease_expires_at, DateTime.utc_now()) == :lt
-      end)
+      force_expire_leases!(run_id)
 
       assert {:ok, %{activity_tasks: 1}} =
                peer_call(peer_b, Recovery, :recover_once, [[instance: Continuum]])
 
       assert {:ok, 1} =
-               peer_call(peer_b, Dispatcher, :dispatch_once, [
-                 [owner: "activity-run-b", batch_size: 1, ttl_seconds: 5]
-               ])
+               dispatch_until_claimed(peer_b, Dispatcher,
+                 owner: "activity-run-b",
+                 batch_size: 1,
+                 ttl_seconds: 5
+               )
 
       assert {:ok, 1} =
-               peer_call(peer_b, ActivityWorker.Dispatcher, :dispatch_once, [
-                 [owner: "activity-b", batch_size: 1, ttl_seconds: 5]
-               ])
+               dispatch_until_claimed(peer_b, ActivityWorker.Dispatcher,
+                 owner: "activity-b",
+                 batch_size: 1,
+                 ttl_seconds: 5
+               )
 
       assert_receive {:cluster_activity_started, node_b}, 5_000
       assert String.contains?(Atom.to_string(node_b), "activity_b")

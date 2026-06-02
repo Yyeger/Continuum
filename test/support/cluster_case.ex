@@ -3,6 +3,8 @@ defmodule Continuum.Test.ClusterCase do
 
   use ExUnit.CaseTemplate
 
+  import Ecto.Query
+
   using do
     quote do
       import Continuum.Test.ClusterCase
@@ -77,6 +79,50 @@ defmodule Continuum.Test.ClusterCase do
   end
 
   def wait_until(_fun, 0), do: flunk("condition did not become true")
+
+  @doc """
+  Poll a dispatcher on `peer` until it claims at least one item, mirroring how
+  the dispatcher actually runs in production (on a tick). A single `dispatch_once`
+  can legitimately return `{:ok, 0}` when the run lease/state has not settled yet;
+  asserting a single poll is what made these tests flaky.
+  """
+  def dispatch_until_claimed(peer, dispatcher, opts, attempts \\ 100)
+
+  def dispatch_until_claimed(peer, dispatcher, opts, attempts) when attempts > 0 do
+    case peer_call(peer, dispatcher, :dispatch_once, [opts]) do
+      {:ok, claimed} when claimed >= 1 ->
+        {:ok, claimed}
+
+      _other ->
+        Process.sleep(50)
+        dispatch_until_claimed(peer, dispatcher, opts, attempts - 1)
+    end
+  end
+
+  def dispatch_until_claimed(peer, dispatcher, _opts, 0) do
+    flunk("#{inspect(dispatcher)} on #{inspect(peer.node)} did not claim any work")
+  end
+
+  @doc """
+  Deterministically fast-forward a run and its activity tasks to lease-expired,
+  simulating the death of the owning node without waiting out a real lease TTL.
+  Mirrors how the single-node lease/recovery tests force expiry via SQL.
+  """
+  def force_expire_leases!(run_id) do
+    past = DateTime.add(DateTime.utc_now(), -60, :second)
+
+    Continuum.Test.Repo.update_all(
+      from(r in Continuum.Schema.Run, where: r.id == ^run_id),
+      set: [lease_expires_at: past]
+    )
+
+    Continuum.Test.Repo.update_all(
+      from(t in Continuum.Schema.ActivityTask, where: t.run_id == ^run_id),
+      set: [lease_expires_at: past]
+    )
+
+    :ok
+  end
 
   def truncate_continuum_tables do
     Continuum.Test.Repo.query!("""
