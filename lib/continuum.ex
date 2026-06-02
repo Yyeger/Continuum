@@ -105,7 +105,8 @@ defmodule Continuum do
   Start a new workflow run.
 
   Options include `:instance` for selecting a named Continuum instance,
-  `:trace_context` for persisting an opaque W3C traceparent binary that
+  `:namespace` for soft tenant scoping of list/query paths, `:trace_context` for
+  persisting an opaque W3C traceparent binary that
   observability integrations can use to link resumed run attempts, and
   `:attributes` for JSON-encodable search metadata stored on the run row.
   """

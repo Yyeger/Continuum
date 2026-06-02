@@ -34,6 +34,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         id: run_id,
         workflow: metadata.workflow,
         version_hash: metadata.version_hash,
+        namespace: normalize_namespace(Keyword.get(opts, :namespace, "default")),
         state: "running",
         input: encode_term(input),
         attributes: normalize_attributes(Keyword.get(opts, :attributes, %{})),
@@ -73,6 +74,15 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp normalize_attributes(other) do
     raise ArgumentError, "expected :attributes to be a map, got: #{inspect(other)}"
+  end
+
+  defp normalize_namespace(nil), do: "default"
+
+  defp normalize_namespace(namespace) when is_binary(namespace) and byte_size(namespace) > 0,
+    do: namespace
+
+  defp normalize_namespace(other) do
+    raise ArgumentError, "expected :namespace to be a non-empty binary, got: #{inspect(other)}"
   end
 
   @impl true
@@ -1908,6 +1918,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       error: decode_term(run.error),
       input: decode_term(run.input),
       attributes: run.attributes || %{},
+      namespace: run.namespace || "default",
       version_hash: run.version_hash,
       trace_context: run.trace_context
     }

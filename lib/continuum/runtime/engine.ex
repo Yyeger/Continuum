@@ -686,6 +686,7 @@ defmodule Continuum.Runtime.Engine do
     if function_exported?(journal, :start_run, 5) do
       journal.start_run(instance, run_id, workflow_module, input,
         trace_context: trace_context,
+        namespace: Keyword.get(opts, :namespace, "default"),
         attributes: Keyword.get(opts, :attributes, %{})
       )
     else

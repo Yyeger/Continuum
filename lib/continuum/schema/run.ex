@@ -8,6 +8,7 @@ defmodule Continuum.Schema.Run do
   schema "continuum_runs" do
     field(:workflow, :string)
     field(:version_hash, :binary)
+    field(:namespace, :string, default: "default")
     field(:state, :string)
     field(:input, :binary)
     field(:attributes, :map, default: %{})

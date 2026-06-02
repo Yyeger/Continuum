@@ -77,6 +77,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :id, :uuid, primary_key: true
           add :workflow, :text, null: false
           add :version_hash, :bytea, null: false
+          add :namespace, :text, null: false, default: "default"
           add :state, :text, null: false
           add :input, :bytea, null: false
           add :attributes, :map, null: false, default: %{}
@@ -135,6 +136,11 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         execute \"\"\"
         CREATE INDEX continuum_runs_attributes_gin_idx
           ON continuum_runs USING gin (attributes)
+        \"\"\"
+
+        execute \"\"\"
+        CREATE INDEX continuum_runs_namespace_state_idx
+          ON continuum_runs (namespace, state)
         \"\"\"
 
         execute \"\"\"

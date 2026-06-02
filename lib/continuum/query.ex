@@ -30,6 +30,7 @@ defmodule Continuum.Query do
   Options:
 
     * `:instance` - Continuum instance name or struct. Defaults to `Continuum`.
+    * `:namespace` - run namespace. Defaults to `"default"`.
     * `:where` - list of condition tuples.
     * `:search` - run id or workflow substring convenience filter.
     * `:workflow` - workflow substring convenience filter.
@@ -127,6 +128,7 @@ defmodule Continuum.Query do
       state: display_state(run.state, error),
       input: decode_term(run.input),
       attributes: run.attributes || %{},
+      namespace: run.namespace || "default",
       result: decode_term(run.result),
       error: error,
       trace_context: run.trace_context,
@@ -145,6 +147,7 @@ defmodule Continuum.Query do
 
   defp build_query(opts) do
     query = Run
+    query = apply_namespace(query, Keyword.get(opts, :namespace, "default"))
     query = apply_state(query, Keyword.get(opts, :state))
     query = apply_workflow(query, Keyword.get(opts, :workflow))
     query = apply_search(query, Keyword.get(opts, :search))
@@ -155,6 +158,13 @@ defmodule Continuum.Query do
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
+  end
+
+  defp apply_namespace(query, nil), do: query
+
+  defp apply_namespace(query, namespace) do
+    namespace = to_string(namespace)
+    from(r in query, where: r.namespace == ^namespace)
   end
 
   defp apply_condition(query, {op, [:attributes, key], value}) when op in [:eq, :neq] do
