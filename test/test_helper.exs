@@ -1,5 +1,23 @@
 ExUnit.start()
 
+cluster_test? = System.get_env("CONTINUUM_CLUSTER_TEST") == "1"
+
+unless cluster_test? do
+  ExUnit.configure(exclude: [cluster: true])
+end
+
+if cluster_test? do
+  config = Application.fetch_env!(:continuum, Continuum.Test.Repo)
+
+  Application.put_env(
+    :continuum,
+    Continuum.Test.Repo,
+    config
+    |> Keyword.delete(:pool)
+    |> Keyword.put(:pool_size, 20)
+  )
+end
+
 case Continuum.Test.Repo.start_link() do
   {:ok, _pid} -> :ok
   {:error, {:already_started, _pid}} -> :ok
@@ -10,7 +28,9 @@ case Continuum.Test.ObserverEndpoint.start_link() do
   {:error, {:already_started, _pid}} -> :ok
 end
 
-Ecto.Adapters.SQL.Sandbox.mode(Continuum.Test.Repo, :manual)
+unless cluster_test? do
+  Ecto.Adapters.SQL.Sandbox.mode(Continuum.Test.Repo, :manual)
+end
 
 # `--paranoid` re-replay mode: when enabled, every completed run is re-replayed
 # from its journaled history and asserted identical. Off by default so ordinary

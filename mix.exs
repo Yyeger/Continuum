@@ -85,6 +85,7 @@ defmodule Continuum.MixProject do
   defp aliases do
     [
       "test.setup": ["ecto.drop --quiet", "ecto.create --quiet", "ecto.migrate --quiet"],
+      "test.cluster": ["cmd env CONTINUUM_CLUSTER_TEST=1 mix test --only cluster test/cluster"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
     ]
   end
