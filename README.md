@@ -2,7 +2,7 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-[![CI](https://github.com/continuum-elixir/continuum/actions/workflows/ci.yml/badge.svg)](https://github.com/continuum-elixir/continuum/actions/workflows/ci.yml)
+[![CI](https://github.com/Yyeger/Continuum/actions/workflows/ci.yml/badge.svg)](https://github.com/Yyeger/Continuum/actions/workflows/ci.yml)
 [![Hex.pm](https://img.shields.io/hexpm/v/continuum.svg)](https://hex.pm/packages/continuum)
 [![Documentation](https://img.shields.io/badge/hexdocs-docs-8e44ad.svg)](https://hexdocs.pm/continuum)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
