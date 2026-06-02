@@ -36,6 +36,8 @@ Workflow code must not directly call non-deterministic APIs such as:
 * `IO.*`
 * `Process.send/2`
 * ETS or `:persistent_term` reads
+* cluster topology and remote call APIs such as `Node.list/0`, `:pg.*`,
+  `:rpc.*`, and `:erpc.*`
 * dynamic code loading or `apply/3`
 
 `Continuum.AstCheck` scans workflow modules at compile time and rejects known

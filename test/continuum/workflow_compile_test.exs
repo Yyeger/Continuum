@@ -41,6 +41,30 @@ defmodule Continuum.WorkflowCompileTest do
       assert SnapshotThresholdFlow.__continuum_workflow__().snapshot_threshold == 500
     end
 
+    test "patched call sites are stored in workflow metadata" do
+      defmodule PatchSiteFlow do
+        use Continuum.Workflow, version: 1
+
+        def run(_input) do
+          if Continuum.patched?(:audit_site), do: :new, else: :old
+        end
+      end
+
+      assert [
+               %{
+                 name: :audit_site,
+                 command_id: command_id,
+                 file: file,
+                 line: line
+               }
+             ] = PatchSiteFlow.__continuum_workflow__().patch_sites
+
+      assert is_tuple(command_id)
+      assert file =~ "workflow_compile_test.exs"
+      assert is_integer(line)
+      assert PatchSiteFlow.__continuum_entrypoint__().__continuum_workflow__().patch_sites != []
+    end
+
     test "invalid snapshot_threshold refuses to compile" do
       assert_raise ArgumentError, ~r/expected :snapshot_threshold/, fn ->
         defmodule BadSnapshotThresholdFlow do

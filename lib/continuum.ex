@@ -315,6 +315,7 @@ defmodule Continuum do
   @doc since: "0.3.0"
   defmacro patched?(patch_name) do
     command = command_base(__CALLER__, :patched)
+    register_patch_site(__CALLER__, patch_name, command)
 
     quote do
       Continuum.__patched__(unquote(patch_name), unquote(Macro.escape(command)))
@@ -353,6 +354,19 @@ defmodule Continuum do
 
   defp command_base(env, kind) do
     {:side_effect, env.module, env.function, env.line, hash_term(kind)}
+  end
+
+  defp register_patch_site(%Macro.Env{module: nil}, _patch_name, _command), do: :ok
+
+  defp register_patch_site(env, patch_name, command) do
+    Module.put_attribute(env.module, :continuum_patch_sites, %{
+      name: patch_name,
+      command_id: command,
+      file: env.file,
+      line: env.line
+    })
+  rescue
+    _ -> :ok
   end
 
   defp hash_term(term) do

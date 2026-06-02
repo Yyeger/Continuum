@@ -79,6 +79,22 @@ defmodule Continuum.AstCheckTest do
       assert signal_violation.hint =~ "signal/3 is a side effect"
     end
 
+    test "rejects cluster topology and remote call APIs" do
+      ast =
+        quote do
+          :pg.get_members(:continuum, {:default, "run"})
+          :rpc.call(:node, Mod, :fun, [])
+          :erpc.call(:node, Mod, :fun, [])
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      mfas = Enum.map(violations, & &1.mfa)
+      assert {:pg, :get_members} in mfas
+      assert {:rpc, :call} in mfas
+      assert {:erpc, :call} in mfas
+    end
+
     test "rejects File.read! deep inside an expression" do
       ast =
         quote do

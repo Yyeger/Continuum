@@ -322,6 +322,7 @@ defmodule Continuum.Workflow do
       @continuum_workflow_retention unquote(retention)
       @continuum_logical_workflow unquote(logical_workflow)
       @continuum_snapshot_threshold unquote(snapshot_threshold)
+      Module.register_attribute(__MODULE__, :continuum_patch_sites, accumulate: true)
     end
   end
 
@@ -389,6 +390,7 @@ defmodule Continuum.Workflow.BeforeCompile do
     retention = Module.get_attribute(env.module, :continuum_workflow_retention)
     logical_workflow = Module.get_attribute(env.module, :continuum_logical_workflow) || env.module
     snapshot_threshold = Module.get_attribute(env.module, :continuum_snapshot_threshold)
+    patch_sites = Module.get_attribute(env.module, :continuum_patch_sites) |> Enum.reverse()
     hash = compute_version_hash(env.module)
     generated_module = Module.concat(env.module, :"V_#{hash}")
     generated_definitions = generated_definitions(env.module, generated_module)
@@ -399,6 +401,7 @@ defmodule Continuum.Workflow.BeforeCompile do
       version: version,
       retention: retention,
       snapshot_threshold: snapshot_threshold,
+      patch_sites: patch_sites,
       version_hash: hash
     }
 
@@ -416,6 +419,7 @@ defmodule Continuum.Workflow.BeforeCompile do
             version: unquote(metadata.version),
             retention: unquote(Macro.escape(metadata.retention)),
             snapshot_threshold: unquote(metadata.snapshot_threshold),
+            patch_sites: unquote(Macro.escape(metadata.patch_sites)),
             version_hash: unquote(metadata.version_hash)
           }
         end
@@ -432,6 +436,7 @@ defmodule Continuum.Workflow.BeforeCompile do
           version: unquote(metadata.version),
           retention: unquote(Macro.escape(metadata.retention)),
           snapshot_threshold: unquote(metadata.snapshot_threshold),
+          patch_sites: unquote(Macro.escape(metadata.patch_sites)),
           version_hash: unquote(metadata.version_hash)
         }
       end
