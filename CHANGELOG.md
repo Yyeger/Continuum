@@ -8,6 +8,9 @@
   milestone ships the built-in activity runner unchanged so the cluster,
   namespace, query, and audit surfaces can tag without introducing a second
   execution adapter.
+- `Continuum.AshAi` is deferred until a lighthouse adopter is engaged.
+- The Observer replay-stepping debugger is formally cut from v0.5 rather than
+  carried as another release's implicit nice-to-land.
 
 ## v0.4.0 — 2026-05-31 — "Hardening & ergonomics"
 
