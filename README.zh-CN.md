@@ -2,13 +2,37 @@
 
 [English](./README.md) | **简体中文**
 
-面向 Elixir 的 OTP 原生持久化执行引擎 —— 基于 Postgres，确定性重放，单一依赖。
-把多步业务流程当作普通的直线式 Elixir 代码来写。即便发生失败、重启或节点宕机，
-工作流也会从上次中断的位置精确恢复执行。
+[![CI](https://github.com/continuum-elixir/continuum/actions/workflows/ci.yml/badge.svg)](https://github.com/continuum-elixir/continuum/actions/workflows/ci.yml)
+[![Hex.pm](https://img.shields.io/hexpm/v/continuum.svg)](https://hex.pm/packages/continuum)
+[![Documentation](https://img.shields.io/badge/hexdocs-docs-8e44ad.svg)](https://hexdocs.pm/continuum)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 
-> **状态：** v0.5（1.0 之前）。v0.5 新增了集群感知的唤醒路由、命名空间、搜索
-> 属性、结构化运行查询，以及 `mix continuum.audit`。1.0 之前 API 仍可能调整；
-> 生产环境请固定到具体的 0.x 版本。
+**Continuum 是面向 Elixir 的持久化执行引擎。** 把多步业务流程当作普通的直线式
+Elixir 代码来写；即便发生失败、重启或节点宕机，工作流也会通过同一套纯编排代码
+重放其事件历史，从而以完全一致的状态，从上次中断的位置*精确恢复执行*。
+
+它是 OTP 原生、基于 Postgres 的 —— 没有独立的集群服务，没有付费 SaaS 依赖，
+也没有多语言 SDK。Continuum 直接驻留在你的应用监督树中，并使用你已经在运行的
+那一个数据库。
+
+## 为什么选择 Continuum
+
+Continuum 之于持久化执行，正如 Phoenix 之于 Web、Oban 之于任务队列：对于
+Elixir 优先的团队而言，它是 *"我该如何运行一个能在崩溃中存活的多步业务流程？"*
+这一问题的显而易见的答案。
+
+- **直线式代码。** 用普通的 Elixir 控制流来表达编排 —— `case`、`with`、推导式。
+  副作用通过 `activity/2`、`await signal` 与 `timer` 进行；其余一切皆为纯函数。
+- **确定性重放。** 每次唤醒时，运行都会从头重新执行。结构化的游标身份意味着重放
+  与原始执行之间的任何偏差，都会以醒目的 `Continuum.ReplayDriftError` 暴露出来，
+  而绝不会发生静默损坏。
+- **单一依赖。** Postgres 是你唯一需要运维的组件 —— 它同时承担日志、租约存储、
+  定时器轮以及信号总线（`LISTEN`/`NOTIFY`）。
+- **它就是 OTP。** Continuum 是一棵你加入自己应用的监督树。崩溃恢复、租约与背压
+  都构建在进程之上，而非某个外部协调器。
+
+**有意排除在外的范围：** 多语言 SDK、跨语言活动、独立的集群服务，以及
+Kubernetes operator。
 
 ## 快速开始
 
@@ -48,6 +72,8 @@ end
 
 ## 安装
 
+将 Continuum 与一个 Postgres 驱动加入依赖：
+
 ```elixir
 def deps do
   [
@@ -57,7 +83,7 @@ def deps do
 end
 ```
 
-配置你的 Repo：
+将 Continuum 指向你的 Repo：
 
 ```elixir
 # config/config.exs
@@ -87,105 +113,73 @@ def start(_type, _args) do
 end
 ```
 
-## 能力一览
+## 特性
 
-v0.1/v0.2 的核心保持不变：
+### 确定性源于构造
 
-- **确定性重放**，使用结构化的游标身份。重放漂移会抛出
-  `Continuum.ReplayDriftError`，绝不会发生静默损坏。
-- **编译期 AST 扫描** 拒绝非确定性调用（`DateTime.utc_now`、`:rand.*`、
-  `:ets.*`、`Process.send`、`Kernel.apply`……），并附带修复建议。辅助模块通过
-  `use Continuum.Pure` 主动加入受信集合。v0.2 还会对调用未标注的辅助模块发出
-  告警（可通过 `config :continuum, untrusted_call_severity: :warn | :error`
-  配置严重程度），并支持 app-env 级别的白名单
-  （`config :continuum, trusted_modules: [...]`）。
+- 工作流代码在构造上即为纯函数，每次唤醒时都会自上而下重新执行；只有副作用才会
+  产生对外可见的工作。
+- **编译期 AST 扫描** 会拒绝非确定性调用（`DateTime.utc_now`、`:rand.*`、
+  `:ets.*`、`Process.send`、`Kernel.apply`……），并附带修复建议。辅助模块可通过
+  `use Continuum.Pure` 或 `config :continuum, trusted_modules: [...]` 白名单主动
+  加入受信集合。
+- 确定性原语 —— `Continuum.now/0`、`today/0`、`uuid4/0`、`random/0`，以及
+  `side_effect/1` 这一逃生通道 —— 会在编译期捕获稳定的游标身份。
+
+### 持久化执行
+
 - **Postgres 日志** 在每次写入时进行租约 + 隔离令牌 CAS 校验。被夺走的租约会
-  导致写入失败并终止陈旧的引擎进程。
-- **内置活动工作进程池**（不依赖 Oban）。采用 `FOR UPDATE SKIP LOCKED` 抢占任务，
-  指数退避重试，按任务隔离，结果与任务状态在同一事务中原子提交。
-- **持久化定时器** 与基于 `pg_notify` + `LISTEN` 的 **持久化信号**。
+  导致写入失败并终止陈旧的引擎进程 —— 它绝不会损坏历史。
+- **内置活动工作进程池**（不依赖 Oban）：采用 `FOR UPDATE SKIP LOCKED` 抢占任务、
+  指数退避重试、按任务隔离，并将结果与任务状态在同一事务中原子提交；重试/超时
+  策略通过 `use Continuum.Activity` 配置。
+- **持久化定时器与信号**，基于 `pg_notify`/`LISTEN`。
   `await signal(name, timeout: ms)` 以确定性的方式解决信号/超时之间的竞态。
-- **启动时恢复** 救回孤立的运行、活动任务及到期定时器，且不会窃取仍在运行的
-  远端租约。
-- **崩溃存活能力** —— 在工作流执行中途强杀引擎进程，调度器会重新租约该运行，
-  重放会基于已写入日志的历史完成剩余执行。
-- **代码生成器**：`mix continuum.gen.{migration,workflow,activity}`。
-- **`Continuum.Test`** —— 用于快速单元测试的内存日志、面向集成测试的 Postgres
-  辅助函数、信号/定时器注入，以及黄金历史重放。
-- 在 `[:continuum, …]` 前缀下提供 **24+ 个遥测事件**。
+- **崩溃存活能力。** 在工作流执行中途强杀引擎进程，调度器会重新租约该运行，
+  重放会基于已写入日志的历史完成剩余执行。启动时恢复会救回孤立的运行、任务及
+  到期定时器，且不会窃取仍在运行的远端租约。
+- **跨运行幂等性**，以 `(activity_module, idempotency_key)` 为键，使活动在多个
+  运行之间近乎恰好一次（exactly-once-ish）。
 
-v0.2 新增：
+### 工作流组合
 
-- **`Continuum.Observer`** —— 可选的 Phoenix LiveView 界面：带搜索与分页的
-  运行列表、按运行展示已解码事件时间线的详情页，以及取消运行与发送 JSON
-  信号的运维操作。由你的路由挂载，鉴权由宿主应用自行负责。详见下文 Observer
-  章节。
-- **`Continuum.OpenTelemetry.setup/1`** —— 可选启用的桥接，将 Continuum 的
-  遥测事件转换为短生命周期的 `continuum.run_attempt` 与
-  `continuum.activity_attempt` span，并通过 `continuum_runs.trace_context`
-  中持久化的 W3C `traceparent` 反向关联到发起请求的 trace。即便不安装任何
-  OpenTelemetry 包，Continuum 也能正常编译。
-- **命名多实例监督** —— 通过 `Continuum.children(name: ..., repo: ...)` 启动，
-  在 `start/3`、`signal/4`、`cancel/2`、`await/3` 上使用 `instance: ...`
-  指定目标实例。默认的 `Continuum` 实例行为保持不变。
-- **实验性、按需启用的历史快照** —— `continuum_snapshots` 表、
-  `Continuum.Snapshot`、`Continuum.Runtime.Snapshotter`、压缩前缀重放校验。
-  默认 `snapshot_threshold: :infinity`（关闭）；阅读 `guides/snapshots.md`
-  后通过设置正整数显式启用。
-- **`continuum_events` 按月分区**，并提供运维 Mix 任务
-  `mix continuum.partitions.{create,list,drop_old}`（`--execute` 显式启用）。
-- **跨运行的活动幂等性** —— 通过 `continuum_activity_results`，键为
-  `(activity_module, idempotency_key)`。
-- **基于 ETS 缓存的 `TimerWheel`**，以 `pg_notify` 驱动重新计算调度。
-- **按进程的 Repo 配置**，通过 `Continuum.children/1` 传入。
-- **持久化的 W3C `traceparent`**，存储在 `continuum_runs.trace_context`。
-
-v0.3 新增：
-
-- **补偿 / Saga DSL** —— 为活动附加 `compensate:`，然后使用 `compensate/1` 或
-  `compensate_all/0` 以确定性的 LIFO 顺序回滚已完成的工作。详见
-  [`guides/sagas.md`](./guides/sagas.md)。
+- **Saga / 补偿** —— 为活动附加 `compensate:`，然后使用 `compensate/1` 或
+  `compensate_all/0`，以确定性的 LIFO（或并行）顺序回滚已完成的工作。
 - **父子工作流** —— `await child Mod.run(input)`、`start_child/3` 与
-  `await_child/1`，用于持久化的组合以及 fan-out/fan-in。详见
-  [`guides/child-workflows.md`](./guides/child-workflows.md)。
+  `await_child/1`，用于持久化的 fan-out/fan-in。
 - **`continue_as_new/1`** —— 结束当前运行并以全新历史启动后继运行，适用于长时间
-  运行的循环。详见
-  [`guides/long-running-workflows.md`](./guides/long-running-workflows.md)。
-- **带日志记录的 `Continuum.patched?/1`** —— 为兼容的工作流改动提供安全的原地
-  补丁标记。详见 [`guides/patching.md`](./guides/patching.md)。
-- **内容寻址的工作流分发** —— 恢复时通过 `Continuum.VersionRegistry` 解析运行
-  所存储的 `(workflow, version_hash)`，并将缺失的代码标记为
-  `:stuck_unknown_version`，而不是静默地用已变更的代码重放。详见
-  [`guides/workflow-versioning.md`](./guides/workflow-versioning.md)。
+  运行的循环。
+- **工作流版本管理** —— 带日志记录的 `Continuum.patched?/1` 标记，用于安全的原地
+  改动；以及内容寻址的 `(workflow, version_hash)` 分发，它会将缺失的代码标记为
+  `:stuck_unknown_version`，而不是用已变更的逻辑重放。
 
-v0.4 新增：
+### 运维与可观测性
 
-- **稳定的快照负载格式** —— 快照使用带版本的封装，并在 `continuum_snapshots`
-  中存储 `format_version`。工作流可通过在 `use Continuum.Workflow` 上设置
-  `snapshot_threshold:` 来按需启用。
-- **运维清理任务** —— `mix continuum.gc_versions` 与
-  `mix continuum.archive_continued_chains` 默认以 dry-run（仅预览）方式运行，
-  并在 [`guides/operations.md`](./guides/operations.md) 中说明。
-- **并行补偿** —— `compensate_all(mode: :parallel)` 会在挂起之前调度所有待执行的
-  补偿。无参形式仍为顺序 LIFO。
-- **生成式工作流入口** —— `use Continuum.Workflow` 会创建一个隐藏的 `V_<hash>`
-  模块用于持久化的版本分发，同时保留公共模块作为启动目标。
+- **`Continuum.Observer`** —— 可选的 Phoenix LiveView，提供运行列表、按运行展示
+  已解码事件时间线的详情页，以及取消运行与注入信号的运维操作。
+- **`Continuum.OpenTelemetry`** —— 可选启用的桥接，将 Continuum 的遥测转换为
+  `run_attempt`/`activity_attempt` span，并通过持久化的 W3C `traceparent`
+  反向关联。
+- 在 `[:continuum, …]` 前缀下提供 **24+ 个有文档记载的遥测事件**。
+- **运维工具** —— 按月分区的事件表、按需启用的历史快照、只读的
+  `mix continuum.audit`，以及默认 dry-run（仅预览）的清理任务。
 
-v0.5 新增：
+### 多租户与集群
 
-- **集群感知的唤醒路由** —— Continuum 会启动一个 `:pg` scope，引擎将存活运行的
-  pid 注册进去，以便跨节点转发唤醒。Postgres 租约与隔离令牌仍是写入的唯一权威；
-  组建 Erlang 集群仍由宿主应用自行负责。详见
-  [`guides/clustering.md`](./guides/clustering.md)。
-- **命名空间** —— 以 `namespace: "tenant-a"` 启动运行，并在该软租户边界内进行
-  查询/列表。单个运行的操作仍以全局 `run_id` 为键。详见
-  [`guides/namespaces.md`](./guides/namespaces.md)。
-- **搜索属性与结构化查询** —— 启动时传入 `attributes: %{...}`，通过
-  `Continuum.set_attributes/3` 更新元数据，并使用 `Continuum.query/1,2` 进行检索。
-  详见 [`guides/search-and-query.md`](./guides/search-and-query.md)。
-- **`mix continuum.audit`** —— 一个只读的运维任务，用于查看已加载的工作流版本、
-  陈旧的补丁标记，以及卡在未知版本的运行。详见
-  [`guides/auditing.md`](./guides/auditing.md)。
+- **命名多实例运行时** —— 通过 `Continuum.children(name:, repo:)` 启动，每个实例
+  绑定到各自的 Ecto Repo。
+- **命名空间** —— 用于列表/查询的软租户边界；单个运行的操作仍以全局 `run_id`
+  为键。
+- **搜索属性与结构化查询** —— `attributes:` / `Continuum.set_attributes/3`，
+  以及 `Continuum.query/1,2`。
+- **集群感知的唤醒路由** —— 基于 `:pg` 实现跨节点唤醒。Postgres 租约与隔离令牌
+  仍是写入的唯一权威。
+
+### 测试
+
+`Continuum.Test` 提供用于快速单元测试的内存日志、面向集成测试的 Postgres 辅助
+函数、信号/定时器注入、黄金历史重放，以及一个可选启用的"偏执"重放模式，用于
+捕获偏差。
 
 ## 父子工作流示例
 
@@ -233,37 +227,47 @@ MIX_ENV=test iex -S mix run dev/observer_demo.exs
 新的运行、发送信号或取消运行。生产环境的挂载方式见
 [`guides/observer.md`](./guides/observer.md)。
 
-## 指南
+## 文档
 
-ExDoc 中的指南覆盖当前的全部能力面：
+完整文档发布于 [HexDocs](https://hexdocs.pm/continuum)。指南覆盖了全部能力面：
 
 - *你的第一个工作流*
 - *活动、重试与幂等性*
-- *幂等性*（跨运行的作用域、剩余崩溃窗口）
-- *确定性规则与重放漂移*（包含辅助模块告警与 `trusted_modules`）
-- *多实例 Continuum*（通过 `Continuum.children/1` 启动命名实例）
-- *集群部署*
-- *命名空间*
+- *确定性规则与重放漂移*
+- *Saga 与补偿* · *子工作流* · *长时间运行的工作流*
+- *为工作流打补丁* · *工作流版本管理*
+- *多实例 Continuum* · *集群部署* · *命名空间*
 - *搜索属性与结构化查询*
-- *Saga 与补偿*
-- *子工作流*
-- *长时间运行的工作流*（`continue_as_new`）
-- *为工作流打补丁*
-- *工作流版本管理*
-- *运维*
-- *审计*
-- *Observer*
-- *可观测性 / OpenTelemetry 桥*
-- *快照*（按需启用的长历史压缩）
-
-升级版本？参见 [`迁移指南`](./guides/migrations/) 以及
-[`MIGRATING_v0_4_to_v0_5.md`](./MIGRATING_v0_4_to_v0_5.md)。
+- *运维* · *审计* · *Observer* · *可观测性（OpenTelemetry）* · *快照*
 
 [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 是一个 Phoenix 示例应用，演示了 活动 → 信号/超时 → 补偿、父子批处理、
-`continue_as_new`、按工作流的快照、Observer 以及 OpenTelemetry。其冒烟脚本还
-覆盖了 v0.5 的命名空间与 `Continuum.query/1`。
+`continue_as_new`、按工作流的快照、命名空间、Observer 以及 OpenTelemetry。
+
+需要升级？参见[迁移指南](./guides/migrations/)。
+
+## 状态
+
+Continuum 当前为 **v0.5（1.0 之前）**。持久化引擎、确定性强制、工作流组合、
+可观测性及集群能力面均已实现并有测试覆盖，包括崩溃恢复、租约隔离竞态以及基于
+属性的重放测试。1.0 之前 API 仍可能调整 —— 生产环境请固定到具体的 `0.x`
+版本。发布历史见 [`CHANGELOG.md`](./CHANGELOG.md)。
+
+## 开发
+
+仓库根目录的 `docker-compose.yml` 会为本地开发与测试启动 Postgres。
+
+```bash
+mix deps.get
+docker compose up -d                  # Postgres 监听 localhost:5432
+mix compile --warnings-as-errors
+mix test                              # 单元 + 集成测试套件
+mix test.cluster                      # 真实的 :peer 集群测试（需单独运行）
+mix format
+```
 
 ## 许可证
 
-Apache-2.0.
+版权所有 2026 The Continuum Authors。(yyeger)
+
+依据 [Apache License, Version 2.0](./LICENSE) 授权。

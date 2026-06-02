@@ -2,15 +2,42 @@
 
 **English** | [简体中文](./README.zh-CN.md)
 
-OTP-native durable execution engine for Elixir — Postgres-backed, deterministic
-replay, single dependency. Write a multi-step business process as straight-line
-Elixir code. Failures, restarts, and node death cause the workflow to resume
-exactly where it left off.
+[![CI](https://github.com/continuum-elixir/continuum/actions/workflows/ci.yml/badge.svg)](https://github.com/continuum-elixir/continuum/actions/workflows/ci.yml)
+[![Hex.pm](https://img.shields.io/hexpm/v/continuum.svg)](https://hex.pm/packages/continuum)
+[![Documentation](https://img.shields.io/badge/hexdocs-docs-8e44ad.svg)](https://hexdocs.pm/continuum)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
 
-> **Status:** v0.5 (pre-1.0). v0.5 adds cluster-aware wake routing,
-> namespaces, search attributes, structured run queries, and
-> `mix continuum.audit`. APIs may still change before 1.0; pin to a specific
-> 0.x in production.
+**Continuum is a durable execution engine for Elixir.** Write a multi-step
+business process as straight-line Elixir code; failures, restarts, and node
+death cause the workflow to resume *exactly where it left off* with identical
+state, by replaying its event history through the same pure orchestration code.
+
+It is OTP-native and Postgres-backed — no separate cluster service, no paid
+SaaS dependency, no polyglot SDK. Continuum lives in your application's
+supervision tree and uses the database you already run.
+
+## Why Continuum
+
+Continuum is to durable execution what Phoenix is to web and Oban is to job
+queues: the obvious answer to *"how do I run a multi-step business process that
+survives a crash?"* for Elixir-first teams.
+
+- **Straight-line code.** Express orchestration as ordinary Elixir control
+  flow — `case`, `with`, comprehensions. Effects go through `activity/2`,
+  `await signal`, and `timer`; everything else is pure.
+- **Deterministic replay.** A run re-executes from the top on every wake.
+  Structured cursor identity means any divergence between replay and the
+  original execution surfaces as a loud `Continuum.ReplayDriftError`, never
+  silent corruption.
+- **One dependency.** Postgres is the only thing you need to operate — it is
+  the journal, the lease store, the timer wheel, and the signal bus
+  (`LISTEN`/`NOTIFY`).
+- **It's just OTP.** Continuum is a supervision tree you add to your own app.
+  Crash recovery, leasing, and back-pressure are built on processes, not an
+  external coordinator.
+
+**Deliberately out of scope:** polyglot SDKs, cross-language activities, a
+separate cluster service, and Kubernetes operators.
 
 ## Quickstart
 
@@ -50,6 +77,8 @@ end
 
 ## Installation
 
+Add Continuum and a Postgres driver to your dependencies:
+
 ```elixir
 def deps do
   [
@@ -59,7 +88,7 @@ def deps do
 end
 ```
 
-Configure your repo:
+Point Continuum at your repo:
 
 ```elixir
 # config/config.exs
@@ -89,113 +118,81 @@ def start(_type, _args) do
 end
 ```
 
-## What ships
+## Features
 
-The v0.1/v0.2 core remains:
+### Determinism by construction
 
-- **Deterministic replay** with structured cursor identity. Replay drift
-  produces `Continuum.ReplayDriftError`, never silent corruption.
-- **Compile-time AST scan** rejects non-deterministic calls (`DateTime.utc_now`,
-  `:rand.*`, `:ets.*`, `Process.send`, `Kernel.apply`, …) with remediation
-  hints. Helpers opt in via `use Continuum.Pure`. v0.2 also warns on calls into
-  unmarked helper modules (configurable via
-  `config :continuum, untrusted_call_severity: :warn | :error`) and accepts an
-  app-env allowlist (`config :continuum, trusted_modules: [...]`).
-- **Postgres journal** with lease + fencing-token CAS on every write. Stolen
-  leases produce write failures and terminate the stale engine.
-- **Built-in activity worker pool** (no Oban dependency). `FOR UPDATE SKIP
-  LOCKED` claim, exponential backoff, per-task fencing, atomic
-  result-and-task commit.
-- **Durable timers** and **durable signals** via `pg_notify` + `LISTEN`.
+- Workflow code is pure-by-construction and re-executed top-to-bottom on every
+  wake; only effects produce side-visible work.
+- A **compile-time AST scanner** rejects non-deterministic calls
+  (`DateTime.utc_now`, `:rand.*`, `:ets.*`, `Process.send`, `Kernel.apply`, …)
+  with remediation hints. Helper modules opt in via `use Continuum.Pure` or a
+  `config :continuum, trusted_modules: [...]` allowlist.
+- Deterministic primitives — `Continuum.now/0`, `today/0`, `uuid4/0`,
+  `random/0`, and the `side_effect/1` escape hatch — capture stable cursor
+  identity at compile time.
+
+### Durable execution
+
+- **Postgres journal** with lease + fencing-token CAS on every write. A stolen
+  lease produces a write failure and terminates the stale engine — it never
+  corrupts history.
+- **Built-in activity worker pool** (no Oban dependency): `FOR UPDATE SKIP
+  LOCKED` claim, exponential backoff, per-task fencing, and an atomic
+  result-and-task commit, with retry/timeout policy via `use Continuum.Activity`.
+- **Durable timers and signals** over `pg_notify`/`LISTEN`.
   `await signal(name, timeout: ms)` resolves the signal/timeout race
   deterministically.
-- **Boot-time recovery** rescues orphaned runs, activity tasks, and due timers
-  without stealing live remote leases.
-- **Crash survival** — kill the engine pid mid-flight; the dispatcher re-leases
-  the run and replay completes from the journaled history.
-- **Generators**: `mix continuum.gen.{migration,workflow,activity}`.
-- **`Continuum.Test`** — in-memory journal for fast unit tests, Postgres
-  helpers for integration tests, signal/timer injection, golden-history replay.
-- **24+ telemetry events** under the `[:continuum, …]` prefix.
+- **Crash survival.** Kill the engine pid mid-flight; the dispatcher re-leases
+  the run and replay completes from the journaled history. Boot-time recovery
+  rescues orphaned runs, tasks, and timers without stealing live remote leases.
+- **Cross-run idempotency** keyed on `(activity_module, idempotency_key)`, so
+  activities are exactly-once-ish across runs.
 
-v0.2 adds:
+### Workflow composition
 
-- **`Continuum.Observer`** — optional Phoenix LiveView UI: runs index with
-  search and pagination, run detail with decoded event timeline, operator
-  actions for cancelling a run and sending a JSON signal. Mounted from your
-  router; host app owns auth. See the Observer section below.
-- **`Continuum.OpenTelemetry.setup/1`** — opt-in bridge that turns Continuum
-  telemetry into short `continuum.run_attempt` and `continuum.activity_attempt`
-  spans, linked back to the persisted W3C `traceparent` in
-  `continuum_runs.trace_context`. Continuum still compiles without any
-  OpenTelemetry packages.
-- **Named multi-instance supervision** via `Continuum.children(name: ..., repo: ...)`
-  and `instance: ...` on `start/3`, `signal/4`, `cancel/2`, `await/3`. The
-  default `Continuum` instance is unchanged.
-- **Experimental, opt-in history snapshots** — `continuum_snapshots`,
-  `Continuum.Snapshot`, `Continuum.Runtime.Snapshotter`, compacted-prefix
-  replay validation. Default `snapshot_threshold: :infinity` (off); opt in with
-  a positive integer after reading `guides/snapshots.md`.
-- **Monthly partitioning** for `continuum_events`, with operator Mix tasks
-  `mix continuum.partitions.{create,list,drop_old}` (`--execute` opt-in).
-- **Cross-run activity idempotency** through `continuum_activity_results`,
-  keyed on `(activity_module, idempotency_key)`.
-- **ETS-cached `TimerWheel`** with `pg_notify`-driven reschedule.
-- **Per-process repo threading** through `Continuum.children/1`.
-- **Persisted W3C `traceparent`** on `continuum_runs.trace_context`.
-
-v0.3 adds:
-
-- **Compensation / saga DSL** — attach `compensate:` to an activity, then use
-  `compensate/1` or `compensate_all/0` to roll back completed work in a
-  deterministic LIFO order. See [`guides/sagas.md`](./guides/sagas.md).
+- **Sagas / compensation** — attach `compensate:` to an activity, then
+  `compensate/1` or `compensate_all/0` to roll back completed work in
+  deterministic LIFO (or parallel) order.
 - **Parent/child workflows** — `await child Mod.run(input)`, `start_child/3`,
-  and `await_child/1` for durable composition and fan-out/fan-in. See
-  [`guides/child-workflows.md`](./guides/child-workflows.md).
+  and `await_child/1` for durable fan-out/fan-in.
 - **`continue_as_new/1`** — complete the current run and start a successor with
-  fresh history for long-running loops. See
-  [`guides/long-running-workflows.md`](./guides/long-running-workflows.md).
-- **Journaled `Continuum.patched?/1`** — safe in-place patch markers for
-  compatible workflow edits. See [`guides/patching.md`](./guides/patching.md).
-- **Content-addressed workflow dispatch** — resumes resolve the run's stored
-  `(workflow, version_hash)` through `Continuum.VersionRegistry` and mark
-  missing code as `:stuck_unknown_version` instead of silently replaying through
-  changed code. See
-  [`guides/workflow-versioning.md`](./guides/workflow-versioning.md).
+  fresh history for long-running loops.
+- **Workflow versioning** — journaled `Continuum.patched?/1` markers for safe
+  in-place edits, and content-addressed `(workflow, version_hash)` dispatch that
+  marks missing code `:stuck_unknown_version` rather than replaying through
+  changed logic.
 
-v0.4 adds:
+### Operations & observability
 
-- **Stable snapshot payload format** — snapshots use a versioned envelope and
-  store `format_version` in `continuum_snapshots`. Workflows can opt in with
-  `snapshot_threshold:` on `use Continuum.Workflow`.
-- **Operator cleanup tasks** — `mix continuum.gc_versions` and
-  `mix continuum.archive_continued_chains` are dry-run by default and documented
-  in [`guides/operations.md`](./guides/operations.md).
-- **Parallel compensation** — `compensate_all(mode: :parallel)` schedules all
-  pending compensations before suspending. The no-arg form remains sequential
-  LIFO.
-- **Generated workflow entrypoints** — `use Continuum.Workflow` creates a hidden
-  `V_<hash>` module for durable version dispatch while keeping the public module
-  as the start target.
+- **`Continuum.Observer`** — an optional Phoenix LiveView with a runs index, a
+  decoded per-run event timeline, and operator actions for cancelling a run and
+  injecting a signal.
+- **`Continuum.OpenTelemetry`** — an opt-in bridge that turns Continuum
+  telemetry into `run_attempt`/`activity_attempt` spans, linked back through a
+  persisted W3C `traceparent`.
+- **24+ documented telemetry events** under the `[:continuum, …]` prefix.
+- **Operator tooling** — monthly-partitioned events, opt-in history snapshots,
+  the read-only `mix continuum.audit`, and dry-run-by-default cleanup tasks.
 
-v0.5 adds:
+### Multi-tenancy & clustering
 
-- **Cluster-aware wake routing** — Continuum starts a `:pg` scope and engines
-  register live run pids for cross-node wake forwarding. The Postgres lease and
-  fencing token remain the authority for writes; host apps still form the
-  Erlang cluster themselves. See [`guides/clustering.md`](./guides/clustering.md).
-- **Namespaces** — start runs with `namespace: "tenant-a"` and query/list within
-  that soft tenant boundary. Single-run operations stay keyed by global
-  `run_id`. See [`guides/namespaces.md`](./guides/namespaces.md).
-- **Search attributes and structured queries** — start with `attributes: %{...}`,
-  update metadata with `Continuum.set_attributes/3`, and search with
-  `Continuum.query/1,2`. See
-  [`guides/search-and-query.md`](./guides/search-and-query.md).
-- **`mix continuum.audit`** — a read-only operator task for loaded workflow
-  versions, stale patch markers, and stuck unknown-version runs. See
-  [`guides/auditing.md`](./guides/auditing.md).
+- **Named multi-instance runtimes** via `Continuum.children(name:, repo:)`, each
+  bound to its own Ecto repo.
+- **Namespaces** — a soft tenant boundary for list/query; single-run operations
+  stay keyed by global `run_id`.
+- **Search attributes and structured queries** — `attributes:` /
+  `Continuum.set_attributes/3` plus `Continuum.query/1,2`.
+- **Cluster-aware wake routing** over `:pg` for cross-node wakeups. The Postgres
+  lease and fencing token remain the sole authority for writes.
 
-## Parent/Child Example
+### Testing
+
+`Continuum.Test` provides an in-memory journal for fast unit tests, Postgres
+helpers for integration tests, signal/timer injection, golden-history replay,
+and an opt-in paranoid re-replay mode that catches divergence.
+
+## Parent/child example
 
 ```elixir
 defmodule MyApp.BatchFlow do
@@ -240,42 +237,53 @@ MIX_ENV=test iex -S mix run dev/observer_demo.exs
 
 The demo seeds three runs in different states and prints iex helpers for
 spawning more, sending signals, and cancelling. See
-[`guides/observer.md`](./guides/observer.md) for production mount
-instructions.
+[`guides/observer.md`](./guides/observer.md) for production mount instructions.
 
-## Guides
+## Documentation
 
-The ExDoc guides cover the current surface:
+Full docs are published on [HexDocs](https://hexdocs.pm/continuum). The guides
+cover the entire surface:
 
 - *Your first workflow*
 - *Activities, retries, and idempotency*
-- *Idempotency* (cross-run scope, residual crash window)
-- *Determinism rules and replay drift* (helper-module warnings and
-  `trusted_modules`)
-- *Multi-instance Continuum* (named instances with `Continuum.children/1`)
-- *Clustering*
-- *Namespaces*
+- *Determinism rules and replay drift*
+- *Sagas and compensation* · *Child workflows* · *Long-running workflows*
+- *Patching workflows* · *Workflow versioning*
+- *Multi-instance Continuum* · *Clustering* · *Namespaces*
 - *Search attributes and structured queries*
-- *Sagas and compensation*
-- *Child workflows*
-- *Long-running workflows* (`continue_as_new`)
-- *Patching workflows*
-- *Workflow versioning*
-- *Operations*
-- *Auditing*
-- *Observer*
-- *Observability / OpenTelemetry bridge*
-- *Snapshots* (opt-in long-history compaction)
-
-Upgrading versions? See [`migration guides`](./guides/migrations/) and
-[`MIGRATING_v0_4_to_v0_5.md`](./MIGRATING_v0_4_to_v0_5.md).
+- *Operations* · *Auditing* · *Observer* · *Observability (OpenTelemetry)* ·
+  *Snapshots*
 
 See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
-for a Phoenix app exercising activity -> signal/timeout -> compensation,
-parent/child batches, `continue_as_new`, per-workflow snapshots, Observer, and
-OpenTelemetry. Its smoke script also covers v0.5 namespaces and
-`Continuum.query/1`.
+for a Phoenix app exercising activity → signal/timeout → compensation,
+parent/child batches, `continue_as_new`, per-workflow snapshots, namespaces,
+the Observer, and OpenTelemetry.
+
+Upgrading? See the [migration guides](./guides/migrations/) .
+
+## Status
+
+Continuum is **v0.5 (pre-1.0)**. The durable engine, determinism enforcement,
+workflow composition, observability, and clustering surface are implemented and
+covered by tests, including crash-resume, lease-fencing races, and
+property-based replay. APIs may still change before 1.0 — pin to a specific
+`0.x` in production. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
+
+## Development
+
+A `docker-compose.yml` brings up Postgres for local development and tests.
+
+```bash
+mix deps.get
+docker compose up -d                  # Postgres on localhost:5432
+mix compile --warnings-as-errors
+mix test                              # unit + integration suite
+mix test.cluster                      # real :peer cluster tests (run separately)
+mix format
+```
 
 ## License
 
-Apache-2.0.
+Copyright 2026 The Continuum Authors. (yyeger)
+
+Licensed under the [Apache License, Version 2.0](./LICENSE).
