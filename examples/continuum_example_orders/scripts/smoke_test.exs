@@ -8,11 +8,14 @@ defmodule ContinuumExampleOrders.SmokeTest do
     instance = Continuum.Runtime.Instance.lookup(:continuum_example_orders)
 
     suffix = System.unique_integer([:positive])
+    smoke_id = "smoke-#{suffix}"
 
     approved =
       run_order!(
         "order-smoke-approved-#{suffix}",
         :approved,
+        "retail",
+        smoke_id,
         workflow_opts,
         instance,
         [
@@ -31,6 +34,8 @@ defmodule ContinuumExampleOrders.SmokeTest do
       run_order!(
         "order-smoke-rejected-#{suffix}",
         :rejected,
+        "enterprise",
+        smoke_id,
         workflow_opts,
         instance,
         [
@@ -46,20 +51,40 @@ defmodule ContinuumExampleOrders.SmokeTest do
       )
 
     subscription = run_subscription!("subscription-smoke-#{suffix}", workflow_opts, instance)
+    query = assert_namespace_queries!(workflow_opts, smoke_id, approved, rejected)
 
-    IO.inspect(%{approved: approved, rejected: rejected, subscription: subscription},
+    IO.inspect(
+      %{approved: approved, rejected: rejected, subscription: subscription, query: query},
       label: "smoke"
     )
   end
 
-  defp run_order!(order_id, decision, workflow_opts, instance, expected_events) do
+  defp run_order!(
+         order_id,
+         decision,
+         namespace,
+         smoke_id,
+         workflow_opts,
+         instance,
+         expected_events
+       ) do
     input = %{
       "order_id" => order_id,
       "items" => [%{"sku" => "sku_1", "qty" => 1, "price" => 1200}]
     }
 
-    {:ok, run_id} = Continuum.start(ContinuumExampleOrders.OrderFlow, input, workflow_opts)
-    IO.puts("started #{decision} order #{run_id}")
+    opts =
+      Keyword.merge(workflow_opts,
+        namespace: namespace,
+        attributes: %{
+          smoke_id: smoke_id,
+          order_id: order_id,
+          decision: to_string(decision)
+        }
+      )
+
+    {:ok, run_id} = Continuum.start(ContinuumExampleOrders.OrderFlow, input, opts)
+    IO.puts("started #{namespace}/#{decision} order #{run_id}")
 
     wait_for_event!(instance, run_id, :signal_awaited)
     :ok = Continuum.signal(run_id, :fraud_review, decision, workflow_opts)
@@ -75,7 +100,81 @@ defmodule ContinuumExampleOrders.SmokeTest do
       raise "unexpected events for #{order_id}: #{inspect(events)}"
     end
 
-    %{run_id: run_id, result: result, events: events}
+    %{run_id: run_id, namespace: namespace, result: result, events: events}
+  end
+
+  defp assert_namespace_queries!(workflow_opts, smoke_id, approved, rejected) do
+    :ok =
+      Continuum.set_attributes(approved.run_id, %{review_status: "approved_by_smoke"},
+        instance: :continuum_example_orders
+      )
+
+    retail =
+      query_runs!(
+        workflow_opts,
+        namespace: approved.namespace,
+        where: [{:eq, [:attributes, "smoke_id"], smoke_id}],
+        per_page: 10
+      )
+
+    enterprise =
+      query_runs!(
+        workflow_opts,
+        namespace: rejected.namespace,
+        where: [{:eq, [:attributes, "smoke_id"], smoke_id}],
+        per_page: 10
+      )
+
+    all_namespaces =
+      query_runs!(
+        workflow_opts,
+        namespace: nil,
+        where: [{:eq, [:attributes, "smoke_id"], smoke_id}],
+        order_by: {:asc, :started_at},
+        per_page: 10
+      )
+
+    assert_run_ids!("retail namespace query", retail.entries, [approved.run_id])
+    assert_run_ids!("enterprise namespace query", enterprise.entries, [rejected.run_id])
+
+    assert_run_ids!("cross-namespace query", all_namespaces.entries, [
+      approved.run_id,
+      rejected.run_id
+    ])
+
+    reviewed =
+      query_runs!(
+        workflow_opts,
+        namespace: approved.namespace,
+        where: [{:eq, [:attributes, "review_status"], "approved_by_smoke"}],
+        per_page: 10
+      )
+
+    assert_run_ids!("set_attributes query", reviewed.entries, [approved.run_id])
+
+    %{
+      retail_total: retail.total,
+      enterprise_total: enterprise.total,
+      all_namespaces_total: all_namespaces.total,
+      reviewed_total: reviewed.total
+    }
+  end
+
+  defp query_runs!(workflow_opts, opts) do
+    opts = Keyword.merge([instance: Keyword.fetch!(workflow_opts, :instance)], opts)
+
+    case Continuum.query(opts) do
+      {:ok, page} -> page
+      {:error, reason} -> raise "query failed: #{inspect(reason)}"
+    end
+  end
+
+  defp assert_run_ids!(label, entries, expected_ids) do
+    actual_ids = Enum.map(entries, & &1.run_id)
+
+    unless MapSet.new(actual_ids) == MapSet.new(expected_ids) do
+      raise "#{label} returned #{inspect(actual_ids)}, expected #{inspect(expected_ids)}"
+    end
   end
 
   defp wait_for_event!(instance, run_id, event_type, attempts \\ 100)

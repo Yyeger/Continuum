@@ -683,6 +683,8 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp start_run(journal, instance, run_id, workflow_module, input, trace_context, opts) do
+    Code.ensure_loaded(journal)
+
     if function_exported?(journal, :start_run, 5) do
       journal.start_run(instance, run_id, workflow_module, input,
         trace_context: trace_context,

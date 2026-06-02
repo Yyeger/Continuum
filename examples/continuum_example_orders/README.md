@@ -4,7 +4,9 @@ Minimal Phoenix example app for Continuum. It starts an order checkout
 workflow, waits for a fraud-review signal, then ships or compensates the
 payment capture. It also includes a parent/child batch workflow that fans out
 one order child per input order, plus a subscription-style `continue_as_new`
-workflow with a per-workflow snapshot threshold.
+workflow with a per-workflow snapshot threshold. The smoke script covers the
+v0.5 namespace and query API by starting orders in two namespaces and querying
+their search attributes.
 
 The application supervises a named Continuum instance after
 `ContinuumExampleOrders.Repo`, matching the required startup order for
@@ -53,6 +55,11 @@ endpoint. Host apps may alternatively copy the file into their own
 `snapshot_threshold: 2` to demonstrate the v0.4 per-workflow setting. Snapshots
 remain opt-in; see `../../guides/snapshots.md` and
 `../../bench/snapshot_bench.exs`.
+
+The script starts one approved order in the `retail` namespace and one rejected
+order in the `enterprise` namespace, then uses `Continuum.query/1` and
+`Continuum.set_attributes/3` to assert that namespace-scoped searches do not
+cross tenants.
 
 ## Smoke Test
 
@@ -122,6 +129,15 @@ Manual crash-resume check:
 3. Restart `mix phx.server`.
 4. Send the fraud-review signal.
 5. Inspect `continuum_events` and verify the run replays and completes.
+
+Manual cluster smoke:
+
+1. Form two distributed Erlang nodes that both run this app and share the
+   example Postgres database.
+2. Start an order on node A and leave it waiting for fraud review.
+3. Send the fraud-review signal from node B.
+4. Confirm the run wakes and completes, then repeat by stopping node A and
+   verifying node B resumes after the lease TTL.
 
 The same flow is available as an IEx script:
 

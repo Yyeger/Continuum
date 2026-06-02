@@ -7,10 +7,10 @@ replay, single dependency. Write a multi-step business process as straight-line
 Elixir code. Failures, restarts, and node death cause the workflow to resume
 exactly where it left off.
 
-> **Status:** v0.4 (pre-1.0). v0.4 stabilizes snapshots, adds workflow-level
-> snapshot thresholds, cleanup Mix tasks, parallel compensation, and generated
-> version entrypoints. APIs may still change before 1.0; pin to a specific 0.x
-> in production.
+> **Status:** v0.5 (pre-1.0). v0.5 adds cluster-aware wake routing,
+> namespaces, search attributes, structured run queries, and
+> `mix continuum.audit`. APIs may still change before 1.0; pin to a specific
+> 0.x in production.
 
 ## Quickstart
 
@@ -53,7 +53,7 @@ end
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.4"},
+    {:continuum, "~> 0.5"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -178,6 +178,23 @@ v0.4 adds:
   `V_<hash>` module for durable version dispatch while keeping the public module
   as the start target.
 
+v0.5 adds:
+
+- **Cluster-aware wake routing** — Continuum starts a `:pg` scope and engines
+  register live run pids for cross-node wake forwarding. The Postgres lease and
+  fencing token remain the authority for writes; host apps still form the
+  Erlang cluster themselves. See [`guides/clustering.md`](./guides/clustering.md).
+- **Namespaces** — start runs with `namespace: "tenant-a"` and query/list within
+  that soft tenant boundary. Single-run operations stay keyed by global
+  `run_id`. See [`guides/namespaces.md`](./guides/namespaces.md).
+- **Search attributes and structured queries** — start with `attributes: %{...}`,
+  update metadata with `Continuum.set_attributes/3`, and search with
+  `Continuum.query/1,2`. See
+  [`guides/search-and-query.md`](./guides/search-and-query.md).
+- **`mix continuum.audit`** — a read-only operator task for loaded workflow
+  versions, stale patch markers, and stuck unknown-version runs. See
+  [`guides/auditing.md`](./guides/auditing.md).
+
 ## Parent/Child Example
 
 ```elixir
@@ -236,22 +253,28 @@ The ExDoc guides cover the current surface:
 - *Determinism rules and replay drift* (helper-module warnings and
   `trusted_modules`)
 - *Multi-instance Continuum* (named instances with `Continuum.children/1`)
+- *Clustering*
+- *Namespaces*
+- *Search attributes and structured queries*
 - *Sagas and compensation*
 - *Child workflows*
 - *Long-running workflows* (`continue_as_new`)
 - *Patching workflows*
 - *Workflow versioning*
 - *Operations*
+- *Auditing*
 - *Observer*
 - *Observability / OpenTelemetry bridge*
 - *Snapshots* (opt-in long-history compaction)
 
-Upgrading versions? See [`migration guides`](./guides/migrations/)
+Upgrading versions? See [`migration guides`](./guides/migrations/) and
+[`MIGRATING_v0_4_to_v0_5.md`](./MIGRATING_v0_4_to_v0_5.md).
 
 See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
 for a Phoenix app exercising activity -> signal/timeout -> compensation,
 parent/child batches, `continue_as_new`, per-workflow snapshots, Observer, and
-OpenTelemetry.
+OpenTelemetry. Its smoke script also covers v0.5 namespaces and
+`Continuum.query/1`.
 
 ## License
 

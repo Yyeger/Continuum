@@ -1,7 +1,7 @@
 defmodule Continuum.MixProject do
   use Mix.Project
 
-  @version "0.4.0"
+  @version "0.5.0"
   @source_url "https://github.com/continuum-elixir/continuum"
 
   def project do
@@ -51,8 +51,7 @@ defmodule Continuum.MixProject do
     [
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files:
-        ~w(lib priv guides mix.exs README.md LICENSE CHANGELOG.md MIGRATING_v0_1_to_v0_2.md MIGRATING_v0_2_to_v0_3.md MIGRATING_v0_3_to_v0_4.md)
+      files: ~w(lib priv guides mix.exs README.md LICENSE CHANGELOG.md MIGRATING_v0_4_to_v0_5.md)
     ]
   end
 
@@ -65,16 +64,21 @@ defmodule Continuum.MixProject do
         "guides/activities-retries-idempotency.md",
         "guides/idempotency.md",
         "guides/multi-instance.md",
+        "guides/clustering.md",
+        "guides/namespaces.md",
+        "guides/search-and-query.md",
         "guides/sagas.md",
         "guides/child-workflows.md",
         "guides/long-running-workflows.md",
         "guides/patching.md",
         "guides/workflow-versioning.md",
         "guides/operations.md",
+        "guides/auditing.md",
         "guides/observability.md",
         "guides/observer.md",
         "guides/snapshots.md",
-        "guides/determinism-rules.md"
+        "guides/determinism-rules.md",
+        "MIGRATING_v0_4_to_v0_5.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/

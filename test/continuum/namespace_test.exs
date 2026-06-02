@@ -35,6 +35,23 @@ defmodule Continuum.NamespaceTest do
     assert Enum.map(observer_entries, & &1.run_id) == [tenant_id]
   end
 
+  test "public start forwards namespace and attributes to durable runs" do
+    {:ok, run_id} =
+      Continuum.start(NamespaceFlow, %{value: 7},
+        journal: Postgres,
+        namespace: "tenant-public",
+        attributes: %{region: "eu", tier: "gold"}
+      )
+
+    assert {:ok, %{state: :completed, result: {:ok, 7}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    run = Repo.one!(from(r in Run, where: r.id == ^run_id))
+
+    assert run.namespace == "tenant-public"
+    assert run.attributes == %{"region" => "eu", "tier" => "gold"}
+  end
+
   test "run-id keyed operations do not require namespace" do
     run_id = start_run!("tenant-a", 5)
 

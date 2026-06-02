@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+## v0.5.0 — 2026-06-02 — "Production at scale"
+
+### New surfaces
+
+- Cluster-aware wake routing. Continuum starts `:pg` scope `:continuum`, engines
+  join by `{instance, run_id}`, and wakes forward to remote owners when the run
+  is not local. The lease and fencing token remain the write authority.
+- Added `mix test.cluster` and a `:peer`-based cluster harness covering dispatch
+  races, lease stealing, and activity worker node death against one Postgres.
+- Added namespaces on `continuum_runs`. `Continuum.start/3` accepts
+  `namespace:`, query/list paths default to `"default"`, and single-run
+  operations stay globally keyed by `run_id`.
+- Added search attributes on `continuum_runs`, plus `Continuum.query/1,2`,
+  `Continuum.get_run/2`, and `Continuum.set_attributes/3`.
+- Added `mix continuum.audit --repo MyApp.Repo [--format json] [--strict]` for
+  loaded workflow versions, stale patch marker verdicts, and stuck
+  unknown-version runs.
+- The determinism scanner now rejects `:pg.*`, `:rpc.*`, and `:erpc.*` in
+  workflow code.
+
+### Migrations
+
+- Added `continuum_runs.namespace text NOT NULL DEFAULT 'default'`.
+- Added `continuum_runs.attributes jsonb NOT NULL DEFAULT '{}'`.
+- Added GIN and namespace/state indexes for attribute and tenant-scoped
+  queries.
+
+### Documentation
+
+- Added guides for clustering, namespaces, search/query, and auditing.
+- Added `MIGRATING_v0_4_to_v0_5.md`.
+- Updated the example orders app with the v0.5 migration and smoke coverage for
+  two namespaces plus `Continuum.query/1`.
+
 ### v0.5 decisions
 
 - `Continuum.Oban` activity routing is deferred to v0.5.1. The v0.5
@@ -11,6 +45,14 @@
 - `Continuum.AshAi` is deferred until a lighthouse adopter is engaged.
 - The Observer replay-stepping debugger is formally cut from v0.5 rather than
   carried as another release's implicit nice-to-land.
+
+### Benchmarks
+
+- Pre-v0.5 baseline on 2026-06-02 from `MIX_ENV=test mix run
+  bench/replay_hot_path_bench.exs`: raw replay 111 ms / 8.88 us per event over
+  12,500 events.
+- Final v0.5 verification on 2026-06-02: raw replay 86 ms / 6.88 us per event
+  over 12,500 events; snapshot replay 78 ms over the compacted prefix.
 
 ## v0.4.0 — 2026-05-31 — "Hardening & ergonomics"
 
