@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### v0.5 decisions
+
+- `Continuum.Oban` activity routing is deferred to v0.5.1. The v0.5
+  milestone ships the built-in activity runner unchanged so the cluster,
+  namespace, query, and audit surfaces can tag without introducing a second
+  execution adapter.
+
 ## v0.4.0 — 2026-05-31 — "Hardening & ergonomics"
 
 ### Changed
