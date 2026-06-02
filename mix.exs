@@ -8,7 +8,7 @@ defmodule Continuum.MixProject do
     [
       app: :continuum,
       version: @version,
-      elixir: "~> 1.18",
+      elixir: "~> 1.19",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -51,7 +51,7 @@ defmodule Continuum.MixProject do
     [
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv guides mix.exs README.md LICENSE CHANGELOG.md MIGRATING_v0_4_to_v0_5.md)
+      files: ~w(lib priv guides mix.exs README.md LICENSE CHANGELOG.md)
     ]
   end
 
@@ -78,7 +78,10 @@ defmodule Continuum.MixProject do
         "guides/observer.md",
         "guides/snapshots.md",
         "guides/determinism-rules.md",
-        "MIGRATING_v0_4_to_v0_5.md"
+        "guides/migrations/MIGRATING_v0_1_to_v0_2.md",
+        "guides/migrations/MIGRATING_v0_2_to_v0_3.md",
+        "guides/migrations/MIGRATING_v0_3_to_v0_4.md",
+        "guides/migrations/MIGRATING_v0_4_to_v0_5.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/
