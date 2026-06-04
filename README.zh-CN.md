@@ -130,9 +130,11 @@ end
 
 - **Postgres 日志** 在每次写入时进行租约 + 隔离令牌 CAS 校验。被夺走的租约会
   导致写入失败并终止陈旧的引擎进程 —— 它绝不会损坏历史。
-- **内置活动工作进程池**（不依赖 Oban）：采用 `FOR UPDATE SKIP LOCKED` 抢占任务、
+- **活动执行**：默认使用内置工作进程池 —— 采用 `FOR UPDATE SKIP LOCKED` 抢占任务、
   指数退避重试、按任务隔离，并将结果与任务状态在同一事务中原子提交；重试/超时
-  策略通过 `use Continuum.Activity` 配置。
+  策略通过 `use Continuum.Activity` 配置。也可选用 `Continuum.Oban` 执行器，让已经
+  运行 Oban 的团队复用其队列。无论采用哪种方式，Continuum 都在自有的持久化任务表中
+  保留重试/超时策略、幂等性与隔离令牌提交。
 - **持久化定时器与信号**，基于 `pg_notify`/`LISTEN`。
   `await signal(name, timeout: ms)` 以确定性的方式解决信号/超时之间的竞态。
 - **崩溃存活能力。** 在工作流执行中途强杀引擎进程，调度器会重新租约该运行，
@@ -232,7 +234,7 @@ MIX_ENV=test iex -S mix run dev/observer_demo.exs
 完整文档发布于 [HexDocs](https://hexdocs.pm/continuum)。指南覆盖了全部能力面：
 
 - *你的第一个工作流*
-- *活动、重试与幂等性*
+- *活动、重试与幂等性* · *Oban 活动执行器*
 - *确定性规则与重放漂移*
 - *Saga 与补偿* · *子工作流* · *长时间运行的工作流*
 - *为工作流打补丁* · *工作流版本管理*
@@ -248,7 +250,7 @@ MIX_ENV=test iex -S mix run dev/observer_demo.exs
 
 ## 状态
 
-Continuum 当前为 **v0.5（1.0 之前）**。持久化引擎、确定性强制、工作流组合、
+Continuum 当前为 **v0.5.1（1.0 之前）**。持久化引擎、确定性强制、工作流组合、
 可观测性及集群能力面均已实现并有测试覆盖，包括崩溃恢复、租约隔离竞态以及基于
 属性的重放测试。1.0 之前 API 仍可能调整 —— 生产环境请固定到具体的 `0.x`
 版本。发布历史见 [`CHANGELOG.md`](./CHANGELOG.md)。

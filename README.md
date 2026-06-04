@@ -246,7 +246,7 @@ Full docs are published on [HexDocs](https://hexdocs.pm/continuum). The guides
 cover the entire surface:
 
 - *Your first workflow*
-- *Activities, retries, and idempotency*
+- *Activities, retries, and idempotency* · *Oban activity executor*
 - *Determinism rules and replay drift*
 - *Sagas and compensation* · *Child workflows* · *Long-running workflows*
 - *Patching workflows* · *Workflow versioning*
@@ -264,7 +264,7 @@ Upgrading? See the [migration guides](./guides/migrations/) .
 
 ## Status
 
-Continuum is **v0.5 (pre-1.0)**. The durable engine, determinism enforcement,
+Continuum is **v0.5.1 (pre-1.0)**. The durable engine, determinism enforcement,
 workflow composition, observability, and clustering surface are implemented and
 covered by tests, including crash-resume, lease-fencing races, and
 property-based replay. APIs may still change before 1.0 — pin to a specific
