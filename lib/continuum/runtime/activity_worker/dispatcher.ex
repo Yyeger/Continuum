@@ -6,7 +6,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.ActivityWorker.Worker, Runtime.Instance, Telemetry}
+  alias Continuum.{Oban, Runtime.ActivityWorker.Worker, Runtime.Instance, Telemetry}
 
   @default_interval_ms 1_000
   @default_batch_size 10
@@ -28,16 +28,53 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
 
-    with {:ok, tasks} <- claim(instance, owner, batch_size, ttl_seconds) do
-      Enum.each(tasks, &start_worker/1)
+    case instance.activity_executor do
+      :builtin ->
+        dispatch_builtin(instance, owner, batch_size, ttl_seconds)
 
-      Telemetry.execute([:continuum, :activity_dispatcher, :polled], %{count: length(tasks)}, %{
-        instance: instance.name,
-        owner: owner,
-        batch_size: batch_size
-      })
+      {:oban, _opts} ->
+        dispatch_oban(instance, owner, batch_size)
+    end
+  end
 
-      {:ok, length(tasks)}
+  @doc false
+  def claim_one(instance, task_id, expected_attempt, owner, ttl_seconds \\ @default_ttl_seconds) do
+    instance = Instance.lookup(instance)
+
+    sql = """
+    WITH candidate AS (
+      SELECT t.id, r.lease_token
+      FROM continuum_activity_tasks AS t
+      JOIN continuum_runs AS r ON r.id = t.run_id
+      WHERE t.id = $1::text::uuid
+        AND t.state = 'available'
+        AND t.attempt = $2
+        AND t.available_at <= now()
+        AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
+        AND r.state IN ('running', 'suspended')
+        AND r.lease_token IS NOT NULL
+        AND r.lease_expires_at > now()
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE continuum_activity_tasks AS t
+    SET state = 'leased',
+        lease_owner = $3,
+        lease_expires_at = now() + make_interval(secs => $4)
+    FROM candidate
+    WHERE t.id = candidate.id
+    RETURNING t.id::text, t.run_id::text, t.seq, t.mfa, t.attempt, t.lease_owner,
+              candidate.lease_token
+    """
+
+    case instance.repo.query(sql, [task_id, expected_attempt, owner, ttl_seconds]) do
+      {:ok, %{rows: [row]}} ->
+        {:ok, instance |> decode_claim(row) |> Map.put(:executor, :oban)}
+
+      {:ok, %{rows: []}} ->
+        classify_claim_miss(instance, task_id, expected_attempt)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -77,6 +114,25 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     {:noreply, state}
   end
 
+  defp dispatch_builtin(instance, owner, batch_size, ttl_seconds) do
+    with {:ok, tasks} <- claim(instance, owner, batch_size, ttl_seconds) do
+      Enum.each(tasks, &start_worker/1)
+
+      emit_polled(instance, owner, batch_size, length(tasks), :builtin)
+
+      {:ok, length(tasks)}
+    end
+  end
+
+  defp dispatch_oban(instance, owner, batch_size) do
+    with {:ok, tasks} <- available_tasks(instance, batch_size),
+         :ok <- enqueue_oban_tasks(instance, tasks) do
+      emit_polled(instance, owner, batch_size, length(tasks), :oban)
+
+      {:ok, length(tasks)}
+    end
+  end
+
   defp claim(instance, owner, batch_size, ttl_seconds) do
     sql = """
     WITH candidates AS (
@@ -105,7 +161,10 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
     case instance.repo.query(sql, [owner, batch_size, ttl_seconds]) do
       {:ok, %{rows: rows}} ->
-        tasks = Enum.map(rows, &decode_claim(instance, &1))
+        tasks =
+          rows
+          |> Enum.map(&decode_claim(instance, &1))
+          |> Enum.map(&Map.put(&1, :executor, :builtin))
 
         Telemetry.execute(
           [:continuum, :activity_dispatcher, :claimed],
@@ -118,6 +177,30 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
         )
 
         {:ok, tasks}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp available_tasks(instance, batch_size) do
+    sql = """
+    SELECT t.id::text, t.attempt
+    FROM continuum_activity_tasks AS t
+    JOIN continuum_runs AS r ON r.id = t.run_id
+    WHERE t.state = 'available'
+      AND t.available_at <= now()
+      AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
+      AND r.state IN ('running', 'suspended')
+      AND r.lease_token IS NOT NULL
+      AND r.lease_expires_at > now()
+    ORDER BY t.available_at, t.scheduled_at
+    LIMIT $1
+    """
+
+    case instance.repo.query(sql, [batch_size]) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn [id, attempt] -> %{id: id, attempt: attempt} end)}
 
       {:error, reason} ->
         {:error, reason}
@@ -160,6 +243,46 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
       {:error, reason} ->
         Logger.error("Activity worker failed to start #{task.id}: #{inspect(reason)}")
         :error
+    end
+  end
+
+  defp enqueue_oban_tasks(instance, tasks) do
+    Enum.reduce_while(tasks, :ok, fn task, :ok ->
+      case Oban.enqueue(instance, task) do
+        {:ok, _job} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp emit_polled(instance, owner, batch_size, count, executor) do
+    Telemetry.execute([:continuum, :activity_dispatcher, :polled], %{count: count}, %{
+      instance: instance.name,
+      owner: owner,
+      batch_size: batch_size,
+      executor: executor
+    })
+  end
+
+  defp classify_claim_miss(instance, task_id, expected_attempt) do
+    sql = """
+    SELECT state, attempt
+    FROM continuum_activity_tasks
+    WHERE id = $1::text::uuid
+    """
+
+    case instance.repo.query(sql, [task_id]) do
+      {:ok, %{rows: []}} ->
+        :not_available
+
+      {:ok, %{rows: [[_state, attempt]]}} when attempt != expected_attempt ->
+        :stale
+
+      {:ok, %{rows: [[_state, _attempt]]}} ->
+        :not_available
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

@@ -40,6 +40,7 @@ defmodule Continuum.MixProject do
       {:phoenix, "~> 1.7", optional: true},
       {:phoenix_html, "~> 4.0", optional: true},
       {:phoenix_live_view, "~> 1.0", optional: true},
+      {:oban, "~> 2.20", optional: true},
       {:plug_cowboy, "~> 2.7", only: [:dev, :test], optional: true},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:stream_data, "~> 1.1", only: [:dev, :test]},

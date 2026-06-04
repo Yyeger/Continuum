@@ -417,6 +417,72 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert Repo.one!(ActivityTask).state == "leased"
   end
 
+  test "claim_one claims an available task at perform time" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 5}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "oban-worker",
+               30
+             )
+
+    assert claimed.executor == :oban
+    assert claimed.id == task.id
+    assert claimed.run_id == run_id
+    assert claimed.lease_owner == "oban-worker"
+    assert is_integer(claimed.run_lease_token)
+
+    task = Repo.one!(ActivityTask)
+    assert task.state == "leased"
+    assert task.lease_owner == "oban-worker"
+
+    assert :not_available =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "second-worker",
+               30
+             )
+  end
+
+  test "claim_one rejects stale attempts before running an activity" do
+    {:ok, _run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 5}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [attempt: task.attempt + 1]
+    )
+
+    assert :stale =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "stale-worker",
+               30
+             )
+
+    assert Repo.one!(ActivityTask).state == "available"
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do

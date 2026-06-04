@@ -71,6 +71,7 @@ defmodule Continuum.Runtime.ActivityWorker do
   defp complete(task, result, started_at, opts \\ []) do
     idempotency = idempotency(task)
     duration = System.monotonic_time(:millisecond) - started_at
+    metadata = base_metadata(task)
 
     if compensation?(task) do
       :ok =
@@ -84,12 +85,11 @@ defmodule Continuum.Runtime.ActivityWorker do
 
       Engine.wake(task.instance, task.run_id)
 
-      Telemetry.execute([:continuum, :compensation, :completed], %{duration_ms: duration}, %{
-        run_id: task.run_id,
-        task_id: task.id,
-        target_activity_id: task.target_activity_id,
-        attempt: task.attempt
-      })
+      Telemetry.execute(
+        [:continuum, :compensation, :completed],
+        %{duration_ms: duration},
+        metadata
+      )
     else
       :ok =
         Journal.Postgres.complete_activity_task!(
@@ -104,20 +104,20 @@ defmodule Continuum.Runtime.ActivityWorker do
 
       if Keyword.get(opts, :idempotency_hit?, false) do
         Telemetry.execute([:continuum, :activity, :idempotency_hit], %{}, %{
-          run_id: task.run_id,
-          task_id: task.id,
+          run_id: metadata.run_id,
+          task_id: metadata.task_id,
           mfa: task.mfa,
-          attempt: task.attempt,
+          attempt: metadata.attempt,
+          executor: metadata.executor,
           idempotency_key: Keyword.fetch!(idempotency, :key)
         })
       end
 
-      Telemetry.execute([:continuum, :activity, :completed], %{duration_ms: duration}, %{
-        run_id: task.run_id,
-        task_id: task.id,
-        mfa: task.mfa,
-        attempt: task.attempt
-      })
+      Telemetry.execute(
+        [:continuum, :activity, :completed],
+        %{duration_ms: duration},
+        Map.put(metadata, :mfa, task.mfa)
+      )
     end
   end
 
@@ -149,6 +149,7 @@ defmodule Continuum.Runtime.ActivityWorker do
         task_id: task.id,
         mfa: task.mfa,
         attempt: task.attempt,
+        executor: executor(task),
         next_attempt: task.attempt + 1,
         retry_at: retry_at,
         error: error
@@ -158,6 +159,7 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   defp fail(task, error, started_at) do
     duration = System.monotonic_time(:millisecond) - started_at
+    metadata = base_metadata(task)
 
     if compensation?(task) do
       :ok =
@@ -165,22 +167,21 @@ defmodule Continuum.Runtime.ActivityWorker do
 
       Engine.wake(task.instance, task.run_id)
 
-      Telemetry.execute([:continuum, :compensation, :failed], %{duration_ms: duration}, %{
-        run_id: task.run_id,
-        task_id: task.id,
-        target_activity_id: task.target_activity_id,
-        attempt: task.attempt,
-        error: error
-      })
+      Telemetry.execute(
+        [:continuum, :compensation, :failed],
+        %{duration_ms: duration},
+        Map.put(metadata, :error, error)
+      )
     else
       :ok = Journal.Postgres.fail_activity_task!(task.instance, task, error, task.run_lease_token)
       Engine.wake(task.instance, task.run_id)
 
       Telemetry.execute([:continuum, :activity, :failed], %{duration_ms: duration}, %{
-        run_id: task.run_id,
-        task_id: task.id,
+        run_id: metadata.run_id,
+        task_id: metadata.task_id,
         mfa: task.mfa,
-        attempt: task.attempt,
+        attempt: metadata.attempt,
+        executor: metadata.executor,
         error: error
       })
     end
@@ -189,22 +190,42 @@ defmodule Continuum.Runtime.ActivityWorker do
   defp compensation?(task), do: Map.get(task, :kind) == :compensation
 
   defp emit_started(task) do
+    metadata = base_metadata(task)
+
     if compensation?(task) do
-      Telemetry.execute([:continuum, :compensation, :started], %{}, %{
-        run_id: task.run_id,
-        task_id: task.id,
-        target_activity_id: task.target_activity_id,
-        attempt: task.attempt
-      })
+      Telemetry.execute([:continuum, :compensation, :started], %{}, metadata)
     else
       Telemetry.execute([:continuum, :activity, :started], %{}, %{
-        run_id: task.run_id,
-        task_id: task.id,
+        run_id: metadata.run_id,
+        task_id: metadata.task_id,
         mfa: task.mfa,
-        attempt: task.attempt
+        attempt: metadata.attempt,
+        executor: metadata.executor
       })
     end
   end
+
+  defp base_metadata(task) do
+    metadata =
+      %{
+        run_id: task.run_id,
+        task_id: task.id,
+        attempt: task.attempt,
+        executor: executor(task)
+      }
+      |> maybe_put(:oban_job_id, Map.get(task, :oban_job_id))
+
+    if compensation?(task) do
+      Map.put(metadata, :target_activity_id, task.target_activity_id)
+    else
+      metadata
+    end
+  end
+
+  defp executor(task), do: Map.get(task, :executor, :builtin)
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp max_attempts(retry) do
     Keyword.get(retry || [], :max_attempts, 1)
