@@ -1,7 +1,7 @@
 # Continuum — Remaining Features Plan (post-v0.5.0)
 
 **Date:** 2026-06-04
-**Current state:** `mix.exs` `@version "0.5.0"`. v0.1 → v0.5 shipped. 58 `.ex` files under `lib/`, clean tree (no TODO/stub/deferred markers in code). Next published milestones are **v0.5.1** then the **v1.0 API freeze**.
+**Current state:** `mix.exs` `@version "0.5.1"`. v0.1 → v0.5.1 shipped. `Continuum.Oban` is implemented and covered by tests. Next published milestone is the **v1.0 API freeze**.
 
 This document is the working backlog of what is *still missing feature-wise*, prioritized, with step-by-step implementation notes and the concrete problems each one hits. It is a plan file — per `CLAUDE.md` it is **not** to be committed unless you explicitly ask.
 
@@ -13,19 +13,19 @@ Pulled from `ROADMAP.md` "Still deferred after v0.5" + the v1.0 milestone, cross
 
 | # | Feature | Roadmap slot | Size | Blocker / gate |
 |---|---------|--------------|------|----------------|
-| **A** | **`Continuum.Oban` adapter** — route activity execution to a host-operated Oban queue instead of the built-in worker pool | **v0.5.1** | **L** | None. This is the explicit "now" item. |
+| **A** | **`Continuum.Oban` adapter** — route activity execution to a host-operated Oban queue instead of the built-in worker pool | **v0.5.1** | **Done** | Shipped in v0.5.1. |
 | B | `Continuum.AshAi` adapter — long-running, signal-heavy AI-agent integration | post-v0.5 | L | **Gated on a lighthouse adopter.** Do *not* build speculatively (Working Principle: "Don't add config knobs / surface for hypothetical needs"). |
 | C | Replay-stepping debugger in the Observer | cut from v0.5 | M–L | Gated on "a concrete debugger design and UI budget." Needs a design doc first. |
 | D | Per-workflow `trusted:` AST option on `use Continuum.Workflow` | deferred | S | **Gated on "a real user asks."** Cheap when wanted; do not pre-build. |
 | E | **v1.0 freeze prerequisites** — dogfooding, Temporal benchmarks, migration guides (from Oban chains, from Commanded), LTS branch, external determinism audit | v1.0 | XL | Mostly process/validation, not code. Needs lighthouse adopters (3–5). |
 
-**Recommendation for "now":** ship **(A) the Oban adapter**. It is the only un-gated, code-shaped feature on the board, it is the named v0.5.1 milestone, and it is the last piece of the originally-promised programming surface. Everything else is either gated on an external trigger (B, D), needs a design doc before code (C), or is validation work (E).
+**Status:** (A) the Oban adapter has shipped in v0.5.1. Everything else is either gated on an external trigger (B, D), needs a design doc before code (C), or is validation work (E).
 
 The rest of this plan is: **§2** a deep step-by-step + problems list for (A); **§3** lighter sketches and entry-criteria for (B)–(E); **§4** cross-cutting risks.
 
 ---
 
-## 2. NOW — `Continuum.Oban` adapter (v0.5.1)
+## 2. DONE — `Continuum.Oban` adapter (v0.5.1)
 
 ### 2.1 Goal & non-goals
 
@@ -197,13 +197,13 @@ Not a coding task you start today, but the things that gate it:
 
 ---
 
-## 5. Suggested order of execution
+## 5. Execution status
 
-1. **Lock Option 1b** for the Oban adapter (§2.3): `continuum_activity_tasks` remains the queue of record; Oban jobs carry task IDs; claim happens at perform-time.
-2. **Refactor `ActivityWorker.Worker` body → shared `Continuum.Runtime.ActivityWorker.execute/1`** (no behavior change; run the suite — should be green unchanged). This is a safe, self-contained first PR.
-3. **Thread `activity_executor` through `Instance`, `Continuum.children/1`, and `Continuum.Application`.**
-4. **Add the Oban enqueue scan + perform-time claim** without running the MFA yet; test duplicate/stale claim behavior.
-5. **Build `Continuum.Oban.Worker`** on top of shared `execute/1`.
-6. **Tests + six-seed sweep + docs** (§2.4 steps 13–14).
-7. Tag **v0.5.1**.
-8. Park B/C/D/E behind their gates; revisit when their triggers fire.
+1. **Option 1b** is implemented: `continuum_activity_tasks` remains the queue of record; Oban jobs carry task IDs; claim happens at perform-time.
+2. **`ActivityWorker.Worker` body → shared `Continuum.Runtime.ActivityWorker.execute/1`** is implemented.
+3. **`activity_executor` is threaded through `Instance`, `Continuum.children/1`, and `Continuum.Application`.**
+4. **The Oban enqueue scan + perform-time claim** are implemented and test duplicate/stale claim behavior.
+5. **`Continuum.Oban.Worker`** is implemented on top of shared `execute/1`.
+6. **Tests + six-seed sweep + docs** are complete.
+7. **v0.5.1 release metadata** is prepared. The local `v0.5.1` tag already exists and points at older work; do not move it without explicit user approval.
+8. B/C/D/E remain parked behind their gates; revisit when their triggers fire.

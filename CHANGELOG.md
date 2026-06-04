@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.5.1 — 2026-06-04 — "Oban activity executor"
+
 ### New surfaces
 
 - Added `Continuum.Oban`, an optional activity executor that routes Continuum
