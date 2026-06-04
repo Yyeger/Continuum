@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### New surfaces
+
+- Added `Continuum.Oban`, an optional activity executor that routes Continuum
+  activity tasks through a host-operated Oban queue. Continuum still owns the
+  durable task table, retry policy, idempotency, timeout handling, and
+  completion CAS; Oban is used only as the execution pool.
+- `Continuum.children/1` and the default application instance now accept
+  `activity_executor: {:oban, queue: :continuum_activities}` when the host app
+  depends on and supervises Oban.
+
+### Observability
+
+- Activity and compensation telemetry metadata now includes `executor:
+  :builtin | :oban`; Oban-backed activity attempts also include `oban_job_id`.
+
+### Documentation
+
+- Added `guides/oban-executor.md`.
+- Added `guides/migrations/MIGRATING_v0_5_to_v0_5_1.md`.
+
 ## v0.5.0 — 2026-06-02 — "Production at scale"
 
 ### New surfaces

@@ -52,6 +52,9 @@ defmodule Continuum.Telemetry do
   `%{count: n}` or `%{duration_ms: n}` when there is a meaningful number,
   otherwise `%{}`.
 
+  Activity and compensation lifecycle metadata includes `:executor`, either
+  `:builtin` or `:oban`. Oban-backed attempts also include `:oban_job_id`.
+
   When a Postgres-backed `await signal(...)` consumes a signal that was already
   pending in the durable mailbox, Continuum emits `[:continuum, :signal,
   :received]` without a preceding `[:continuum, :signal, :awaited]`; there was

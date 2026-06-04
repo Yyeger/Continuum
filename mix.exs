@@ -75,6 +75,7 @@ defmodule Continuum.MixProject do
         "guides/workflow-versioning.md",
         "guides/operations.md",
         "guides/auditing.md",
+        "guides/oban-executor.md",
         "guides/observability.md",
         "guides/observer.md",
         "guides/snapshots.md",
@@ -82,7 +83,8 @@ defmodule Continuum.MixProject do
         "guides/migrations/MIGRATING_v0_1_to_v0_2.md",
         "guides/migrations/MIGRATING_v0_2_to_v0_3.md",
         "guides/migrations/MIGRATING_v0_3_to_v0_4.md",
-        "guides/migrations/MIGRATING_v0_4_to_v0_5.md"
+        "guides/migrations/MIGRATING_v0_4_to_v0_5.md",
+        "guides/migrations/MIGRATING_v0_5_to_v0_5_1.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/

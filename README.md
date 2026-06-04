@@ -137,9 +137,10 @@ end
 - **Postgres journal** with lease + fencing-token CAS on every write. A stolen
   lease produces a write failure and terminates the stale engine — it never
   corrupts history.
-- **Built-in activity worker pool** (no Oban dependency): `FOR UPDATE SKIP
-  LOCKED` claim, exponential backoff, per-task fencing, and an atomic
-  result-and-task commit, with retry/timeout policy via `use Continuum.Activity`.
+- **Activity execution** through the built-in worker pool by default, or an
+  optional `Continuum.Oban` executor for teams that already operate Oban.
+  Continuum keeps retry/timeout policy, idempotency, and fencing-token commits
+  in its own durable task table either way.
 - **Durable timers and signals** over `pg_notify`/`LISTEN`.
   `await signal(name, timeout: ms)` resolves the signal/timeout race
   deterministically.
