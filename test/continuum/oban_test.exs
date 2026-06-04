@@ -2,7 +2,7 @@ defmodule Continuum.ObanTest do
   use Continuum.Test.DataCase, async: false
 
   alias Continuum.Runtime.{ActivityWorker.Dispatcher, Instance, Journal.Postgres}
-  alias Continuum.Schema.{ActivityResult, ActivityTask, Event}
+  alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run}
 
   defmodule DoubleActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
@@ -106,6 +106,28 @@ defmodule Continuum.ObanTest do
         {:ok, value} ->
           {:ok, value}
       end
+    end
+  end
+
+  defmodule BlockingActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(pid) do
+      send(pid, {:blocking_started, self()})
+
+      receive do
+        :finish -> {:ok, :done}
+      after
+        1_000 -> {:error, :blocked}
+      end
+    end
+  end
+
+  defmodule BlockingFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      activity(BlockingActivity.run(input.pid))
     end
   end
 
@@ -241,6 +263,67 @@ defmodule Continuum.ObanTest do
              Continuum.await(run_id, 1_000, journal: Postgres, instance: instance.name)
   end
 
+  test "duplicate Oban job no-ops after the task is completed" do
+    instance = start_oban_continuum!()
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(DoubleFlow, %{seed: 8},
+        journal: Postgres,
+        instance: instance.name
+      )
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    assert {:ok, 1} = Dispatcher.dispatch_once(instance: instance.name, batch_size: 1)
+
+    job = next_oban_job()
+    assert :ok = Continuum.Oban.Worker.perform(job)
+    mark_job_completed(job)
+    assert :ok = Continuum.Oban.Worker.perform(job)
+
+    assert {:ok, %{state: :completed, result: {:ok, 17}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres, instance: instance.name)
+
+    assert event_count(run_id, "activity_completed") == 1
+  end
+
+  test "Oban worker completion is fenced by the captured run lease token" do
+    instance = start_oban_continuum!()
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(BlockingFlow, %{pid: self()},
+        journal: Postgres,
+        instance: instance.name
+      )
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    assert {:ok, 1} = Dispatcher.dispatch_once(instance: instance.name, batch_size: 1)
+
+    job = next_oban_job()
+
+    task =
+      Task.async(fn ->
+        try do
+          {:ok, Continuum.Oban.Worker.perform(job)}
+        rescue
+          error -> {:error, error}
+        end
+      end)
+
+    assert_receive {:blocking_started, activity_pid}
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^run_id),
+      inc: [lease_token: 1]
+    )
+
+    send(activity_pid, :finish)
+
+    assert {:error, %RuntimeError{message: message}} = Task.await(task, 1_000)
+    assert message =~ "lease_mismatch"
+
+    assert event_types(run_id) == ["activity_scheduled"]
+  end
+
   test "idempotency hit via Oban skips the MFA" do
     instance = start_oban_continuum!()
     committed_result = {:ok, {:cached, 5}}
@@ -331,18 +414,21 @@ defmodule Continuum.ObanTest do
   end
 
   defp perform_next_oban_job do
-    job =
-      Repo.one!(
-        from(j in Oban.Job,
-          where: j.worker == "Continuum.Oban.Worker" and j.state == "available",
-          order_by: [asc: j.id],
-          limit: 1
-        )
-      )
+    job = next_oban_job()
 
     result = Continuum.Oban.Worker.perform(job)
     mark_job_completed(job)
     result
+  end
+
+  defp next_oban_job do
+    Repo.one!(
+      from(j in Oban.Job,
+        where: j.worker == "Continuum.Oban.Worker" and j.state == "available",
+        order_by: [asc: j.id],
+        limit: 1
+      )
+    )
   end
 
   defp mark_job_completed(job) do
