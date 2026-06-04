@@ -8,6 +8,7 @@ defmodule Continuum.Runtime.Instance do
     :registry,
     :run_supervisor,
     :activity_supervisor,
+    :activity_executor,
     :heartbeater,
     :dispatcher,
     :activity_dispatcher,
@@ -57,6 +58,9 @@ defmodule Continuum.Runtime.Instance do
       registry: process_name(name, Continuum.Runtime.Registry),
       run_supervisor: process_name(name, Continuum.Runtime.RunSupervisor),
       activity_supervisor: process_name(name, Continuum.Runtime.ActivityWorker.Supervisor),
+      activity_executor:
+        Keyword.get_lazy(opts, :activity_executor, fn -> default_activity_executor(name) end)
+        |> normalize_activity_executor!(),
       heartbeater: process_name(name, Continuum.Runtime.Lease.Heartbeater),
       dispatcher: process_name(name, Continuum.Runtime.Dispatcher),
       activity_dispatcher: process_name(name, Continuum.Runtime.ActivityWorker.Dispatcher),
@@ -79,6 +83,36 @@ defmodule Continuum.Runtime.Instance do
 
   defp default_repo(@default), do: Application.get_env(:continuum, :repo)
   defp default_repo(_name), do: nil
+
+  defp default_activity_executor(@default) do
+    Application.get_env(:continuum, :activity_executor, :builtin)
+  end
+
+  defp default_activity_executor(_name), do: :builtin
+
+  defp normalize_activity_executor!(:builtin), do: :builtin
+
+  defp normalize_activity_executor!({:oban, opts}) when is_list(opts) do
+    ensure_oban_loaded!()
+    {:oban, opts}
+  end
+
+  defp normalize_activity_executor!(:oban) do
+    ensure_oban_loaded!()
+    {:oban, []}
+  end
+
+  defp normalize_activity_executor!(other) do
+    raise ArgumentError,
+          "invalid Continuum activity executor #{inspect(other)}; expected :builtin or {:oban, opts}"
+  end
+
+  defp ensure_oban_loaded! do
+    unless Code.ensure_loaded?(Oban) do
+      raise ArgumentError,
+            "Continuum activity_executor: :oban requires adding :oban to your application deps"
+    end
+  end
 
   defp inspect_name(name) do
     name

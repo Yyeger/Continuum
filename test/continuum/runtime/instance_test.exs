@@ -38,6 +38,7 @@ defmodule Continuum.Runtime.InstanceTest do
 
     assert instance.name == name
     assert instance.repo == Continuum.Test.Repo
+    assert instance.activity_executor == :builtin
     assert instance.registry != Continuum.Runtime.Registry
     assert instance.run_supervisor != Continuum.Runtime.RunSupervisor
 
@@ -49,6 +50,12 @@ defmodule Continuum.Runtime.InstanceTest do
   test "lookup/1 rejects unregistered named instances" do
     assert_raise Continuum.InstanceNotRegisteredError, ~r/not registered/, fn ->
       Instance.lookup(unique_instance_name())
+    end
+  end
+
+  test "instance rejects invalid activity executors" do
+    assert_raise ArgumentError, ~r/invalid Continuum activity executor/, fn ->
+      Instance.new(name: unique_instance_name(), activity_executor: :unknown)
     end
   end
 

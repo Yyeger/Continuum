@@ -9,6 +9,7 @@ defmodule Continuum.Application do
       Continuum.Runtime.Instance.new(
         name: Continuum,
         repo: Application.get_env(:continuum, :repo),
+        activity_executor: Application.get_env(:continuum, :activity_executor, :builtin),
         workflow_modules: Application.get_env(:continuum, :workflow_modules)
       )
       |> Continuum.Runtime.Instance.register()
@@ -32,7 +33,7 @@ defmodule Continuum.Application do
   defp postgres_children(instance) do
     [
       child(Continuum.Runtime.Lease.Heartbeater, instance),
-      child(Continuum.Runtime.ActivityWorker.Supervisor, instance),
+      activity_supervisor_child(instance),
       child(Continuum.Runtime.Recovery, instance),
       child(Continuum.Runtime.Snapshotter, instance),
       child(Continuum.Runtime.Dispatcher, instance),
@@ -40,11 +41,18 @@ defmodule Continuum.Application do
       child(Continuum.Runtime.TimerWheel, instance),
       child(Continuum.Runtime.SignalRouter, instance)
     ]
+    |> Enum.reject(&is_nil/1)
   end
 
   defp child(module, instance) do
     Supervisor.child_spec({module, instance: instance}, id: {module, instance.name})
   end
+
+  defp activity_supervisor_child(%{activity_executor: :builtin} = instance) do
+    child(Continuum.Runtime.ActivityWorker.Supervisor, instance)
+  end
+
+  defp activity_supervisor_child(_instance), do: nil
 
   defp pg_child do
     %{

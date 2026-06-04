@@ -43,7 +43,7 @@ defmodule Continuum do
   `Continuum.children()` returns `[]` to avoid duplicate process names.
 
   Child-specific options may be passed with `:workflow_modules`,
-  `:heartbeater`, `:run_supervisor`,
+  `:activity_executor`, `:heartbeater`, `:run_supervisor`,
   `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
   `:timer_wheel`, `:signal_router`, and `:snapshotter`.
   Passing `false` for a child omits it from the returned list.
@@ -59,6 +59,7 @@ defmodule Continuum do
         Continuum.Runtime.Instance.new(
           name: name,
           repo: opts[:repo],
+          activity_executor: Keyword.get(opts, :activity_executor, :builtin),
           workflow_modules: opts[:workflow_modules]
         )
         |> Continuum.Runtime.Instance.register()
@@ -80,11 +81,7 @@ defmodule Continuum do
           Keyword.get(opts, :run_supervisor, []),
           instance
         ),
-        child(
-          Continuum.Runtime.ActivityWorker.Supervisor,
-          Keyword.get(opts, :activity_supervisor, []),
-          instance
-        ),
+        activity_supervisor_child(opts, instance),
         child(Continuum.Runtime.Recovery, Keyword.get(opts, :recovery, []), instance),
         child(Continuum.Runtime.Dispatcher, Keyword.get(opts, :dispatcher, []), instance),
         child(
@@ -340,6 +337,16 @@ defmodule Continuum do
     opts = opts |> List.wrap() |> Keyword.put(:instance, instance)
     Supervisor.child_spec({module, opts}, id: {module, instance.name})
   end
+
+  defp activity_supervisor_child(opts, %{activity_executor: :builtin} = instance) do
+    child(
+      Continuum.Runtime.ActivityWorker.Supervisor,
+      Keyword.get(opts, :activity_supervisor, []),
+      instance
+    )
+  end
+
+  defp activity_supervisor_child(_opts, _instance), do: nil
 
   @doc false
   def __generate_uuid4__ do
