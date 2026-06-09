@@ -19,7 +19,7 @@ defmodule Continuum.Test.ClusterFlows do
   end
 
   defmodule Activity do
-    use Continuum.Activity, retry: [max_attempts: 1]
+    use Continuum.Activity, retry: [max_attempts: 2]
 
     def run(input) do
       send(input.test_pid, {:cluster_activity_started, node()})
@@ -36,7 +36,7 @@ defmodule Continuum.Test.ClusterFlows do
     use Continuum.Workflow, version: 1
 
     def run(input) do
-      activity(Activity.run(input))
+      activity(Activity.run(input), retry: [max_attempts: 2])
     end
   end
 end
