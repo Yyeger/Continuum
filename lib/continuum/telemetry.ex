@@ -32,6 +32,7 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :activity, :failed]`
     * `[:continuum, :activity, :idempotency_hit]`
     * `[:continuum, :activity, :retried]`
+    * `[:continuum, :activity, :fenced]`
     * `[:continuum, :timer, :scheduled]`
     * `[:continuum, :timer, :fired]`
     * `[:continuum, :signal, :awaited]`
@@ -93,6 +94,7 @@ defmodule Continuum.Telemetry do
     [:continuum, :activity, :failed],
     [:continuum, :activity, :idempotency_hit],
     [:continuum, :activity, :retried],
+    [:continuum, :activity, :fenced],
     [:continuum, :timer, :scheduled],
     [:continuum, :timer, :fired],
     [:continuum, :signal, :awaited],

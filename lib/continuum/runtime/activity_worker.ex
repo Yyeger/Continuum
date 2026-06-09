@@ -14,16 +14,18 @@ defmodule Continuum.Runtime.ActivityWorker do
       :ok ->
         emit_started(task)
 
-        case idempotency_hit(task) do
-          {:hit, result} ->
-            complete(task, result, started_at, idempotency_hit?: true)
+        fenced(task, fn ->
+          case idempotency_hit(task) do
+            {:hit, result} ->
+              complete(task, result, started_at, idempotency_hit?: true)
 
-          :miss ->
-            case run_activity(task) do
-              {:ok, result} -> complete(task, result, started_at)
-              {:error, error} -> fail_or_retry(task, error, started_at)
-            end
-        end
+            :miss ->
+              case run_activity(task) do
+                {:ok, result} -> complete(task, result, started_at)
+                {:error, error} -> fail_or_retry(task, error, started_at)
+              end
+          end
+        end)
 
         :ok
 
@@ -61,6 +63,91 @@ defmodule Continuum.Runtime.ActivityWorker do
       {:error, reason} ->
         raise "Continuum activity task lease extension failed: #{inspect(reason)}"
     end
+  end
+
+  # Fencing rejections (run lease rotated, task lease expired or taken over,
+  # run already terminal) are expected races, not worker bugs. Raising here
+  # would strand the task in 'leased' — instead release it so the next claim
+  # re-executes under the current authority, or discard it when the run can
+  # no longer use the result. The rejection itself stays authoritative: the
+  # journal write was rolled back, nothing of this attempt is visible.
+  defp fenced(task, fun) do
+    fun.()
+  rescue
+    error in RuntimeError ->
+      case classify_fenced(error.message) do
+        :requeue -> release_fenced_task(task, error)
+        :discard -> discard_fenced_task(task, error)
+        :drop -> log_fenced(task, :dropped, error)
+        :reraise -> reraise(error, __STACKTRACE__)
+      end
+  end
+
+  defp classify_fenced(message) do
+    cond do
+      # Task lease still ours, only expired/incomplete: safe to re-execute.
+      String.contains?(message, ":activity_task_lease_expired") -> :requeue
+      String.contains?(message, ":activity_task_lease_missing_expiry") -> :requeue
+      # Task no longer ours: another claimer owns it, leave it alone.
+      String.contains?(message, ":activity_task_lease_mismatch") -> :drop
+      String.contains?(message, ":activity_task_not_leased") -> :drop
+      String.contains?(message, ":activity_task_not_found") -> :drop
+      String.contains?(message, ":activity_task_run_mismatch") -> :drop
+      String.contains?(message, ":task_lease_mismatch") -> :drop
+      # Run lease rotated under us: the new engine still needs this activity.
+      String.contains?(message, ":lease_mismatch") -> :requeue
+      # Run is terminal or gone: the result has nowhere to land.
+      String.contains?(message, ":run_not_found") -> :discard
+      String.contains?(message, ":run_not_active") -> :discard
+      true -> :reraise
+    end
+  end
+
+  defp release_fenced_task(task, error) do
+    update_own_task(task, "available", "available_at = now(),")
+    log_fenced(task, :requeued, error)
+  end
+
+  defp discard_fenced_task(task, error) do
+    update_own_task(task, "discarded", "")
+    log_fenced(task, :discarded, error)
+  end
+
+  # CAS on our own claim: if the task was reclaimed, completed, or cancelled
+  # in the meantime, this matches zero rows and the row is left untouched.
+  defp update_own_task(task, state, extra_set_sql) do
+    sql = """
+    UPDATE continuum_activity_tasks
+    SET state = $3,
+        #{extra_set_sql}
+        lease_owner = NULL,
+        lease_expires_at = NULL
+    WHERE id = $1::text::uuid
+      AND state = 'leased'
+      AND lease_owner = $2
+    """
+
+    case task.instance.repo.query(sql, [task.id, task.lease_owner, state]) do
+      {:ok, _} -> :ok
+      {:error, reason} -> raise "Continuum fenced task release failed: #{inspect(reason)}"
+    end
+  end
+
+  defp log_fenced(task, action, error) do
+    Logger.warning(
+      "Continuum activity task #{task.id} (run #{task.run_id}) write was fenced out; " <>
+        "#{action}: #{error.message}"
+    )
+
+    Telemetry.execute([:continuum, :activity, :fenced], %{}, %{
+      run_id: task.run_id,
+      task_id: task.id,
+      attempt: task.attempt,
+      executor: executor(task),
+      action: action
+    })
+
+    :ok
   end
 
   defp idempotency_hit(task) do

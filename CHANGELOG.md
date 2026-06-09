@@ -12,6 +12,11 @@
   expired (emitting `[:continuum, :activity_dispatcher, :requeued]`).
   Previously this rescue only ran at boot, so a worker crash stranded the
   task — and its run — until the node restarted.
+- Activity workers no longer crash when a journal write is fenced out (run
+  lease rotated, task lease expired or taken over, run already terminal).
+  The task is released for re-execution — or discarded when the run is
+  terminal — and `[:continuum, :activity, :fenced]` is emitted. The fencing
+  itself is unchanged: the stale write is still rolled back.
 
 ## v0.5.1 — 2026-06-04 — "Oban activity executor"
 

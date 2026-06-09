@@ -318,10 +318,15 @@ defmodule Continuum.ObanTest do
 
     send(activity_pid, :finish)
 
-    assert {:error, %RuntimeError{message: message}} = Task.await(task, 1_000)
-    assert message =~ "lease_mismatch"
+    # The stale write is fenced out (nothing journaled), but the worker
+    # releases the task for re-execution instead of stranding it in 'leased'.
+    assert {:ok, :ok} = Task.await(task, 1_000)
 
     assert event_types(run_id) == ["activity_scheduled"]
+
+    task_row = Repo.one!(ActivityTask)
+    assert task_row.state == "available"
+    assert is_nil(task_row.lease_owner)
   end
 
   test "idempotency hit via Oban skips the MFA" do

@@ -566,6 +566,81 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              :gt
   end
 
+  test "fenced-out completion releases the task and the run still makes progress" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 8}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "fenced-worker",
+               30
+             )
+
+    # The engine dies and the run lease rotates while the activity is in
+    # flight: the captured token is now stale.
+    [{engine_pid, _}] = Registry.lookup(Continuum.Runtime.Registry, run_id)
+    engine_ref = Process.monitor(engine_pid)
+    Process.exit(engine_pid, :kill)
+    assert_receive {:DOWN, ^engine_ref, :process, ^engine_pid, :killed}
+
+    Repo.update_all(from(r in Run, where: r.id == ^run_id), inc: [lease_token: 1])
+
+    handler_id = "activity-fenced-#{System.unique_integer()}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:continuum, :activity, :fenced],
+        fn event, measurements, metadata, test_pid ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    log =
+      capture_log(fn ->
+        assert :ok = Continuum.Runtime.ActivityWorker.execute(claimed)
+      end)
+
+    assert log =~ "fenced out"
+    assert_received {:telemetry, [:continuum, :activity, :fenced], %{}, %{action: :requeued}}
+
+    # Fencing held: nothing was journaled under the stale token...
+    assert event_types(run_id) == ["activity_scheduled"]
+
+    # ...and the task is claimable again instead of stranded in 'leased'.
+    task = Repo.one!(ActivityTask)
+    assert task.state == "available"
+    assert is_nil(task.lease_owner)
+
+    assert {:ok, reclaimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "second-worker",
+               30
+             )
+
+    capture_log(fn ->
+      assert :ok = Continuum.Runtime.ActivityWorker.execute(reclaimed)
+    end)
+
+    assert event_types(run_id) == ["activity_scheduled", "activity_completed"]
+    assert Repo.one!(ActivityTask).state == "completed"
+  end
+
   test "execute skips a task whose lease was taken over" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(NilKeyFlow, %{seed: 3}, journal: Postgres)
