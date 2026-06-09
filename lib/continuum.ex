@@ -254,10 +254,26 @@ defmodule Continuum do
   journaled and returned on every subsequent replay. Return values must be
   serializable via `:erlang.term_to_binary/1` — pids, refs, ports, and
   similar local-only terms are rejected.
+
+  This is a macro so Continuum can capture the source call site for a stable
+  command identity. Workflow modules that `use Continuum.Workflow` already
+  require `Continuum`; other modules must `require Continuum` before calling it.
   """
-  @spec side_effect((-> term())) :: term()
-  def side_effect(fun) when is_function(fun, 0) do
-    Effect.run({:side_effect, :user}, fun)
+  defmacro side_effect(fun) do
+    command = command_base(__CALLER__, :user)
+
+    quote do
+      Continuum.__side_effect__(
+        unquote(fun),
+        unquote(Macro.escape(command))
+      )
+    end
+  end
+
+  @doc false
+  @spec __side_effect__((-> term()), term()) :: term()
+  def __side_effect__(fun, command_base) when is_function(fun, 0) do
+    Effect.run({:side_effect, :user}, {:command, command_base, fun})
   end
 
   @doc """
