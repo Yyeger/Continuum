@@ -12,18 +12,26 @@ defmodule Continuum.Runtime.ActivityWorker do
 
     case extend_task_lease(task) do
       :ok ->
-        emit_started(task)
-
         fenced(task, fn ->
-          case idempotency_hit(task) do
-            {:hit, result} ->
-              complete(task, result, started_at, idempotency_hit?: true)
+          if task.attempt > max_attempts(task.retry) do
+            # Only crash requeues push attempt past the policy: the previous
+            # execution died mid-flight and consumed the final attempt. Fail
+            # without re-executing rather than re-running a poison task (or a
+            # non-retryable side effect) forever.
+            fail(task, :attempts_exhausted, started_at)
+          else
+            emit_started(task)
 
-            :miss ->
-              case run_activity(task) do
-                {:ok, result} -> complete(task, result, started_at)
-                {:error, error} -> fail_or_retry(task, error, started_at)
-              end
+            case idempotency_hit(task) do
+              {:hit, result} ->
+                complete(task, result, started_at, idempotency_hit?: true)
+
+              :miss ->
+                case run_activity(task) do
+                  {:ok, result} -> complete(task, result, started_at)
+                  {:error, error} -> fail_or_retry(task, error, started_at)
+                end
+            end
           end
         end)
 

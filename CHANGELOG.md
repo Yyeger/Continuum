@@ -17,6 +17,13 @@
   The task is released for re-execution — or discarded when the run is
   terminal — and `[:continuum, :activity, :fenced]` is emitted. The fencing
   itself is unchanged: the stale write is still rolled back.
+- Crash requeues (boot recovery and the dispatcher sweep) now consume an
+  attempt, exactly like an execution that returned an error. A task whose
+  attempt exceeds `max_attempts` is failed with `:attempts_exhausted`
+  without re-executing. **Behavior change:** an activity with the default
+  `max_attempts: 1` whose worker/node dies mid-execution now fails instead
+  of silently re-running its side effects; raise `max_attempts` (and supply
+  an `idempotency_key/1`) for crash-resilient activities.
 
 ## v0.5.1 — 2026-06-04 — "Oban activity executor"
 

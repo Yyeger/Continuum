@@ -118,11 +118,17 @@ defmodule Continuum.Runtime.Recovery do
   # Shared with the activity dispatcher's poll loop: a worker that dies
   # between claim and completion leaves its task 'leased' forever otherwise,
   # because the claim queries only consider 'available' tasks.
+  #
+  # The interrupted execution consumes an attempt, exactly like an execution
+  # that returned an error — otherwise a task that kills its worker (or the
+  # node) re-executes forever, never exhausting max_attempts. The worker
+  # fails tasks whose attempt exceeds the policy before re-executing them.
   @doc false
   def recover_activity_tasks(instance) do
     sql = """
     UPDATE continuum_activity_tasks
     SET state = 'available',
+        attempt = attempt + 1,
         lease_owner = NULL,
         lease_expires_at = NULL,
         available_at = now()

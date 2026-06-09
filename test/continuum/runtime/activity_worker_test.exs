@@ -113,6 +113,21 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule ResilientActivity do
+    use Continuum.Activity, retry: [max_attempts: 3]
+
+    def run(n), do: {:ok, n * 2}
+  end
+
+  defmodule ResilientFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      {:ok, value} = activity(ResilientActivity.run(input.seed))
+      {:ok, value + 1}
+    end
+  end
+
   setup do
     start_supervised!(%{
       id: FlakyActivity,
@@ -485,7 +500,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
   test "dispatch_once requeues a stranded leased task with an expired lease" do
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 4}, journal: Postgres)
+      Continuum.Runtime.Engine.start_run(ResilientFlow, %{seed: 4}, journal: Postgres)
 
     assert_eventually(fn ->
       Repo.aggregate(ActivityTask, :count) == 1
@@ -527,7 +542,42 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert {:ok, %{state: :completed, result: {:ok, 9}}} =
              Continuum.await(run_id, 1_000, journal: Postgres)
 
-    assert Repo.one!(ActivityTask).state == "completed"
+    completed = Repo.one!(ActivityTask)
+    assert completed.state == "completed"
+    # The crashed execution consumed an attempt.
+    assert completed.attempt == 2
+  end
+
+  test "a crash requeue past max_attempts fails the task without re-executing it" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(NilKeyFlow, %{seed: 5}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    # NilKeyActivity allows a single attempt; the crashed execution was it.
+    assert {:ok, _claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "crashed-worker",
+               -5
+             )
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "activity-test", batch_size: 1)
+
+    assert {:error, %{state: :failed}} = Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Agent.get(NilKeyActivity, & &1) == 0
+    assert event_types(run_id) == ["activity_scheduled", "activity_failed"]
+
+    failed = Repo.one!(ActivityTask)
+    assert failed.state == "discarded"
+    assert decode_term(failed.error) == :attempts_exhausted
   end
 
   test "execute extends the task lease to cover the activity timeout" do

@@ -18,7 +18,7 @@ defmodule Continuum.Runtime.RecoveryTest do
   end
 
   defmodule RecoverActivity do
-    use Continuum.Activity, retry: [max_attempts: 1]
+    use Continuum.Activity, retry: [max_attempts: 2]
 
     def run(n), do: {:ok, n * 2}
   end
@@ -128,6 +128,8 @@ defmodule Continuum.Runtime.RecoveryTest do
     assert recovered.state == "available"
     assert recovered.lease_owner == nil
     assert recovered.lease_expires_at == nil
+    # The interrupted execution consumed an attempt.
+    assert recovered.attempt == 2
 
     assert {:ok, 1} =
              ActivityWorker.Dispatcher.dispatch_once(owner: "recovery-test", batch_size: 1)
