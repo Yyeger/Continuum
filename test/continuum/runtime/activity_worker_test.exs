@@ -483,6 +483,80 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert Repo.one!(ActivityTask).state == "available"
   end
 
+  test "execute extends the task lease to cover the activity timeout" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 6}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    # Claim with an already-expired TTL: without the execution-time lease
+    # extension, the completion write would reject with
+    # :activity_task_lease_expired and the task would wedge.
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "slow-worker",
+               -5
+             )
+
+    assert :ok = Continuum.Runtime.ActivityWorker.execute(claimed)
+
+    assert {:ok, %{state: :completed, result: {:ok, 13}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    task = Repo.one!(ActivityTask)
+    assert task.state == "completed"
+
+    # DoubleActivity uses the default {:seconds, 30} timeout; the extended
+    # lease must cover timeout + margin, well past the original claim TTL.
+    assert DateTime.compare(task.lease_expires_at, DateTime.add(DateTime.utc_now(), 45, :second)) ==
+             :gt
+  end
+
+  test "execute skips a task whose lease was taken over" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(NilKeyFlow, %{seed: 3}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "original-worker",
+               30
+             )
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [lease_owner: "usurper-worker"]
+    )
+
+    log =
+      capture_log(fn ->
+        assert :ok = Continuum.Runtime.ActivityWorker.execute(claimed)
+      end)
+
+    assert log =~ "lease no longer held"
+    assert Agent.get(NilKeyActivity, & &1) == 0
+    assert event_types(run_id) == ["activity_scheduled"]
+
+    task = Repo.one!(ActivityTask)
+    assert task.state == "leased"
+    assert task.lease_owner == "usurper-worker"
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do

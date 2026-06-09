@@ -1,25 +1,66 @@
 defmodule Continuum.Runtime.ActivityWorker do
   @moduledoc false
 
+  require Logger
+
   alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
+
+  @lease_margin_seconds 30
 
   def execute(task) do
     started_at = System.monotonic_time(:millisecond)
 
-    emit_started(task)
+    case extend_task_lease(task) do
+      :ok ->
+        emit_started(task)
 
-    case idempotency_hit(task) do
-      {:hit, result} ->
-        complete(task, result, started_at, idempotency_hit?: true)
+        case idempotency_hit(task) do
+          {:hit, result} ->
+            complete(task, result, started_at, idempotency_hit?: true)
 
-      :miss ->
-        case run_activity(task) do
-          {:ok, result} -> complete(task, result, started_at)
-          {:error, error} -> fail_or_retry(task, error, started_at)
+          :miss ->
+            case run_activity(task) do
+              {:ok, result} -> complete(task, result, started_at)
+              {:error, error} -> fail_or_retry(task, error, started_at)
+            end
         end
-    end
 
-    :ok
+        :ok
+
+      :lost ->
+        Logger.warning(
+          "Continuum activity task #{task.id} lease no longer held by #{task.lease_owner}; skipping execution"
+        )
+
+        :ok
+    end
+  end
+
+  # The dispatcher claims tasks with a short TTL that only needs to cover the
+  # claim-to-execution window. The activity may legally run for its full
+  # configured timeout, and every completion/retry write validates task-lease
+  # expiry — so the lease must outlive the timeout, not the claim.
+  defp extend_task_lease(task) do
+    lease_seconds = div(Map.get(task, :timeout_ms) || 0, 1_000) + @lease_margin_seconds
+
+    sql = """
+    UPDATE continuum_activity_tasks
+    SET lease_expires_at = now() + make_interval(secs => $3)
+    WHERE id = $1::text::uuid
+      AND state = 'leased'
+      AND lease_owner = $2
+    """
+
+    case task.instance.repo.query(sql, [task.id, task.lease_owner, lease_seconds]) do
+      {:ok, %{num_rows: 1}} ->
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        :lost
+
+      {:error, reason} ->
+        raise "Continuum activity task lease extension failed: #{inspect(reason)}"
+    end
   end
 
   defp idempotency_hit(task) do

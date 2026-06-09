@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixes
+
+- Activity task leases are extended to cover the activity's configured
+  timeout (plus a margin) at execution start. Previously the claim TTL
+  (default 30s) was the effective execution ceiling: any activity running
+  longer could never commit its result and the run wedged.
+
 ## v0.5.1 — 2026-06-04 — "Oban activity executor"
 
 ### New surfaces
