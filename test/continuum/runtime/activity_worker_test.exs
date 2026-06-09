@@ -483,6 +483,53 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert Repo.one!(ActivityTask).state == "available"
   end
 
+  test "dispatch_once requeues a stranded leased task with an expired lease" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 4}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    # Simulate a worker that died after claiming: the task is 'leased' with
+    # an expired lease, which the claim queries alone can never pick up.
+    assert {:ok, _claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "crashed-worker",
+               -5
+             )
+
+    assert Repo.one!(ActivityTask).state == "leased"
+
+    handler_id = "dispatcher-requeue-#{System.unique_integer()}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:continuum, :activity_dispatcher, :requeued],
+        fn event, measurements, metadata, test_pid ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "activity-test", batch_size: 1)
+
+    assert_received {:telemetry, [:continuum, :activity_dispatcher, :requeued], %{count: 1}, _}
+
+    assert {:ok, %{state: :completed, result: {:ok, 9}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Repo.one!(ActivityTask).state == "completed"
+  end
+
   test "execute extends the task lease to cover the activity timeout" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 6}, journal: Postgres)

@@ -8,6 +8,10 @@
   timeout (plus a margin) at execution start. Previously the claim TTL
   (default 30s) was the effective execution ceiling: any activity running
   longer could never commit its result and the run wedged.
+- The activity dispatcher's poll now requeues `leased` tasks whose lease has
+  expired (emitting `[:continuum, :activity_dispatcher, :requeued]`).
+  Previously this rescue only ran at boot, so a worker crash stranded the
+  task — and its run — until the node restarted.
 
 ## v0.5.1 — 2026-06-04 — "Oban activity executor"
 

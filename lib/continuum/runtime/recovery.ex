@@ -115,7 +115,11 @@ defmodule Continuum.Runtime.Recovery do
     query_count(instance, sql, params)
   end
 
-  defp recover_activity_tasks(instance) do
+  # Shared with the activity dispatcher's poll loop: a worker that dies
+  # between claim and completion leaves its task 'leased' forever otherwise,
+  # because the claim queries only consider 'available' tasks.
+  @doc false
+  def recover_activity_tasks(instance) do
     sql = """
     UPDATE continuum_activity_tasks
     SET state = 'available',

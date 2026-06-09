@@ -6,7 +6,13 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   use GenServer
   require Logger
 
-  alias Continuum.{Oban, Runtime.ActivityWorker.Worker, Runtime.Instance, Telemetry}
+  alias Continuum.{
+    Oban,
+    Runtime.ActivityWorker.Worker,
+    Runtime.Instance,
+    Runtime.Recovery,
+    Telemetry
+  }
 
   @default_interval_ms 1_000
   @default_batch_size 10
@@ -28,12 +34,37 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
     ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
 
+    requeue_expired(instance)
+
     case instance.activity_executor do
       :builtin ->
         dispatch_builtin(instance, owner, batch_size, ttl_seconds)
 
       {:oban, _opts} ->
         dispatch_oban(instance, owner, batch_size)
+    end
+  end
+
+  # Boot-time recovery only runs once per node; without this sweep a task
+  # whose worker died stays 'leased' forever on a long-lived node (the claim
+  # queries only consider 'available' tasks).
+  defp requeue_expired(instance) do
+    case Recovery.recover_activity_tasks(instance) do
+      {:ok, 0} ->
+        :ok
+
+      {:ok, count} ->
+        Telemetry.execute(
+          [:continuum, :activity_dispatcher, :requeued],
+          %{count: count},
+          %{instance: instance.name}
+        )
+
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Activity task requeue sweep failed: #{inspect(reason)}")
+        :ok
     end
   end
 
