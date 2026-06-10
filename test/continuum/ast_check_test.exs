@@ -48,14 +48,17 @@ defmodule Continuum.AstCheckTest do
       assert violation.mfa == {:ets, :lookup}
     end
 
-    test "rejects raw Process.send_after" do
+    test "rejects raw Process.send_after (and the self() inside it)" do
       ast =
         quote do
           Process.send_after(self(), :wake, 1000)
         end
 
-      assert {:error, [violation]} = AstCheck.scan(ast)
-      assert violation.hint =~ "Continuum.timer/1"
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert Enum.map(violations, & &1.mfa) == [{Process, :send_after}, {Kernel, :self}]
+
+      assert Enum.find(violations, &(&1.mfa == {Process, :send_after})).hint =~
+               "Continuum.timer/1"
     end
 
     test "rejects Continuum facade calls that would mutate runtime state" do
@@ -124,6 +127,92 @@ defmodule Continuum.AstCheckTest do
       mfas = Enum.map(violations, & &1.mfa)
       assert {DateTime, :utc_now} in mfas
       assert {:rand, :uniform} in mfas
+    end
+
+    test "rejects unqualified Kernel calls: apply, spawn, send, self, make_ref, node" do
+      ast =
+        quote do
+          fn ->
+            apply(DateTime, :utc_now, [])
+            spawn(fn -> :ok end)
+            spawn_link(fn -> :ok end)
+            send(some_pid, :message)
+            make_ref()
+            node()
+          end
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      mfas = Enum.map(violations, & &1.mfa)
+
+      assert {Kernel, :apply} in mfas
+      assert {Kernel, :spawn} in mfas
+      assert {Kernel, :spawn_link} in mfas
+      assert {Kernel, :send} in mfas
+      assert {Kernel, :make_ref} in mfas
+      assert {Kernel, :node} in mfas
+    end
+
+    test "does not flag local calls that merely share a banned name at another arity" do
+      ast =
+        quote do
+          send(a, b, c)
+        end
+
+      assert :ok == AstCheck.scan(ast)
+    end
+
+    test "rejects receive blocks outright" do
+      ast =
+        quote do
+          receive do
+            :go -> :ok
+          after
+            5_000 -> :timeout
+          end
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {Kernel.SpecialForms, :receive}
+      assert violation.hint =~ "await signal"
+    end
+
+    test "resolves in-body imports: bare utc_now() after import DateTime is rejected" do
+      ast =
+        quote do
+          import DateTime
+          utc_now()
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {DateTime, :utc_now}
+      assert violation.hint =~ "Continuum.now/0"
+    end
+
+    test "import only:/except: lists are honored when literal" do
+      excluded =
+        quote do
+          import DateTime, only: [to_unix: 1]
+          utc_now()
+        end
+
+      assert :ok == AstCheck.scan(excluded)
+
+      included =
+        quote do
+          import DateTime, only: [utc_now: 0]
+          utc_now()
+        end
+
+      assert {:error, [%{mfa: {DateTime, :utc_now}}]} = AstCheck.scan(included)
+
+      excepted =
+        quote do
+          import DateTime, except: [utc_now: 0]
+          utc_now()
+        end
+
+      assert :ok == AstCheck.scan(excepted)
     end
 
     test "format/1 produces a readable diagnostic" do

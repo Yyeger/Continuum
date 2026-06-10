@@ -3,6 +3,7 @@ import Config
 config :continuum,
   repo: Continuum.Test.Repo,
   ecto_repos: [Continuum.Test.Repo],
+  trusted_modules: [Continuum.Test.ImpureProbe],
   dispatcher: false,
   activity_worker: false,
   timer_wheel: false,

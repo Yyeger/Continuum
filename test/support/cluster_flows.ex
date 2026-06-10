@@ -5,7 +5,10 @@ defmodule Continuum.Test.ClusterFlows do
     use Continuum.Workflow, version: 1
 
     def run(input) do
-      Continuum.side_effect(fn -> {:claimed_by, node(), input.value} end)
+      Continuum.side_effect(fn ->
+        {:claimed_by, Continuum.Test.ImpureProbe.current_node(), input.value}
+      end)
+
       {:ok, input.value}
     end
   end

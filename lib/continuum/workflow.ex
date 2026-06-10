@@ -360,7 +360,7 @@ defmodule Continuum.Workflow.OnDef do
 
   @doc false
   def __on_definition__(env, _kind, name, args, _guards, body) when not is_nil(body) do
-    case Continuum.AstCheck.scan(body, env.file) do
+    case Continuum.AstCheck.scan(body, env) do
       :ok ->
         :ok
 

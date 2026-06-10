@@ -123,6 +123,71 @@ defmodule Continuum.WorkflowCompileTest do
       end
     end
 
+    test "a workflow that calls apply/3 refuses to compile" do
+      assert_raise CompileError, ~r/dynamic dispatch forbidden/, fn ->
+        defmodule BadApplyFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            apply(DateTime, :utc_now, [])
+          end
+        end
+      end
+    end
+
+    test "a workflow that calls spawn/1 refuses to compile" do
+      assert_raise CompileError, ~r/spawn forbidden/, fn ->
+        defmodule BadSpawnFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            spawn(fn -> :ok end)
+          end
+        end
+      end
+    end
+
+    test "a workflow that calls send(self(), ...) refuses to compile" do
+      assert_raise CompileError, ~r/send messages outside the workflow/, fn ->
+        defmodule BadSendFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            send(self(), :tick)
+          end
+        end
+      end
+    end
+
+    test "a workflow with a receive block refuses to compile" do
+      assert_raise CompileError, ~r/receive blocks bypass the journal/, fn ->
+        defmodule BadReceiveFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            receive do
+              :go -> :ok
+            after
+              1_000 -> :timeout
+            end
+          end
+        end
+      end
+    end
+
+    test "a bare utc_now() behind a module-level import refuses to compile" do
+      assert_raise CompileError, ~r/Continuum.now\/0/, fn ->
+        defmodule BadImportFlow do
+          use Continuum.Workflow, version: 1
+          import DateTime
+
+          def run(_input) do
+            utc_now()
+          end
+        end
+      end
+    end
+
     test "await child shorthand requires Mod.run(input)" do
       assert_raise ArgumentError, ~r/await child Mod\.run\(input\)/, fn ->
         compile_workflow("BadAwaitChildFun", """

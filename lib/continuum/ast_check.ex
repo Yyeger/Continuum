@@ -93,12 +93,40 @@ defmodule Continuum.AstCheck do
     {Kernel, :apply} => "dynamic dispatch forbidden in workflows",
     {Kernel, :spawn} => "spawn forbidden in workflows",
     {Kernel, :spawn_link} => "spawn forbidden in workflows",
+    {Kernel, :spawn_monitor} => "spawn forbidden in workflows",
+    {Kernel, :send} => "send messages outside the workflow, or wrap in an activity",
+    {Kernel, :self} => "pid identity is non-deterministic on replay; wrap in an activity",
+    {Kernel, :make_ref} => "use Continuum.uuid4/0",
+    {Kernel, :node} => "cluster topology is non-deterministic; wrap in an activity",
     {Code, :eval_string} => "code evaluation is non-deterministic",
     {Code, :eval_quoted} => "code evaluation is non-deterministic",
     {:erlang, :now} => "use Continuum.now/0 (and :erlang.now is deprecated)",
     {:erlang, :spawn} => "spawn forbidden in workflows",
     {:erlang, :phash2} => "phash2 salt may change across OTP releases"
   }
+
+  # Unqualified spellings of forbidden auto-imported Kernel functions, used
+  # when `scan/2` runs without a caller env (the env-aware path resolves any
+  # local call through `Macro.Env.lookup_import/2` instead, so it also catches
+  # `import DateTime`-style imports and respects user shadowing).
+  @forbidden_locals %{
+    {:apply, 2} => {Kernel, :apply},
+    {:apply, 3} => {Kernel, :apply},
+    {:spawn, 1} => {Kernel, :spawn},
+    {:spawn, 3} => {Kernel, :spawn},
+    {:spawn_link, 1} => {Kernel, :spawn_link},
+    {:spawn_link, 3} => {Kernel, :spawn_link},
+    {:spawn_monitor, 1} => {Kernel, :spawn_monitor},
+    {:spawn_monitor, 3} => {Kernel, :spawn_monitor},
+    {:send, 2} => {Kernel, :send},
+    {:self, 0} => {Kernel, :self},
+    {:make_ref, 0} => {Kernel, :make_ref},
+    {:node, 0} => {Kernel, :node},
+    {:node, 1} => {Kernel, :node}
+  }
+
+  @receive_hint "receive blocks bypass the journal and are non-deterministic on replay; " <>
+                  "use `await signal(...)` (or `timer/1`) instead"
 
   @trusted_stdlib MapSet.new([
                     Enum,
@@ -131,11 +159,22 @@ defmodule Continuum.AstCheck do
   @doc """
   Scan an AST. Returns `:ok` or `{:error, [violation]}`.
 
-  Pass the originating `file` so diagnostics include it.
+  Pass the caller's `%Macro.Env{}` (as `Continuum.Workflow` and
+  `Continuum.Pure` do) so unqualified calls are resolved through the imports
+  in scope — `import DateTime` followed by a bare `utc_now()` is caught the
+  same as the qualified spelling. Passing just a `file` string keeps
+  diagnostics located but limits local-call detection to the auto-imported
+  Kernel denylist.
   """
-  @spec scan(Macro.t(), String.t() | nil) :: :ok | {:error, [violation()]}
-  def scan(ast, file \\ nil) do
-    {_, violations} = Macro.prewalk(ast, [], &check_node(&1, &2, file))
+  @spec scan(Macro.t(), Macro.Env.t() | String.t() | nil) :: :ok | {:error, [violation()]}
+  def scan(ast, file_or_env \\ nil)
+
+  def scan(ast, %Macro.Env{} = env), do: do_scan(ast, env.file, env)
+  def scan(ast, file), do: do_scan(ast, file, nil)
+
+  defp do_scan(ast, file, env) do
+    {_, {violations, _imports}} =
+      Macro.prewalk(ast, {[], []}, &check_node(&1, &2, file, env))
 
     case Enum.reverse(violations) do
       [] -> :ok
@@ -353,20 +392,76 @@ defmodule Continuum.AstCheck do
     |> String.trim_trailing()
   end
 
-  defp check_node({{:., _, [{:__aliases__, _, alias_parts}, fun]}, meta, args} = node, acc, file)
+  defp check_node(
+         {{:., _, [{:__aliases__, _, alias_parts}, fun]}, meta, args} = node,
+         acc,
+         file,
+         _env
+       )
        when is_atom(fun) and is_list(args) do
     mod = Module.concat(alias_parts)
     {node, maybe_record(mod, fun, meta, file, acc)}
   end
 
-  defp check_node({{:., _, [mod, fun]}, meta, args} = node, acc, file)
+  defp check_node({{:., _, [mod, fun]}, meta, args} = node, acc, file, _env)
        when is_atom(mod) and is_atom(fun) and is_list(args) do
     {node, maybe_record(mod, fun, meta, file, acc)}
   end
 
-  defp check_node(node, acc, _file), do: {node, acc}
+  # `receive` parks the process outside the journal: on replay nothing sends
+  # the message again, so the workflow blocks (or takes the `after` branch)
+  # differently than it did originally.
+  defp check_node({:receive, meta, args} = node, {violations, imports}, file, _env)
+       when is_list(args) do
+    violation = %{
+      mfa: {Kernel.SpecialForms, :receive},
+      line: Keyword.get(meta, :line),
+      file: file,
+      hint: @receive_hint
+    }
 
-  defp maybe_record(mod, fun, meta, file, acc) do
+    {node, {[violation | violations], imports}}
+  end
+
+  # Track in-body `import` directives so later unqualified calls in the same
+  # definition resolve against them even when no caller env is available.
+  defp check_node({:import, _meta, [module_ast | rest]} = node, {violations, imports}, _file, env) do
+    case import_spec(module_ast, rest, env) do
+      {:ok, spec} -> {node, {violations, [spec | imports]}}
+      :error -> {node, {violations, imports}}
+    end
+  end
+
+  # Local (unqualified) calls: `apply(...)`, `spawn(...)`, `send(self(), ...)`,
+  # or a forbidden function pulled in by `import`.
+  defp check_node({fun, meta, args} = node, {violations, imports} = acc, file, env)
+       when is_atom(fun) and is_list(meta) and is_list(args) do
+    arity = length(args)
+
+    hit =
+      walked_import_hit(imports, fun, arity) ||
+        env_import_hit(env, fun, arity) ||
+        fallback_local_hit(env, fun, arity)
+
+    case hit do
+      {mod, canonical_fun, hint} ->
+        violation = %{
+          mfa: {mod, canonical_fun},
+          line: Keyword.get(meta, :line),
+          file: file,
+          hint: hint
+        }
+
+        {node, {[violation | violations], imports}}
+
+      nil ->
+        {node, acc}
+    end
+  end
+
+  defp check_node(node, acc, _file, _env), do: {node, acc}
+
+  defp maybe_record(mod, fun, meta, file, {violations, imports}) do
     case Map.fetch(@forbidden, {mod, fun}) do
       {:ok, hint} ->
         violation = %{
@@ -376,10 +471,91 @@ defmodule Continuum.AstCheck do
           hint: hint
         }
 
-        [violation | acc]
+        {[violation | violations], imports}
 
       :error ->
-        acc
+        {violations, imports}
+    end
+  end
+
+  defp import_spec(module_ast, rest, env) do
+    opts =
+      case rest do
+        [opts] when is_list(opts) -> opts
+        _ -> []
+      end
+
+    case import_module(module_ast, env) do
+      mod when is_atom(mod) and not is_nil(mod) ->
+        {:ok,
+         %{
+           module: mod,
+           only: literal_fa_list(opts[:only]),
+           except: literal_fa_list(opts[:except])
+         }}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp import_module({:__aliases__, _, _} = alias_ast, %Macro.Env{} = env),
+    do: Macro.expand(alias_ast, env)
+
+  defp import_module({:__aliases__, _, parts}, nil) do
+    if Enum.all?(parts, &is_atom/1), do: Module.concat(parts), else: nil
+  end
+
+  defp import_module(mod, _env) when is_atom(mod), do: mod
+  defp import_module(_module_ast, _env), do: nil
+
+  # `only:`/`except:` are honored when they are literal `[fun: arity]` lists;
+  # anything else (`only: :functions`, computed lists) is treated as a full
+  # import — over-approximating keeps detection sound.
+  defp literal_fa_list(list) when is_list(list) do
+    if Enum.all?(list, fn
+         {fun, arity} when is_atom(fun) and is_integer(arity) -> true
+         _ -> false
+       end),
+       do: list,
+       else: nil
+  end
+
+  defp literal_fa_list(_other), do: nil
+
+  defp walked_import_hit(imports, fun, arity) do
+    Enum.find_value(imports, fn %{module: mod, only: only, except: except} ->
+      cond do
+        is_list(only) and {fun, arity} not in only -> nil
+        is_list(except) and {fun, arity} in except -> nil
+        true -> forbidden_hit(mod, fun)
+      end
+    end)
+  end
+
+  defp env_import_hit(%Macro.Env{} = env, fun, arity) do
+    env
+    |> Macro.Env.lookup_import({fun, arity})
+    |> Enum.find_value(fn {_kind, mod} -> forbidden_hit(mod, fun) end)
+  end
+
+  defp env_import_hit(_env, _fun, _arity), do: nil
+
+  # Without a caller env there is nothing to resolve imports against; fall
+  # back to the auto-imported Kernel spellings everyone actually writes.
+  defp fallback_local_hit(nil, fun, arity) do
+    case Map.fetch(@forbidden_locals, {fun, arity}) do
+      {:ok, {mod, canonical_fun}} -> forbidden_hit(mod, canonical_fun)
+      :error -> nil
+    end
+  end
+
+  defp fallback_local_hit(_env, _fun, _arity), do: nil
+
+  defp forbidden_hit(mod, fun) do
+    case Map.fetch(@forbidden, {mod, fun}) do
+      {:ok, hint} -> {mod, fun, hint}
+      :error -> nil
     end
   end
 

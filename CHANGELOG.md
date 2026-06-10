@@ -4,6 +4,15 @@
 
 ### Fixes
 
+- `Continuum.AstCheck` now inspects unqualified calls: `apply/2,3`,
+  `spawn/spawn_link/spawn_monitor`, `send/2`, `self/0`, `make_ref/0`, and
+  `node/0,1` are rejected in workflow code (previously only the
+  `Kernel.`-qualified spellings nobody writes were caught), `receive`
+  blocks are rejected outright, and unqualified calls are resolved against
+  the imports in scope — `import DateTime` followed by a bare `utc_now()`
+  is now a compile error like the qualified call. In-body `import`
+  directives are tracked too, honoring literal `only:`/`except:` lists.
+
 - `child_started` and `run_continued_as_new` event replay now validate the
   journaled workflow module and input hash against what the workflow code
   commands, raising `Continuum.ReplayDriftError` on mismatch (previously a

@@ -22,11 +22,11 @@ defmodule Continuum.Runtime.DispatcherTest do
     def run(input) do
       value =
         Continuum.side_effect(fn ->
-          send(input.test_pid, {:producer_started, self()})
-
-          receive do
-            :continue -> input.seed * 5
-          end
+          Continuum.Test.ImpureProbe.notify_and_block(
+            input.test_pid,
+            :producer_started,
+            input.seed * 5
+          )
         end)
 
       {:ok, value}
