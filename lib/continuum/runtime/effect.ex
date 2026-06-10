@@ -1415,6 +1415,13 @@ defmodule Continuum.Runtime.Effect do
       when not is_nil(timeout_timer_id) ->
         if command_matches?(event, command_id), do: {:ok, :timeout, 2}, else: :mismatch
 
+      # A pending await can only be resolved against the durable signal
+      # mailbox. Replaying the same history offline (golden histories,
+      # `Continuum.Test.replay/4`) must suspend instead of reaching for
+      # Postgres the context never configured.
+      nil when ctx.journal != Continuum.Runtime.Journal.Postgres ->
+        :pending
+
       nil ->
         case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
                ctx.instance,

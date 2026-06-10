@@ -108,6 +108,16 @@ defmodule Continuum.ReplayTest do
       assert {:ok, %{state: :completed, result: {:error, :stopped}}} =
                Continuum.await(run_id, 1_000)
     end
+
+    test "replaying a pending signal_awaited offline suspends instead of querying Postgres" do
+      # A golden history can legitimately end at a pending await; replaying it
+      # against the in-memory journal must suspend rather than reach for the
+      # durable signal mailbox the context never configured.
+      history = [%{type: :signal_awaited, name: :decision, opts: [], command_id: nil, seq: 0}]
+
+      assert {:suspended, {:awaiting_signal, :decision}} =
+               Continuum.Test.replay(SignalBranchFlow, %{}, history)
+    end
   end
 
   describe "child and continuation replay validation" do

@@ -11,6 +11,10 @@
   run id on the event path while the snapshot path raised). Snapshots
   compacted from now on carry the hashes so both replay paths agree;
   pre-existing snapshots skip the new check.
+- Replaying a history that ends in a pending `signal_awaited` no longer
+  hard-codes a Postgres mailbox lookup: on non-Postgres journals the replay
+  suspends, so golden histories ending at a pending await can be replayed
+  offline with `Continuum.Test.replay/4`.
 - The journal adapter is now resolved through the runtime instance — one
   source of truth for `Continuum.start/signal/cancel/await`. Previously the
   engine defaulted new runs to the in-memory journal even with
