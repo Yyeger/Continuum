@@ -4,6 +4,13 @@
 
 ### Fixes
 
+- `child_started` and `run_continued_as_new` event replay now validate the
+  journaled workflow module and input hash against what the workflow code
+  commands, raising `Continuum.ReplayDriftError` on mismatch (previously a
+  changed child workflow or input replayed silently with the old child's
+  run id on the event path while the snapshot path raised). Snapshots
+  compacted from now on carry the hashes so both replay paths agree;
+  pre-existing snapshots skip the new check.
 - The journal adapter is now resolved through the runtime instance — one
   source of truth for `Continuum.start/signal/cancel/await`. Previously the
   engine defaulted new runs to the in-memory journal even with

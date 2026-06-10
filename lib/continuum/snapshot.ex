@@ -163,15 +163,22 @@ defmodule Continuum.Snapshot do
     one_step(event, :compensation, tid, {:error, error})
   end
 
+  # Both steps carry the journaled input hash so snapshot replay can validate
+  # the commanded input exactly like event replay does. Steps compacted before
+  # the hash was captured simply omit the key and skip that check.
   defp step_from(
          %{type: :child_started, workflow: workflow, child_run_id: child_run_id} = event,
          _rest
        ) do
-    one_step(event, :start_child, workflow, child_run_id)
+    event
+    |> one_step(:start_child, workflow, child_run_id)
+    |> put_step_hash(:input_hash, Map.get(event, :input_hash))
   end
 
   defp step_from(%{type: :run_continued_as_new, next_run_id: next_run_id} = event, _rest) do
-    one_step(event, :continue_as_new, :continue_as_new, next_run_id)
+    event
+    |> one_step(:continue_as_new, :continue_as_new, next_run_id)
+    |> put_step_hash(:next_input_hash, Map.get(event, :next_input_hash))
   end
 
   defp step_from(
@@ -295,6 +302,14 @@ defmodule Continuum.Snapshot do
        }, 1}
     end
   end
+
+  defp put_step_hash({:ok, step, advance_by}, _key, nil), do: {:ok, step, advance_by}
+
+  defp put_step_hash({:ok, step, advance_by}, key, hash) do
+    {:ok, Map.put(step, key, hash), advance_by}
+  end
+
+  defp put_step_hash(other, _key, _hash), do: other
 
   defp same_activity?(%{mfa: {mod, fun, _}}, %{mfa: {mod, fun, _}}), do: :ok
   defp same_activity?(%{seq: seq}, _next), do: {:error, {:activity_mfa_mismatch, seq}}

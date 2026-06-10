@@ -110,6 +110,221 @@ defmodule Continuum.ReplayTest do
     end
   end
 
+  describe "child and continuation replay validation" do
+    defmodule ChildLeafFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(_input), do: {:ok, :leaf}
+    end
+
+    defmodule OtherLeafFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(_input), do: {:ok, :other}
+    end
+
+    defmodule ChildReplayFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(input) do
+        ref = start_child(ChildLeafFlow, input.child_input)
+        await_child(ref)
+      end
+    end
+
+    defmodule OtherChildReplayFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(input) do
+        ref = start_child(OtherLeafFlow, input.child_input)
+        await_child(ref)
+      end
+    end
+
+    defmodule ContinueReplayFlow do
+      use Continuum.Workflow, version: 1
+
+      def run(input) do
+        continue_as_new(%{n: input.n + 1})
+      end
+    end
+
+    test "child_started replays when the commanded workflow and input match" do
+      input = %{child_input: %{id: 1}}
+
+      assert {:ok, {:ok, :leaf}} =
+               Continuum.Test.replay(
+                 ChildReplayFlow,
+                 input,
+                 child_history(ChildLeafFlow, %{id: 1})
+               )
+    end
+
+    test "raises ReplayDriftError when the commanded child workflow changed" do
+      input = %{child_input: %{id: 1}}
+      history = child_history(ChildLeafFlow, %{id: 1})
+
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _stacktrace}} =
+               Continuum.Test.replay(OtherChildReplayFlow, input, history)
+    end
+
+    test "raises ReplayDriftError when the commanded child input changed" do
+      history = child_history(ChildLeafFlow, %{id: 1})
+
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _stacktrace}} =
+               Continuum.Test.replay(ChildReplayFlow, %{child_input: %{id: 2}}, history)
+    end
+
+    test "snapshot replay of a child_started step validates the commanded input" do
+      input = %{child_input: %{id: 1}}
+      {snapshot, tail} = child_snapshot(ChildReplayFlow, %{id: 1})
+
+      assert {:ok, {:ok, :leaf}} =
+               Continuum.Test.replay(ChildReplayFlow, input, tail, snapshot: snapshot)
+
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _stacktrace}} =
+               Continuum.Test.replay(ChildReplayFlow, %{child_input: %{id: 2}}, tail,
+                 snapshot: snapshot
+               )
+    end
+
+    test "continue_as_new replays when the commanded next input matches" do
+      assert {:continued, "next-run-1"} =
+               Continuum.Test.replay(ContinueReplayFlow, %{n: 1}, continue_history(%{n: 2}))
+    end
+
+    test "raises ReplayDriftError when the commanded continuation input changed" do
+      history = continue_history(%{n: 2})
+
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _stacktrace}} =
+               Continuum.Test.replay(ContinueReplayFlow, %{n: 5}, history)
+    end
+
+    test "snapshot replay of a continue_as_new step validates the commanded next input" do
+      snapshot = continue_snapshot(ContinueReplayFlow, %{n: 2})
+
+      assert {:continued, "next-run-1"} =
+               Continuum.Test.replay(ContinueReplayFlow, %{n: 1}, [], snapshot: snapshot)
+
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _stacktrace}} =
+               Continuum.Test.replay(ContinueReplayFlow, %{n: 5}, [], snapshot: snapshot)
+    end
+
+    test "snapshot compaction carries the journaled input hashes into the compacted steps" do
+      child_event = %{
+        type: :child_started,
+        child_run_id: "child-run-1",
+        workflow: ChildLeafFlow,
+        input_hash: hash_term(%{id: 1}),
+        command_id: {:start_child, :test, 0},
+        seq: 0
+      }
+
+      continue_event = %{
+        type: :run_continued_as_new,
+        next_run_id: "next-run-1",
+        next_input_hash: hash_term(%{n: 2}),
+        command_id: {:continue_as_new, :test, 0},
+        seq: 1
+      }
+
+      {:ok, snapshot} =
+        Continuum.Snapshot.compact("hash-carry", <<0::256>>, [child_event, continue_event])
+
+      assert %{input_hash: hash} = snapshot.steps_by_seq[0]
+      assert hash == hash_term(%{id: 1})
+
+      assert %{next_input_hash: next_hash} = snapshot.steps_by_seq[1]
+      assert next_hash == hash_term(%{n: 2})
+    end
+
+    defp child_history(workflow, child_input) do
+      [
+        %{
+          type: :child_started,
+          child_run_id: "child-run-1",
+          workflow: workflow,
+          input_hash: hash_term(child_input),
+          command_id: nil,
+          seq: 0
+        },
+        child_completed_event()
+      ]
+    end
+
+    defp child_completed_event do
+      %{
+        type: :child_completed,
+        child_run_id: "child-run-1",
+        result: {:ok, :leaf},
+        command_id: nil,
+        seq: 1
+      }
+    end
+
+    defp child_snapshot(workflow_module, child_input) do
+      step = %{
+        effect_type: :start_child,
+        command_id: nil,
+        shape: ChildLeafFlow,
+        result: "child-run-1",
+        advance_by: 1,
+        input_hash: hash_term(child_input)
+      }
+
+      snapshot = %Continuum.Snapshot{
+        run_id: "child-snapshot",
+        through_seq: 0,
+        version_hash: workflow_module.__continuum_workflow__().version_hash,
+        steps_by_seq: %{0 => step},
+        taken_at: DateTime.utc_now()
+      }
+
+      {snapshot, [child_completed_event()]}
+    end
+
+    defp continue_history(next_input) do
+      [
+        %{
+          type: :run_continued_as_new,
+          next_run_id: "next-run-1",
+          next_input_hash: hash_term(next_input),
+          command_id: nil,
+          seq: 0
+        }
+      ]
+    end
+
+    defp continue_snapshot(workflow_module, next_input) do
+      step = %{
+        effect_type: :continue_as_new,
+        command_id: nil,
+        shape: :continue_as_new,
+        result: "next-run-1",
+        advance_by: 1,
+        next_input_hash: hash_term(next_input)
+      }
+
+      %Continuum.Snapshot{
+        run_id: "continue-snapshot",
+        through_seq: 0,
+        version_hash: workflow_module.__continuum_workflow__().version_hash,
+        steps_by_seq: %{0 => step},
+        taken_at: DateTime.utc_now()
+      }
+    end
+
+    # Mirrors the private hash in `Continuum.Runtime.Effect` — also a
+    # regression lock on the hashing algorithm itself: journaled hashes must
+    # keep validating after library upgrades.
+    defp hash_term(term) do
+      term
+      |> :erlang.term_to_binary([:deterministic])
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+    end
+  end
+
   describe "replay drift detection" do
     defmodule DriftActivity do
       def run(value), do: {:ok, value}

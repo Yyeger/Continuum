@@ -170,6 +170,115 @@ defmodule Continuum.ReplayPropertyTest do
     end
   end
 
+  defmodule ChildLeafPropertyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(_input), do: {:ok, :leaf}
+  end
+
+  defmodule OtherLeafPropertyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(_input), do: {:ok, :other}
+  end
+
+  defmodule ChildPropertyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      ref = start_child(ChildLeafPropertyFlow, input.child_input)
+      await_child(ref)
+    end
+  end
+
+  defmodule OtherChildPropertyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      ref = start_child(OtherLeafPropertyFlow, input.child_input)
+      await_child(ref)
+    end
+  end
+
+  defmodule ContinuePropertyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      continue_as_new(%{n: input.n + 1})
+    end
+  end
+
+  property "child_started replay validates the journaled workflow and input hash" do
+    child_input =
+      one_of([
+        integer(),
+        binary(max_length: 16),
+        map_of(atom(:alphanumeric), integer(), max_length: 3)
+      ])
+
+    check all(input <- child_input, max_runs: 30) do
+      history = [
+        %{
+          type: :child_started,
+          child_run_id: "child-prop-1",
+          workflow: ChildLeafPropertyFlow,
+          input_hash: hash_term(input),
+          command_id: nil,
+          seq: 0
+        },
+        %{
+          type: :child_completed,
+          child_run_id: "child-prop-1",
+          result: {:ok, :leaf},
+          command_id: nil,
+          seq: 1
+        }
+      ]
+
+      assert {:ok, {:ok, :leaf}} =
+               Continuum.Test.replay(ChildPropertyFlow, %{child_input: input}, history)
+
+      # Same call site, different child workflow module: drift.
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _}} =
+               Continuum.Test.replay(OtherChildPropertyFlow, %{child_input: input}, history)
+
+      # Same workflow, different commanded input: drift.
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _}} =
+               Continuum.Test.replay(
+                 ChildPropertyFlow,
+                 %{child_input: {:mutated, input}},
+                 history
+               )
+    end
+  end
+
+  property "continue_as_new replay validates the journaled next input hash" do
+    check all(n <- integer(), max_runs: 30) do
+      history = [
+        %{
+          type: :run_continued_as_new,
+          next_run_id: "next-prop-1",
+          next_input_hash: hash_term(%{n: n + 1}),
+          command_id: nil,
+          seq: 0
+        }
+      ]
+
+      assert {:continued, "next-prop-1"} =
+               Continuum.Test.replay(ContinuePropertyFlow, %{n: n}, history)
+
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _}} =
+               Continuum.Test.replay(ContinuePropertyFlow, %{n: n + 1}, history)
+    end
+  end
+
+  defp hash_term(term) do
+    term
+    |> :erlang.term_to_binary([:deterministic])
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   defp assert_snapshot_replays(_workflow, _input, [], _expected), do: :ok
 
   defp assert_snapshot_replays(workflow, input, history, expected) do

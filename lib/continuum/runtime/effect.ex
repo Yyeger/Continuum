@@ -212,7 +212,7 @@ defmodule Continuum.Runtime.Effect do
 
     case snapshot_step(ctx, ctx.cursor) do
       {:ok, %{effect_type: :continue_as_new} = step} ->
-        if command_matches?(step, command_id) do
+        if command_matches?(step, command_id) and continued_input_matches?(step, input) do
           throw({:continuum_continued_as_new, Map.get(step, :result)})
         else
           raise_continue_drift(ctx, step, command_id)
@@ -230,7 +230,7 @@ defmodule Continuum.Runtime.Effect do
             live_continue_as_new!(ctx, input, command_id)
 
           %{type: :run_continued_as_new} = event ->
-            if command_matches?(event, command_id) do
+            if command_matches?(event, command_id) and continued_input_matches?(event, input) do
               throw({:continuum_continued_as_new, Map.get(event, :next_run_id)})
             else
               raise_continue_drift(ctx, event, command_id)
@@ -239,6 +239,15 @@ defmodule Continuum.Runtime.Effect do
           other ->
             raise_continue_drift(ctx, other, command_id)
         end
+    end
+  end
+
+  # `nil` keeps histories/snapshots recorded before the hash was journaled
+  # replayable, exactly like `command_matches?/2` does for old command ids.
+  defp continued_input_matches?(event_or_step, input) do
+    case Map.get(event_or_step, :next_input_hash) do
+      nil -> true
+      hash -> hash == hash_term(input)
     end
   end
 
@@ -1488,13 +1497,23 @@ defmodule Continuum.Runtime.Effect do
        when etid == ltid,
        do: {:ok, {:error, error}}
 
+  # The command_id cannot distinguish two different child workflows started at
+  # the same call site (the command base hashes the constant :child), so the
+  # journaled workflow module and input hash are compared here — mirroring the
+  # snapshot path, which already validates the workflow via the step shape.
   defp match_event(
          _ctx,
-         %{type: :child_started, child_run_id: child_run_id},
-         {:start_child, _workflow, _input, _opts},
+         %{type: :child_started, child_run_id: child_run_id} = event,
+         {:start_child, workflow, input, _opts},
          _command_id
-       ),
-       do: {:ok, child_run_id}
+       ) do
+    if Map.get(event, :workflow) == workflow and
+         Map.get(event, :input_hash) == hash_term(input) do
+      {:ok, child_run_id}
+    else
+      :mismatch
+    end
+  end
 
   defp match_event(
          _ctx,
@@ -1580,7 +1599,17 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
-  defp snapshot_step_matches?(step, effect) do
+  defp snapshot_step_matches?(step, {:start_child, _workflow, input, _opts} = effect) do
+    shape_matches?(step, effect) and
+      case Map.get(step, :input_hash) do
+        nil -> true
+        hash -> hash == hash_term(input)
+      end
+  end
+
+  defp snapshot_step_matches?(step, effect), do: shape_matches?(step, effect)
+
+  defp shape_matches?(step, effect) do
     {effect_type, shape} = effect_shape(effect)
     Map.get(step, :effect_type) == effect_type and Map.get(step, :shape) == shape
   end
