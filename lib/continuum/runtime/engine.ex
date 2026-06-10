@@ -384,6 +384,7 @@ defmodule Continuum.Runtime.Engine do
 
     try do
       result = state.workflow_module.run(state.input)
+      assert_suspend_not_swallowed!(state)
       complete_run(state, result)
     catch
       {:continuum_suspend, reason} ->
@@ -402,6 +403,21 @@ defmodule Continuum.Runtime.Engine do
         end
     after
       Context.clear()
+    end
+  end
+
+  # The workflow body returned normally although an effect suspended the run
+  # (the suspend throw was already journaled when it was thrown). A user
+  # `catch` arm must have swallowed the engine's control throw — completing
+  # the run here would discard the pending effect and corrupt the history,
+  # so fail loudly instead. See `Continuum.SuspendLeakError`.
+  defp assert_suspend_not_swallowed!(state) do
+    case Context.get() do
+      %Context{suspending: reason} when not is_nil(reason) ->
+        raise Continuum.SuspendLeakError, run_id: state.run_id, reason: reason
+
+      _ ->
+        :ok
     end
   end
 

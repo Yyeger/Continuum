@@ -25,7 +25,8 @@ defmodule Continuum.Runtime.Context do
     command_counts: %{},
     snapshot_steps: %{},
     history_offset: 0,
-    compensation_stack: []
+    compensation_stack: [],
+    suspending: nil
   ]
 
   @type t :: %__MODULE__{
@@ -42,7 +43,8 @@ defmodule Continuum.Runtime.Context do
           command_counts: map(),
           snapshot_steps: map(),
           history_offset: non_neg_integer(),
-          compensation_stack: [{term(), {module(), atom(), list()}}]
+          compensation_stack: [{term(), {module(), atom(), list()}}],
+          suspending: term() | nil
         }
 
   @doc "Set the current context for this process."
@@ -147,6 +149,44 @@ end
 defmodule Continuum.NotInWorkflowError do
   @moduledoc "Raised when a workflow primitive is invoked outside a workflow process."
   defexception [:message]
+end
+
+defmodule Continuum.SuspendLeakError do
+  @moduledoc """
+  Raised when workflow code swallows Continuum's suspend control throw.
+
+  The engine suspends a workflow by throwing a control tuple *after* the
+  pending effect has been journaled. A user `try ... catch` arm (especially
+  `catch _, _ ->` or `catch :throw, _ ->`) around an effect intercepts that
+  throw; letting the workflow keep executing would journal the next effect
+  at a duplicate position and silently corrupt the run's history, so the
+  next effect call — or the engine, on a normal return — raises this error
+  instead.
+  """
+  defexception [:run_id, :reason, :effect]
+
+  def message(%{run_id: run_id, reason: reason, effect: effect}) do
+    continuation =
+      case effect do
+        nil -> "the workflow body returned normally"
+        effect -> "workflow code went on to request #{inspect(effect)}"
+      end
+
+    """
+    Continuum's suspend signal was swallowed in run #{inspect(run_id)}.
+
+    The workflow suspended (#{inspect(reason)}) — the pending effect was
+    already journaled — but #{continuation}. This almost always means a
+    `try ... catch` arm around an effect caught Continuum's control throw.
+
+    Use `rescue` (and `after`) instead of `catch` in workflow code, or
+    re-throw the engine's control tuples from your catch arms:
+
+        catch
+          :throw, {:continuum_suspend, _} = signal -> throw(signal)
+          :throw, {:continuum_continued_as_new, _} = signal -> throw(signal)
+    """
+  end
 end
 
 defmodule Continuum.ReplayDriftError do

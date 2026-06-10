@@ -32,6 +32,44 @@ defmodule Continuum.Runtime.Effect do
   @doc "Token thrown when a workflow needs to suspend pending external work."
   def suspend_token, do: @suspend_token
 
+  # Every engine control throw is recorded in the Context first. If user code
+  # swallows the throw (a `catch` arm around an effect) and execution
+  # continues, the next effect entry — or the engine, on a normal return —
+  # sees the flag and raises `Continuum.SuspendLeakError` before another
+  # journal write can land at a duplicated position.
+  defp suspend!(reason) do
+    mark_control_throw(reason)
+    throw({@suspend_token, reason})
+  end
+
+  defp continue_throw!(next_run_id) do
+    mark_control_throw({:continued_as_new, next_run_id})
+    throw({:continuum_continued_as_new, next_run_id})
+  end
+
+  defp mark_control_throw(reason) do
+    case Context.get() do
+      nil -> :ok
+      ctx -> Context.put(%{ctx | suspending: reason})
+    end
+  end
+
+  defp fetch_context!(effect) do
+    case Context.get() do
+      nil ->
+        raise_not_in_workflow(effect)
+
+      %{suspending: nil} = ctx ->
+        ctx
+
+      ctx ->
+        raise Continuum.SuspendLeakError,
+          run_id: ctx.run_id,
+          reason: ctx.suspending,
+          effect: effect
+    end
+  end
+
   @doc """
   Dispatch an effect.
 
@@ -71,7 +109,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   def run({:activity, _mfa, opts} = effect, {:command, command_base}) when is_list(opts) do
-    ctx = Context.get() || raise_not_in_workflow(effect)
+    ctx = fetch_context!(effect)
     {ctx, command_id} = assign_command_id(ctx, command_base)
     Context.put(ctx)
 
@@ -115,7 +153,7 @@ defmodule Continuum.Runtime.Effect do
   @doc since: "0.3.0"
   def compensate(ref_or_ok, {:command, command_base}) do
     ref = unwrap_ref(ref_or_ok)
-    ctx = Context.get() || raise_not_in_workflow({:compensate, ref.activity_id})
+    ctx = fetch_context!({:compensate, ref.activity_id})
 
     {ctx, command_id} =
       assign_command_id(ctx, :erlang.append_element(command_base, ref.activity_id))
@@ -138,7 +176,7 @@ defmodule Continuum.Runtime.Effect do
   def compensate_all(command, opts \\ [])
 
   def compensate_all({:command, command_base}, opts) do
-    ctx = Context.get() || raise_not_in_workflow(:compensate_all)
+    ctx = fetch_context!(:compensate_all)
 
     case Keyword.get(opts, :mode, :sequential) do
       :sequential ->
@@ -164,7 +202,7 @@ defmodule Continuum.Runtime.Effect do
   """
   @doc since: "0.3.0"
   def start_child(workflow, input, opts, {:command, command_base}) do
-    ctx = Context.get() || raise_not_in_workflow(:start_child)
+    ctx = fetch_context!(:start_child)
     {ctx, command_id} = assign_command_id(ctx, command_base)
     Context.put(ctx)
     effect = {:start_child, workflow, input, opts}
@@ -206,14 +244,14 @@ defmodule Continuum.Runtime.Effect do
   """
   @doc since: "0.3.0"
   def continue_as_new(input, {:command, command_base}) do
-    ctx = Context.get() || raise_not_in_workflow(:continue_as_new)
+    ctx = fetch_context!(:continue_as_new)
     {ctx, command_id} = assign_command_id(ctx, command_base)
     Context.put(ctx)
 
     case snapshot_step(ctx, ctx.cursor) do
       {:ok, %{effect_type: :continue_as_new} = step} ->
         if command_matches?(step, command_id) and continued_input_matches?(step, input) do
-          throw({:continuum_continued_as_new, Map.get(step, :result)})
+          continue_throw!(Map.get(step, :result))
         else
           raise_continue_drift(ctx, step, command_id)
         end
@@ -231,7 +269,7 @@ defmodule Continuum.Runtime.Effect do
 
           %{type: :run_continued_as_new} = event ->
             if command_matches?(event, command_id) and continued_input_matches?(event, input) do
-              throw({:continuum_continued_as_new, Map.get(event, :next_run_id)})
+              continue_throw!(Map.get(event, :next_run_id))
             else
               raise_continue_drift(ctx, event, command_id)
             end
@@ -259,7 +297,7 @@ defmodule Continuum.Runtime.Effect do
   """
   @doc since: "0.3.0"
   def await_child(%Continuum.ChildRef{} = ref, {:command, command_base}) do
-    ctx = Context.get() || raise_not_in_workflow(:await_child)
+    ctx = fetch_context!(:await_child)
     {ctx, command_id} = assign_command_id(ctx, command_base)
     Context.put(ctx)
     effect = {:await_child, ref.child_run_id}
@@ -296,7 +334,7 @@ defmodule Continuum.Runtime.Effect do
   # branch on the same old history without consuming a downstream event of
   # another shape. A fresh (live-tail) call journals `value: true` and advances.
   defp advance({:patched, patch_name} = effect, _live_compute, command_base_fun) do
-    ctx = Context.get() || raise_not_in_workflow(effect)
+    ctx = fetch_context!(effect)
     {ctx, command_id} = assign_command_id(ctx, command_base_fun.(ctx))
     Context.put(ctx)
 
@@ -322,7 +360,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp advance(effect, live_compute, command_base_fun) do
-    ctx = Context.get() || raise_not_in_workflow(effect)
+    ctx = fetch_context!(effect)
     {ctx, command_id} = assign_command_id(ctx, command_base_fun.(ctx))
     Context.put(ctx)
 
@@ -364,11 +402,11 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp compute_live({:await_signal, _name, _opts}) do
-    throw({:continuum_suspend, :awaiting_signal})
+    suspend!(:awaiting_signal)
   end
 
   defp compute_live({:timer, _ms}) do
-    throw({:continuum_suspend, :awaiting_timer})
+    suspend!(:awaiting_timer)
   end
 
   defp journal_live!(ctx, effect, result, command_id) do
@@ -427,7 +465,7 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     })
 
-    throw({:continuum_suspend, {:activity_pending, task_id}})
+    suspend!({:activity_pending, task_id})
   end
 
   defp live_tail!(
@@ -470,7 +508,7 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     })
 
-    throw({:continuum_suspend, {:timer_pending, timer_id}})
+    suspend!({:timer_pending, timer_id})
   end
 
   defp live_tail!(ctx, {:timer, ms}, _live_compute, command_id) do
@@ -499,7 +537,7 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     })
 
-    throw({:continuum_suspend, {:timer_pending, timer_id}})
+    suspend!({:timer_pending, timer_id})
   end
 
   defp live_tail!(
@@ -560,7 +598,7 @@ defmodule Continuum.Runtime.Effect do
         payload
 
       :none ->
-        throw({:continuum_suspend, {:awaiting_signal, name}})
+        suspend!({:awaiting_signal, name})
     end
   end
 
@@ -684,7 +722,7 @@ defmodule Continuum.Runtime.Effect do
         :timeout
 
       :none ->
-        throw({:continuum_suspend, {:awaiting_signal, name}})
+        suspend!({:awaiting_signal, name})
     end
   end
 
@@ -830,7 +868,7 @@ defmodule Continuum.Runtime.Effect do
       })
     end)
 
-    throw({:continuum_suspend, {:parallel_compensation_pending, Enum.map(items, & &1.target_id)}})
+    suspend!({:parallel_compensation_pending, Enum.map(items, & &1.target_id)})
   end
 
   defp replay_parallel_compensations!(ctx, items) do
@@ -843,9 +881,7 @@ defmodule Continuum.Runtime.Effect do
       :ok
     else
       :pending ->
-        throw(
-          {:continuum_suspend, {:parallel_compensation_pending, Enum.map(items, & &1.target_id)}}
-        )
+        suspend!({:parallel_compensation_pending, Enum.map(items, & &1.target_id)})
 
       {:mismatch, event} ->
         raise Continuum.ReplayDriftError,
@@ -983,7 +1019,7 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     })
 
-    throw({:continuum_suspend, {:compensation_pending, task_id}})
+    suspend!({:compensation_pending, task_id})
   end
 
   defp live_compensation!(ctx, {:compensation, target_id, {mod, fun, args}} = effect, command_id) do
@@ -1103,7 +1139,7 @@ defmodule Continuum.Runtime.Effect do
         {:error, :child_cancelled}
 
       :pending ->
-        throw({:continuum_suspend, {:await_child, ref.child_run_id}})
+        suspend!({:await_child, ref.child_run_id})
     end
   end
 
@@ -1166,7 +1202,7 @@ defmodule Continuum.Runtime.Effect do
       correlation_id: correlation_id
     })
 
-    throw({:continuum_continued_as_new, next_run_id})
+    continue_throw!(next_run_id)
   end
 
   defp live_continue_as_new!(_ctx, _input, _command_id) do
@@ -1349,7 +1385,7 @@ defmodule Continuum.Runtime.Effect do
         result
 
       :pending ->
-        throw({:continuum_suspend, pending_reason(event)})
+        suspend!(pending_reason(event))
 
       :mismatch ->
         raise Continuum.ReplayDriftError,

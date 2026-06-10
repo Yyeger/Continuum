@@ -224,6 +224,60 @@ defmodule Continuum.AstCheck do
     end
   end
 
+  @doc """
+  Warn on `catch` arms inside workflow clauses.
+
+  Continuum suspends a workflow by throwing a control tuple *after* the
+  pending effect has been journaled; a `catch` arm (especially `_, _ ->` or
+  `:throw, _ ->`) can intercept it. The runtime detects the swallow and
+  fails the run with `Continuum.SuspendLeakError`, but the right fix is in
+  the code: use `rescue`/`after`, or re-throw the engine's control tuples.
+  """
+  @spec check_catch_warnings(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
+  def check_catch_warnings(ast, env, caller_fun, caller_arity) do
+    {_ast, catches} =
+      Macro.prewalk(ast, [], fn
+        {:try, meta, [blocks]} = node, acc when is_list(blocks) ->
+          if Keyword.has_key?(blocks, :catch) do
+            {node, [%{line: Keyword.get(meta, :line)} | acc]}
+          else
+            {node, acc}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    catches
+    |> Enum.reverse()
+    |> Enum.each(&warn_catch_arm(&1, env, caller_fun, caller_arity))
+
+    :ok
+  end
+
+  defp warn_catch_arm(found, env, caller_fun, caller_arity) do
+    IO.warn(
+      """
+      Continuum workflow code uses a `catch` arm inside `try`.
+
+      Continuum suspends this workflow by throwing a control tuple after the
+      pending effect is journaled; a `catch` arm can swallow that throw, and
+      the run then fails with Continuum.SuspendLeakError instead of suspending.
+
+      Use `rescue` (and `after`) instead, or re-throw the engine's control
+      tuples from every catch arm:
+
+          catch
+            :throw, {:continuum_suspend, _} = signal -> throw(signal)
+            :throw, {:continuum_continued_as_new, _} = signal -> throw(signal)
+      """,
+      [
+        {env.module, caller_fun, caller_arity,
+         [file: to_charlist(env.file || "nofile"), line: found.line || env.line || 0]}
+      ]
+    )
+  end
+
   @doc false
   @spec check_compensation_warnings(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
   def check_compensation_warnings(ast, env, caller_fun, caller_arity) do

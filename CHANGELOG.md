@@ -4,6 +4,14 @@
 
 ### Fixes
 
+- Workflow code that swallows Continuum's suspend throw (a `try ... catch`
+  arm around an effect — the throw happens *after* the pending effect is
+  journaled) no longer corrupts the run's history. The engine records every
+  control throw in the run context; if execution continues past it, the
+  next effect — or the engine, on a normal return — fails the run with the
+  new `Continuum.SuspendLeakError`. The scanner additionally warns at
+  compile time on `catch` arms in workflow clauses, with a rescue-only
+  remediation hint (re-throwing the control tuples stays supported).
 - `Continuum.AstCheck` now inspects unqualified calls: `apply/2,3`,
   `spawn/spawn_link/spawn_monitor`, `send/2`, `self/0`, `make_ref/0`, and
   `node/0,1` are rejected in workflow code (previously only the
