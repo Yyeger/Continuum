@@ -42,6 +42,10 @@ defmodule Continuum do
   The default `Continuum` instance is owned by `Continuum.Application` and
   `Continuum.children()` returns `[]` to avoid duplicate process names.
 
+  A named instance given a `:repo` uses the Postgres journal for every run
+  started, signalled, cancelled, or awaited through it; pass `:journal` to
+  override. The default instance follows `config :continuum, :journal`.
+
   Child-specific options may be passed with `:workflow_modules`,
   `:activity_executor`, `:heartbeater`, `:run_supervisor`,
   `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
@@ -59,6 +63,7 @@ defmodule Continuum do
         Continuum.Runtime.Instance.new(
           name: name,
           repo: opts[:repo],
+          journal: opts[:journal],
           activity_executor: Keyword.get(opts, :activity_executor, :builtin),
           workflow_modules: opts[:workflow_modules]
         )

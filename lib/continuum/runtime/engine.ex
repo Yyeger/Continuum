@@ -105,8 +105,8 @@ defmodule Continuum.Runtime.Engine do
   """
   def await(run_id, timeout, opts \\ []) do
     deadline = System.monotonic_time(:millisecond) + timeout
-    journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.default())
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
     case subscribe_run(instance, run_id) do
       :ok ->
@@ -264,14 +264,14 @@ defmodule Continuum.Runtime.Engine do
 
   @impl true
   def init({workflow_module, input, run_id, opts}) do
-    journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.InMemory)
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    journal = Keyword.get(opts, :journal, Instance.journal(instance))
     # Load the adapter before any function_exported?/3 capability checks below
     # (start_run/5, get_run/2). A not-yet-loaded module fails those checks
     # silently, which would drop namespace/attributes on start or the resumed
     # trace context on resume (the resume path skips start_run, so guarding only
     # there is not enough).
     Code.ensure_loaded(journal)
-    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     trace_context = initial_trace_context(opts)
 
     unless Keyword.get(opts, :resume, false) do
@@ -591,7 +591,7 @@ defmodule Continuum.Runtime.Engine do
   defp durable_cancel(%Instance{repo: nil}, _run_id, _opts), do: {:error, :not_found}
 
   defp durable_cancel(instance, run_id, opts) do
-    journal = Keyword.get(opts, :journal, Continuum.Runtime.Journal.default())
+    journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
     case journal do
       Continuum.Runtime.Journal.Postgres ->

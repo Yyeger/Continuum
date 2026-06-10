@@ -32,7 +32,7 @@ defmodule Continuum.Runtime.SignalRouter do
   @spec deliver(binary(), atom(), term(), keyword()) :: :ok | {:error, term()}
   def deliver(run_id, name, payload, opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    journal = Keyword.get(opts, :journal, Journal.default())
+    journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
     case journal do
       Journal.Postgres -> deliver_durable(instance, run_id, name, payload)
@@ -138,6 +138,6 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   defp listen_enabled?(instance) do
-    Journal.default() == Journal.Postgres and instance.repo != nil
+    Instance.journal(instance) == Journal.Postgres and instance.repo != nil
   end
 end

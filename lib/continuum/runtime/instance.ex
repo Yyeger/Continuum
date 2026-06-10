@@ -4,6 +4,7 @@ defmodule Continuum.Runtime.Instance do
   defstruct [
     :name,
     :repo,
+    :journal,
     :pubsub,
     :registry,
     :run_supervisor,
@@ -54,6 +55,7 @@ defmodule Continuum.Runtime.Instance do
     %Instance{
       name: name,
       repo: repo,
+      journal: Keyword.get(opts, :journal) || default_journal(name, repo),
       pubsub: process_name(name, Continuum.PubSub),
       registry: process_name(name, Continuum.Runtime.Registry),
       run_supervisor: process_name(name, Continuum.Runtime.RunSupervisor),
@@ -72,6 +74,12 @@ defmodule Continuum.Runtime.Instance do
     }
   end
 
+  # Single source of truth for which journal adapter an instance uses. Every
+  # consumer (Engine init/await/cancel, SignalRouter delivery and LISTEN
+  # gating) resolves through here rather than re-deriving its own default.
+  def journal(%Instance{journal: nil}), do: Continuum.Runtime.Journal.default()
+  def journal(%Instance{journal: journal}), do: journal
+
   def child_name(%Instance{name: name}, module), do: process_name(name, module)
   def child_name(name, module), do: process_name(name, module)
 
@@ -83,6 +91,16 @@ defmodule Continuum.Runtime.Instance do
 
   defp default_repo(@default), do: Application.get_env(:continuum, :repo)
   defp default_repo(_name), do: nil
+
+  # Named instances pin their journal at construction: Postgres-backed when
+  # given a repo (the documented `Continuum.children/1` use case), in-memory
+  # otherwise. The default instance keeps `nil` so `journal/1` resolves
+  # `config :continuum, :journal` at call time — config overrides in test
+  # setup (and the README quickstart's config) keep working regardless of
+  # when the instance struct was built.
+  defp default_journal(@default, _repo), do: nil
+  defp default_journal(_name, nil), do: Continuum.Runtime.Journal.InMemory
+  defp default_journal(_name, _repo), do: Continuum.Runtime.Journal.Postgres
 
   defp default_activity_executor(@default) do
     Application.get_env(:continuum, :activity_executor, :builtin)

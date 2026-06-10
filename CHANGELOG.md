@@ -4,6 +4,16 @@
 
 ### Fixes
 
+- The journal adapter is now resolved through the runtime instance — one
+  source of truth for `Continuum.start/signal/cancel/await`. Previously the
+  engine defaulted new runs to the in-memory journal even with
+  `config :continuum, journal: ...Postgres` set (the README quickstart
+  therefore started a non-durable run while `await` polled Postgres), and
+  named instances ignored the config entirely. Named instances given a
+  `:repo` now default to the Postgres journal (override with the new
+  `journal:` option of `Continuum.children/1`); the SignalRouter's
+  LISTEN gating follows the instance's journal too.
+
 - Activity task leases are extended to cover the activity's configured
   timeout (plus a margin) at execution start. Previously the claim TTL
   (default 30s) was the effective execution ceiling: any activity running
