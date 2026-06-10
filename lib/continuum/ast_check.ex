@@ -102,7 +102,17 @@ defmodule Continuum.AstCheck do
     {Code, :eval_quoted} => "code evaluation is non-deterministic",
     {:erlang, :now} => "use Continuum.now/0 (and :erlang.now is deprecated)",
     {:erlang, :spawn} => "spawn forbidden in workflows",
-    {:erlang, :phash2} => "phash2 salt may change across OTP releases"
+    {:erlang, :spawn_link} => "spawn forbidden in workflows",
+    {:erlang, :spawn_monitor} => "spawn forbidden in workflows",
+    {:erlang, :phash2} => "phash2 salt may change across OTP releases",
+    {:erlang, :system_time} => "use Continuum.now/0",
+    {:erlang, :monotonic_time} => "monotonic time is non-deterministic on replay",
+    {:erlang, :unique_integer} => "use Continuum.uuid4/0",
+    {:erlang, :make_ref} => "use Continuum.uuid4/0",
+    {:erlang, :self} => "pid identity is non-deterministic on replay; wrap in an activity",
+    {:erlang, :send} => "send messages outside the workflow, or wrap in an activity",
+    {:os, :system_time} => "use Continuum.now/0",
+    {:os, :timestamp} => "use Continuum.now/0"
   }
 
   # Unqualified spellings of forbidden auto-imported Kernel functions, used
@@ -173,8 +183,8 @@ defmodule Continuum.AstCheck do
   def scan(ast, file), do: do_scan(ast, file, nil)
 
   defp do_scan(ast, file, env) do
-    {_, {violations, _imports}} =
-      Macro.prewalk(ast, {[], []}, &check_node(&1, &2, file, env))
+    acc = %{violations: [], imports: [], aliases: %{}}
+    {_, %{violations: violations}} = Macro.prewalk(ast, acc, &check_node(&1, &2, file, env))
 
     case Enum.reverse(violations) do
       [] -> :ok
@@ -274,6 +284,62 @@ defmodule Continuum.AstCheck do
       [
         {env.module, caller_fun, caller_arity,
          [file: to_charlist(env.file || "nofile"), line: found.line || env.line || 0]}
+      ]
+    )
+  end
+
+  @doc """
+  Warn on dynamic-receiver calls (`some_var.fun(...)`) in workflow code.
+
+  A call whose receiver is a runtime value cannot be checked against the
+  denylist — `m = DateTime; m.utc_now()` would silently bypass the scanner.
+  Plain field access (`input.seed`, no parentheses) is not flagged.
+  """
+  @spec check_dynamic_call_warnings(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
+  def check_dynamic_call_warnings(ast, env, caller_fun, caller_arity) do
+    {_ast, calls} =
+      Macro.prewalk(ast, [], fn
+        {{:., _, [{var, _, var_ctx}, fun]}, meta, args} = node, acc
+        when is_atom(var) and is_atom(var_ctx) and is_atom(fun) and is_list(args) ->
+          if var in [:__MODULE__, :__ENV__] or
+               (args == [] and Keyword.get(meta, :no_parens, false)) do
+            {node, acc}
+          else
+            call = %{
+              var: var,
+              function: fun,
+              arity: length(args),
+              line: Keyword.get(meta, :line)
+            }
+
+            {node, [call | acc]}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    calls
+    |> Enum.reverse()
+    |> Enum.each(&warn_dynamic_call(&1, env, caller_fun, caller_arity))
+
+    :ok
+  end
+
+  defp warn_dynamic_call(call, env, caller_fun, caller_arity) do
+    IO.warn(
+      """
+      Continuum cannot analyze a dynamic-receiver call in workflow code:
+
+          #{call.var}.#{call.function}/#{call.arity}
+
+      The receiver is a runtime value, so the determinism scanner cannot
+      check it against the denylist. Call the module directly, or move the
+      dynamic dispatch into an activity.
+      """,
+      [
+        {env.module, caller_fun, caller_arity,
+         [file: to_charlist(env.file || "nofile"), line: call.line || env.line || 0]}
       ]
     )
   end
@@ -446,14 +512,19 @@ defmodule Continuum.AstCheck do
     |> String.trim_trailing()
   end
 
+  # Aliases are resolved before the denylist lookup: an in-body
+  # `alias DateTime, as: D` is tracked by the walk; module-level aliases come
+  # from the caller env via `Macro.expand/2`. Both directions matter —
+  # `D.utc_now()` must be a hard error, and a user's own
+  # `MyApp.Legacy.DateTime` aliased as `DateTime` must NOT be.
   defp check_node(
-         {{:., _, [{:__aliases__, _, alias_parts}, fun]}, meta, args} = node,
+         {{:., _, [{:__aliases__, _, _} = alias_ast, fun]}, meta, args} = node,
          acc,
          file,
-         _env
+         env
        )
        when is_atom(fun) and is_list(args) do
-    mod = Module.concat(alias_parts)
+    mod = resolve_alias(alias_ast, acc.aliases, env)
     {node, maybe_record(mod, fun, meta, file, acc)}
   end
 
@@ -465,7 +536,7 @@ defmodule Continuum.AstCheck do
   # `receive` parks the process outside the journal: on replay nothing sends
   # the message again, so the workflow blocks (or takes the `after` branch)
   # differently than it did originally.
-  defp check_node({:receive, meta, args} = node, {violations, imports}, file, _env)
+  defp check_node({:receive, meta, args} = node, acc, file, _env)
        when is_list(args) do
     violation = %{
       mfa: {Kernel.SpecialForms, :receive},
@@ -474,26 +545,31 @@ defmodule Continuum.AstCheck do
       hint: @receive_hint
     }
 
-    {node, {[violation | violations], imports}}
+    {node, record(acc, violation)}
   end
 
   # Track in-body `import` directives so later unqualified calls in the same
   # definition resolve against them even when no caller env is available.
-  defp check_node({:import, _meta, [module_ast | rest]} = node, {violations, imports}, _file, env) do
+  defp check_node({:import, _meta, [module_ast | rest]} = node, acc, _file, env) do
     case import_spec(module_ast, rest, env) do
-      {:ok, spec} -> {node, {violations, [spec | imports]}}
-      :error -> {node, {violations, imports}}
+      {:ok, spec} -> {node, %{acc | imports: [spec | acc.imports]}}
+      :error -> {node, acc}
     end
+  end
+
+  # Track in-body `alias` directives (single, `as:`, and `Mod.{A, B}` forms).
+  defp check_node({:alias, _meta, [aliased | rest]} = node, acc, _file, env) do
+    {node, %{acc | aliases: Map.merge(acc.aliases, alias_entries(aliased, rest, env))}}
   end
 
   # Local (unqualified) calls: `apply(...)`, `spawn(...)`, `send(self(), ...)`,
   # or a forbidden function pulled in by `import`.
-  defp check_node({fun, meta, args} = node, {violations, imports} = acc, file, env)
+  defp check_node({fun, meta, args} = node, acc, file, env)
        when is_atom(fun) and is_list(meta) and is_list(args) do
     arity = length(args)
 
     hit =
-      walked_import_hit(imports, fun, arity) ||
+      walked_import_hit(acc.imports, fun, arity) ||
         env_import_hit(env, fun, arity) ||
         fallback_local_hit(env, fun, arity)
 
@@ -506,7 +582,7 @@ defmodule Continuum.AstCheck do
           hint: hint
         }
 
-        {node, {[violation | violations], imports}}
+        {node, record(acc, violation)}
 
       nil ->
         {node, acc}
@@ -515,22 +591,90 @@ defmodule Continuum.AstCheck do
 
   defp check_node(node, acc, _file, _env), do: {node, acc}
 
-  defp maybe_record(mod, fun, meta, file, {violations, imports}) do
+  defp record(acc, violation), do: %{acc | violations: [violation | acc.violations]}
+
+  defp maybe_record(mod, fun, meta, file, acc) do
     case Map.fetch(@forbidden, {mod, fun}) do
       {:ok, hint} ->
-        violation = %{
+        record(acc, %{
           mfa: {mod, fun},
           line: Keyword.get(meta, :line),
           file: file,
           hint: hint
-        }
-
-        {[violation | violations], imports}
+        })
 
       :error ->
-        {violations, imports}
+        acc
     end
   end
+
+  defp resolve_alias({:__aliases__, _, [first | rest]} = alias_ast, aliases, env)
+       when is_atom(first) do
+    case Map.fetch(aliases, first) do
+      {:ok, target} when rest == [] -> target
+      {:ok, target} -> Module.concat([target | rest])
+      :error -> expand_alias(alias_ast, env)
+    end
+  end
+
+  defp resolve_alias(alias_ast, _aliases, env), do: expand_alias(alias_ast, env)
+
+  defp expand_alias(alias_ast, %Macro.Env{} = env), do: Macro.expand(alias_ast, env)
+
+  defp expand_alias({:__aliases__, _, parts}, nil) do
+    if Enum.all?(parts, &is_atom/1), do: Module.concat(parts), else: nil
+  end
+
+  defp alias_entries({:__aliases__, _, parts} = aliased, rest, env) when is_list(parts) do
+    target = expand_alias(aliased, env)
+
+    as_name =
+      case alias_as_option(rest) do
+        nil -> List.last(parts)
+        as_name -> as_name
+      end
+
+    if is_atom(as_name) and is_atom(target) and not is_nil(target) do
+      %{as_name => target}
+    else
+      %{}
+    end
+  end
+
+  # alias Mod.{A, B}
+  defp alias_entries(
+         {{:., _, [{:__aliases__, _, base_parts} = base, :{}]}, _, inner},
+         _rest,
+         env
+       )
+       when is_list(base_parts) and is_list(inner) do
+    base_mod = expand_alias(base, env)
+
+    inner
+    |> Enum.flat_map(fn
+      {:__aliases__, _, [_ | _] = parts} = _inner_alias when is_atom(base_mod) ->
+        if Enum.all?(parts, &is_atom/1) do
+          [{List.last(parts), Module.concat([base_mod | parts])}]
+        else
+          []
+        end
+
+      _other ->
+        []
+    end)
+    |> Map.new()
+  end
+
+  defp alias_entries(_aliased, _rest, _env), do: %{}
+
+  defp alias_as_option([opts]) when is_list(opts) do
+    case Keyword.get(opts, :as) do
+      {:__aliases__, _, [as_name]} when is_atom(as_name) -> as_name
+      _ -> nil
+    end
+  end
+
+  defp alias_as_option(_rest), do: nil
 
   defp import_spec(module_ast, rest, env) do
     opts =

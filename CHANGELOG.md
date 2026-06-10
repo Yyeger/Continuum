@@ -4,6 +4,14 @@
 
 ### Fixes
 
+- The determinism scanner resolves aliases before the denylist lookup:
+  `alias DateTime, as: D` + `D.utc_now()` is now a hard error (previously a
+  generic warning), and a user's own module aliased *as* `DateTime` is no
+  longer a false positive. `:erlang.system_time/monotonic_time/
+  unique_integer/make_ref/self/send` and `:os.system_time/timestamp` join
+  the denylist alongside their already-banned `System.*`/`Kernel` wrappers,
+  and dynamic-receiver calls (`m.f(...)`) in workflow code now emit a
+  warning since they cannot be statically checked.
 - Workflow code that swallows Continuum's suspend throw (a `try ... catch`
   arm around an effect — the throw happens *after* the pending effect is
   journaled) no longer corrupts the run's history. The engine records every

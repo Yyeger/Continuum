@@ -215,6 +215,62 @@ defmodule Continuum.AstCheckTest do
       assert :ok == AstCheck.scan(excepted)
     end
 
+    test "rejects :erlang and :os time/uniqueness primitives" do
+      ast =
+        quote do
+          fn ->
+            :erlang.system_time(:millisecond)
+            :erlang.monotonic_time()
+            :erlang.unique_integer([:monotonic])
+            :erlang.make_ref()
+            :os.system_time()
+            :os.timestamp()
+          end
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      mfas = Enum.map(violations, & &1.mfa)
+
+      assert {:erlang, :system_time} in mfas
+      assert {:erlang, :monotonic_time} in mfas
+      assert {:erlang, :unique_integer} in mfas
+      assert {:erlang, :make_ref} in mfas
+      assert {:os, :system_time} in mfas
+      assert {:os, :timestamp} in mfas
+    end
+
+    test "resolves in-body alias ... as: before the denylist lookup" do
+      ast =
+        quote do
+          alias DateTime, as: D
+          D.utc_now()
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {DateTime, :utc_now}
+    end
+
+    test "an aliased user module named DateTime is not a false positive" do
+      ast =
+        quote do
+          alias MyApp.Legacy.DateTime
+          DateTime.utc_now()
+        end
+
+      assert :ok == AstCheck.scan(ast)
+    end
+
+    test "multi-alias form (alias Mod.{A, B}) is tracked" do
+      ast =
+        quote do
+          alias Util.{DateTime, Money}
+          DateTime.utc_now()
+          Money.new(100)
+        end
+
+      assert :ok == AstCheck.scan(ast)
+    end
+
     test "format/1 produces a readable diagnostic" do
       {:error, violations} =
         AstCheck.scan(quote(do: DateTime.utc_now()), "test/foo.ex")

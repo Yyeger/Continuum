@@ -188,6 +188,71 @@ defmodule Continuum.WorkflowCompileTest do
       end
     end
 
+    test "an aliased DateTime (alias ... as: D) refuses to compile" do
+      assert_raise CompileError, ~r/Continuum.now\/0/, fn ->
+        defmodule BadAliasedFlow do
+          use Continuum.Workflow, version: 1
+          alias DateTime, as: D
+
+          def run(_input) do
+            D.utc_now()
+          end
+        end
+      end
+    end
+
+    test "a user module aliased as DateTime compiles (no false positive)" do
+      defmodule Legacy.DateTime do
+        use Continuum.Pure
+
+        def utc_now, do: :fake_legacy_time
+      end
+
+      defmodule LegacyAliasFlow do
+        use Continuum.Workflow, version: 1
+        alias Continuum.WorkflowCompileTest.Legacy.DateTime
+
+        def run(_input) do
+          {:ok, DateTime.utc_now()}
+        end
+      end
+
+      assert function_exported?(LegacyAliasFlow, :__continuum_workflow__, 0)
+    end
+
+    test "a dynamic-receiver call (m.f()) in workflow code warns" do
+      warning =
+        capture_io(:standard_error, fn ->
+          defmodule DynamicReceiverFlow do
+            use Continuum.Workflow, version: 1
+
+            def run(input) do
+              m = input.handler
+              m.handle(input.seed)
+              {:ok, input.seed}
+            end
+          end
+        end)
+
+      assert warning =~ "dynamic-receiver call"
+      assert warning =~ "m.handle/1"
+    end
+
+    test "plain field access (input.seed) does not warn as dynamic dispatch" do
+      warning =
+        capture_io(:standard_error, fn ->
+          defmodule FieldAccessFlow do
+            use Continuum.Workflow, version: 1
+
+            def run(input) do
+              {:ok, input.seed}
+            end
+          end
+        end)
+
+      refute warning =~ "dynamic-receiver call"
+    end
+
     test "await child shorthand requires Mod.run(input)" do
       assert_raise ArgumentError, ~r/await child Mod\.run\(input\)/, fn ->
         compile_workflow("BadAwaitChildFun", """
