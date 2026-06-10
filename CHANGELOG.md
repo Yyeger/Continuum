@@ -15,6 +15,11 @@
   hard-codes a Postgres mailbox lookup: on non-Postgres journals the replay
   suspends, so golden histories ending at a pending await can be replayed
   offline with `Continuum.Test.replay/4`.
+- In-memory inline activities (`Continuum.Test.start_synchronous/3`) now
+  rescue exceptions with the same normalization as the durable worker and
+  hand the workflow an `{:error, error}` value instead of crashing the run.
+  The canonical saga path ("payment fails → `compensate_all`") now takes
+  the same control path in tests as in production.
 - The journal adapter is now resolved through the runtime instance — one
   source of truth for `Continuum.start/signal/cancel/await`. Previously the
   engine defaulted new runs to the in-memory journal even with

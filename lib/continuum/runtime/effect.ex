@@ -546,15 +546,52 @@ defmodule Continuum.Runtime.Effect do
       mfa: {mod, fun, args}
     })
 
-    result = apply(mod, fun, args)
-    journal_live!(ctx, effect, result, command_id)
+    # Same exception normalization as the durable worker
+    # (`ActivityWorker.run_activity/1`): a raising activity hands the workflow
+    # an `{:error, error}` value instead of crashing the run, so saga branches
+    # take the same control path under `Continuum.Test.start_synchronous/3`
+    # as in production.
+    outcome =
+      try do
+        {:ok, apply(mod, fun, args)}
+      rescue
+        exception -> {:error, exception}
+      catch
+        # Inline activities execute in the workflow process; engine control
+        # throws from a nested effect must keep unwinding to the engine, not
+        # be flattened into an activity error.
+        :throw, {@suspend_token, _} = token ->
+          throw(token)
 
-    Telemetry.execute([:continuum, :activity, :completed], %{}, %{
-      run_id: ctx.run_id,
-      mfa: {mod, fun, args}
-    })
+        :throw, {:continuum_continued_as_new, _} = token ->
+          throw(token)
 
-    result
+        kind, reason ->
+          {:error, {kind, reason}}
+      end
+
+    case outcome do
+      {:ok, result} ->
+        journal_live!(ctx, effect, result, command_id)
+
+        Telemetry.execute([:continuum, :activity, :completed], %{}, %{
+          run_id: ctx.run_id,
+          mfa: {mod, fun, args}
+        })
+
+        result
+
+      {:error, error} ->
+        journal_live!(ctx, effect, {:error, error}, command_id)
+
+        Telemetry.execute([:continuum, :activity, :failed], %{}, %{
+          run_id: ctx.run_id,
+          mfa: {mod, fun, args},
+          error: error
+        })
+
+        {:error, error}
+    end
   end
 
   defp live_tail!(ctx, effect, live_compute, command_id) do
