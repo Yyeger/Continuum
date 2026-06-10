@@ -20,6 +20,13 @@
   hand the workflow an `{:error, error}` value instead of crashing the run.
   The canonical saga path ("payment fails → `compensate_all`") now takes
   the same control path in tests as in production.
+- In-memory signal delivery now buffers per run (mirroring the
+  `continuum_signals` mailbox) instead of appending `signal_received` at the
+  journal tail. Signals arriving early or out of order wait for their
+  matching `await signal` — previously they produced a permanent
+  `ReplayDriftError` that the identical sequence on Postgres did not — and
+  the consumed event carries the await's command identity. Signaling a
+  nonexistent in-memory run still returns `{:error, :not_found}`.
 - The journal adapter is now resolved through the runtime instance — one
   source of truth for `Continuum.start/signal/cancel/await`. Previously the
   engine defaulted new runs to the in-memory journal even with

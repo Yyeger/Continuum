@@ -75,10 +75,13 @@ defmodule Continuum.Runtime.SignalRouter do
     :ok
   end
 
+  # Buffer-then-wake, mirroring the durable mailbox: the engine consumes the
+  # buffered payload when its replay reaches the matching `await signal`, so
+  # early or out-of-order signals wait for their await instead of landing at
+  # the journal tail (where replay would later read them as drift).
   defp deliver_local(instance, run_id, name, payload) do
-    case Registry.lookup(instance.registry, run_id) do
-      [{_pid, _value}] ->
-        append_in_memory_signal!(instance, run_id, name, payload)
+    case Journal.InMemory.deliver_signal!(instance, run_id, name, payload) do
+      :ok ->
         Engine.wake(instance, run_id)
 
         Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
@@ -90,18 +93,9 @@ defmodule Continuum.Runtime.SignalRouter do
 
         :ok
 
-      [] ->
-        {:error, :not_found}
+      {:error, _reason} = error ->
+        error
     end
-  end
-
-  defp append_in_memory_signal!(instance, run_id, name, payload) do
-    Journal.InMemory.append!(
-      instance,
-      run_id,
-      %{type: :signal_received, name: name, payload: payload, seq: nil},
-      nil
-    )
   end
 
   defp route(instance, run_id) do

@@ -535,6 +535,35 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
+  # Non-durable journals buffer delivered signals per run (see
+  # `Journal.InMemory.deliver_signal!/4`); a live await consumes the matching
+  # buffered payload — mirroring the Postgres fast path, where a signal already
+  # in the mailbox is journaled directly as `signal_received` — or suspends
+  # until delivery wakes the engine.
+  defp live_tail!(ctx, {:await_signal, name, _opts} = effect, _live_compute, command_id) do
+    buffered =
+      if function_exported?(ctx.journal, :consume_buffered_signal!, 3) do
+        ctx.journal.consume_buffered_signal!(ctx.instance, ctx.run_id, name)
+      else
+        :none
+      end
+
+    case buffered do
+      {:ok, payload} ->
+        journal_live!(ctx, effect, payload, command_id)
+
+        Telemetry.execute([:continuum, :signal, :received], %{}, %{
+          run_id: ctx.run_id,
+          signal_name: name
+        })
+
+        payload
+
+      :none ->
+        throw({:continuum_suspend, {:awaiting_signal, name}})
+    end
+  end
+
   defp live_tail!(
          ctx,
          {:activity, {mod, fun, args}, _opts} = effect,

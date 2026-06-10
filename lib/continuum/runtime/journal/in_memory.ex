@@ -60,6 +60,30 @@ defmodule Continuum.Runtime.Journal.InMemory do
     GenServer.call(__MODULE__, {:fail, instance, run_id, error})
   end
 
+  @doc """
+  Buffer a signal in the run's in-memory mailbox.
+
+  Mirrors the `continuum_signals` semantics of the Postgres adapter: the
+  payload is held until a live `await signal(name)` consumes it, so signals
+  arriving early or out of order wait for their matching await instead of
+  corrupting the journal tail. Returns `{:error, :not_found}` when the run
+  does not exist.
+  """
+  def deliver_signal!(%Instance{} = instance, run_id, name, payload) do
+    GenServer.call(__MODULE__, {:deliver_signal, instance.name, run_id, name, payload})
+  end
+
+  @doc """
+  Pop the oldest buffered payload for signal `name`, or return `:none`.
+
+  Called by `Continuum.Runtime.Effect` when an `await signal(name)` reaches
+  the live tail; the consumed payload is journaled as `signal_received` with
+  the await's command identity.
+  """
+  def consume_buffered_signal!(%Instance{} = instance, run_id, name) do
+    GenServer.call(__MODULE__, {:consume_buffered_signal, instance.name, run_id, name})
+  end
+
   @doc "Return the full state of all runs known to the in-memory journal."
   def dump, do: GenServer.call(__MODULE__, :dump)
 
@@ -88,6 +112,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
       input: input,
       events: [],
       snapshots: [],
+      signal_buffer: %{},
       state: :running,
       result: nil,
       error: nil
@@ -162,6 +187,44 @@ defmodule Continuum.Runtime.Journal.InMemory do
     {:reply, :ok, state}
   end
 
+  def handle_call({:deliver_signal, instance_name, run_id, name, payload}, _from, state) do
+    case get_run_state(state, instance_name, run_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      _run ->
+        state =
+          update_run(state, instance_name, run_id, fn run ->
+            Map.update(run, :signal_buffer, %{name => [payload]}, fn buffer ->
+              Map.update(buffer, name, [payload], &(&1 ++ [payload]))
+            end)
+          end)
+
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:consume_buffered_signal, instance_name, run_id, name}, _from, state) do
+    case get_run_state(state, instance_name, run_id) do
+      %{signal_buffer: buffer} when is_map(buffer) ->
+        case Map.get(buffer, name, []) do
+          [payload | rest] ->
+            state =
+              update_run(state, instance_name, run_id, fn run ->
+                Map.put(run, :signal_buffer, put_buffer(buffer, name, rest))
+              end)
+
+            {:reply, {:ok, payload}, state}
+
+          [] ->
+            {:reply, :none, state}
+        end
+
+      _ ->
+        {:reply, :none, state}
+    end
+  end
+
   def handle_call(:dump, _from, state), do: {:reply, state, state}
   def handle_call(:reset, _from, _state), do: {:reply, :ok, %{}}
 
@@ -192,11 +255,15 @@ defmodule Continuum.Runtime.Journal.InMemory do
       input: nil,
       events: [],
       snapshots: [],
+      signal_buffer: %{},
       state: :running,
       result: nil,
       error: nil
     }
   end
+
+  defp put_buffer(buffer, name, []), do: Map.delete(buffer, name)
+  defp put_buffer(buffer, name, rest), do: Map.put(buffer, name, rest)
 
   defp get_run_state(state, instance_name, run_id) do
     state
