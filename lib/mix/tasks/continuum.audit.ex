@@ -10,7 +10,7 @@ defmodule Mix.Tasks.Continuum.Audit do
 
   import Ecto.Query
 
-  alias Continuum.Schema.{Event, Run}
+  alias Continuum.Schema.{ActivityTask, Event, Run}
 
   @shortdoc "Audits determinism metadata and stale patch markers"
   @non_terminal_states ~w(running suspended stuck_unknown_version)
@@ -43,7 +43,8 @@ defmodule Mix.Tasks.Continuum.Audit do
 
     %{
       workflows: workflows,
-      stuck_unknown_version_runs: stuck_unknown_version_count(repo)
+      stuck_unknown_version_runs: stuck_unknown_version_count(repo),
+      expired_leased_activity_tasks: expired_leased_task_count(repo)
     }
   end
 
@@ -122,6 +123,18 @@ defmodule Mix.Tasks.Continuum.Audit do
     repo.one(from(r in Run, where: r.state == "stuck_unknown_version", select: count(r.id)))
   end
 
+  # Tasks still 'leased' past their lease expiry are stranded between worker
+  # death and the steady-state sweep — a persistent non-zero count means the
+  # sweep is not running or workers are dying faster than it rescues.
+  defp expired_leased_task_count(repo) do
+    repo.one(
+      from(t in ActivityTask,
+        where: t.state == "leased" and t.lease_expires_at < fragment("clock_timestamp()"),
+        select: count(t.id)
+      )
+    )
+  end
+
   defp strict_failure?(%{workflows: workflows, stuck_unknown_version_runs: stuck}) do
     stuck > 0 or
       Enum.any?(workflows, fn workflow ->
@@ -132,6 +145,8 @@ defmodule Mix.Tasks.Continuum.Audit do
   defp print_text(report) do
     Mix.shell().info("Continuum audit")
     Mix.shell().info("stuck_unknown_version_runs: #{report.stuck_unknown_version_runs}")
+
+    Mix.shell().info("expired_leased_activity_tasks: #{report.expired_leased_activity_tasks}")
 
     Enum.each(report.workflows, fn workflow ->
       Mix.shell().info("#{workflow.workflow} #{workflow.version_hash}")

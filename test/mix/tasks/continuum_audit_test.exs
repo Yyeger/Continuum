@@ -4,7 +4,7 @@ defmodule Mix.Tasks.ContinuumAuditTest do
   import ExUnit.CaptureIO
 
   alias Continuum.Runtime.Journal.Postgres
-  alias Continuum.Schema.{Event, Run}
+  alias Continuum.Schema.{ActivityTask, Event, Run}
 
   defmodule AuditFlow do
     use Continuum.Workflow, version: 1
@@ -15,6 +15,7 @@ defmodule Mix.Tasks.ContinuumAuditTest do
   end
 
   setup do
+    Repo.delete_all(ActivityTask)
     Repo.delete_all(Event)
     Repo.delete_all(Run)
     Mix.shell(Mix.Shell.Process)
@@ -50,6 +51,27 @@ defmodule Mix.Tasks.ContinuumAuditTest do
 
     Mix.Task.rerun("continuum.audit", ["--repo", "Continuum.Test.Repo"])
     assert shell_output() =~ "safe-to-remove"
+  end
+
+  test "surfaces expired leased activity tasks as an operator signal" do
+    run_id = start_run!()
+    past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+
+    %ActivityTask{}
+    |> Ecto.Changeset.change(%{
+      id: Ecto.UUID.generate(),
+      run_id: run_id,
+      seq: 0,
+      mfa: :erlang.term_to_binary(%{}),
+      attempt: 1,
+      state: "leased",
+      lease_owner: "dead-worker",
+      lease_expires_at: past
+    })
+    |> Repo.insert!()
+
+    Mix.Task.rerun("continuum.audit", ["--repo", "Continuum.Test.Repo"])
+    assert shell_output() =~ "expired_leased_activity_tasks: 1"
   end
 
   test "emits json report" do
