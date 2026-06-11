@@ -87,7 +87,7 @@ defmodule Continuum.ObserverTest do
 
     assert :ok = Continuum.Observer.cancel_run(run_id)
 
-    assert {:error, %{state: :failed, error: :cancelled}} =
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
              Continuum.await(run_id, 1_000, journal: Continuum.Runtime.Journal.Postgres)
 
     assert {:ok, %{entries: [%{run_id: ^run_id, state: :cancelled}]}} =

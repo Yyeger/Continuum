@@ -152,8 +152,8 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
                    1_000
 
     states = Map.new(Repo.all(from(r in Run, select: {r.id, r.state})))
-    assert states[c1] == "failed"
-    assert states[c2] == "failed"
+    assert states[c1] == "cancelled"
+    assert states[c2] == "cancelled"
     # The descendant beyond the bound keeps running — that is the documented
     # truncation the telemetry makes visible.
     assert states[c3] == "suspended"
@@ -217,7 +217,7 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
 
     assert_eventually(fn ->
       case children_of(parent_id) do
-        [%{state: "failed", error: error}] -> decode(error) == :parent_cancelled
+        [%{state: "cancelled", error: error}] -> decode(error) == :parent_cancelled
         _ -> false
       end
     end)

@@ -28,7 +28,7 @@ defmodule Continuum.Cluster.CancelForwardTest do
                ])
 
       run = Repo.one!(from(r in Run, where: r.id == ^run_id))
-      assert run.state == "failed"
+      assert run.state == "cancelled"
       assert :erlang.binary_to_term(run.error) == :cancelled
     after
       stop_peer(peer_a)

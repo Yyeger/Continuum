@@ -225,8 +225,13 @@ defmodule Continuum.Query do
 
     case state do
       "cancelled" ->
+        # Match both the canonical state and legacy pre-0.5.2 rows that
+        # stored a cancel as failed + :cancelled.
         cancelled = encode_term(:cancelled)
-        from(r in query, where: r.state == "failed" and r.error == ^cancelled)
+
+        from(r in query,
+          where: r.state == "cancelled" or (r.state == "failed" and r.error == ^cancelled)
+        )
 
       "failed" ->
         cancelled = encode_term(:cancelled)

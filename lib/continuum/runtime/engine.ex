@@ -174,10 +174,21 @@ defmodule Continuum.Runtime.Engine do
           end
         after
           unsubscribe_run(instance, run_id)
+          # A broadcast can land between the poll and the unsubscribe; don't
+          # leak {:run_finished, ...} messages into the caller's mailbox.
+          flush_run_finished(run_id)
         end
 
       :error ->
         poll_until(instance, run_id, deadline, journal)
+    end
+  end
+
+  defp flush_run_finished(run_id) do
+    receive do
+      {:run_finished, ^run_id, _state, _payload} -> flush_run_finished(run_id)
+    after
+      0 -> :ok
     end
   end
 
@@ -196,11 +207,16 @@ defmodule Continuum.Runtime.Engine do
       %{state: :completed, result: result} ->
         {:ok, %{run_id: run_id, state: :completed, result: result}}
 
+      %{state: :failed, error: err} when err in [:cancelled, :parent_cancelled] ->
+        # Legacy rows (pre-"cancelled" state) and the in-memory adapter store
+        # a cancel as failed + :cancelled; awaiters see one canonical state.
+        {:error, %{run_id: run_id, state: :cancelled, error: :cancelled}}
+
       %{state: :failed, error: err} ->
         {:error, %{run_id: run_id, state: :failed, error: err}}
 
       %{state: :cancelled} ->
-        {:error, %{run_id: run_id, state: :cancelled}}
+        {:error, %{run_id: run_id, state: :cancelled, error: :cancelled}}
 
       %{state: :stuck_unknown_version, error: err} ->
         {:error, %{run_id: run_id, state: :stuck_unknown_version, error: err}}
@@ -412,12 +428,14 @@ defmodule Continuum.Runtime.Engine do
 
   @impl true
   def handle_call(:cancel, _from, state) do
+    # The journal adapter is the single broadcaster of the terminal
+    # {:run_finished, _, :cancelled, _} message — a second broadcast here
+    # would leak a duplicate into awaiting callers' mailboxes.
     :ok = cancel_run(state)
     state = %{state | status: :cancelled, error: :cancelled}
 
     Telemetry.execute([:continuum, :run, :cancelled], %{}, run_metadata(state))
 
-    :ok = broadcast_run_finished(state.instance, state.run_id, :cancelled, :cancelled)
     untrack_lease(state)
     {:stop, :normal, :ok, state}
   end

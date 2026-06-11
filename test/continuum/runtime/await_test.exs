@@ -52,9 +52,9 @@ defmodule Continuum.Runtime.AwaitTest do
 
     :ok = Phoenix.PubSub.subscribe(Continuum.PubSub, "continuum:run:#{run_id}")
     :ok = Postgres.cancel_run!(Continuum.Runtime.Instance.default(), run_id, token)
-    assert_receive {:run_finished, ^run_id, :failed, :cancelled}, 250
+    assert_receive {:run_finished, ^run_id, :cancelled, :cancelled}, 250
 
-    assert {:ok, {:error, %{run_id: ^run_id, state: :failed, error: :cancelled}}} =
+    assert {:ok, {:error, %{run_id: ^run_id, state: :cancelled, error: :cancelled}}} =
              Task.yield(waiter, 1_000)
   end
 end

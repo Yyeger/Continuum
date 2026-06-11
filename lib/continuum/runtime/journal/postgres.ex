@@ -487,9 +487,13 @@ defmodule Continuum.Runtime.Journal.Postgres do
           decoded -> {:completed, decoded}
         end
 
+      {"cancelled", _result, _error} ->
+        {:cancelled}
+
+      # Classified by run *state*: a child that legitimately failed with the
+      # user error term :cancelled is a failure, not a cancellation.
       {"failed", _result, error} ->
-        decoded = decode_term(error)
-        if decoded in [:cancelled, :parent_cancelled], do: {:cancelled}, else: {:failed, decoded}
+        {:failed, decode_term(error)}
 
       {_state, _result, _error} ->
         :pending
@@ -936,6 +940,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp cancel_run_with_instance!(run_id, lease_token, instance) do
     result =
       repo().transaction(fn ->
+        # Same lock order as the cascade (parent before child): take our own
+        # parent's row lock first so cancel and child-completion cannot
+        # deadlock AB-BA.
+        lock_parent_first(run_id)
         lock_and_validate_active_run!(run_id, lease_token)
 
         repo().update_all(
@@ -956,12 +964,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
         )
 
         # Cascade: cancel all in-flight descendant child runs, bounded by depth.
-        cancel_descendants!(run_id)
+        cancelled_descendants = cancel_descendants!(run_id)
 
         case repo().update_all(
                leased_run_query(run_id, lease_token),
                set: [
-                 state: "failed",
+                 state: "cancelled",
                  error: encode_term(:cancelled),
                  completed_at: DateTime.utc_now(),
                  next_wakeup_at: nil,
@@ -970,14 +978,27 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  lease_expires_at: nil
                ]
              ) do
-          {1, _} -> maybe_wake_parent(run_id)
+          {1, _} -> {maybe_wake_parent(run_id), cancelled_descendants}
           {0, _} -> repo().rollback({:cancel_failed, :lease_mismatch})
         end
       end)
 
     case result do
-      {:ok, parent_run_id} ->
-        Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :failed, :cancelled)
+      {:ok, {parent_run_id, cancelled_descendants}} ->
+        # Single broadcaster, single canonical state. Cascade-cancelled
+        # descendants broadcast too, so their awaiters don't block for the
+        # full timeout.
+        Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :cancelled, :cancelled)
+
+        Enum.each(cancelled_descendants, fn descendant_id ->
+          Continuum.Runtime.Engine.broadcast_run_finished(
+            instance,
+            descendant_id,
+            :cancelled,
+            :cancelled
+          )
+        end)
+
         wake_parent(instance, parent_run_id)
         :ok
 
@@ -986,10 +1007,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  # Returns the ids of the descendants that were actually flipped, so the
+  # caller can broadcast their termination after commit.
   defp cancel_descendants!(run_id) do
     case descendant_run_ids(run_id) do
       [] ->
-        :ok
+        []
 
       descendant_ids ->
         cancelled = encode_term(:parent_cancelled)
@@ -1009,17 +1032,38 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
         # Clear the lease so any live descendant engine fails its next write and
         # stops cleanly — no post-cancel child events can be appended.
-        repo().update_all(
-          from(r in Run, where: r.id in ^descendant_ids and r.state in ["running", "suspended"]),
-          set: [
-            state: "failed",
-            error: cancelled,
-            completed_at: now,
-            next_wakeup_at: nil,
-            lease_owner: nil,
-            lease_token: nil,
-            lease_expires_at: nil
-          ]
+        {_count, flipped} =
+          repo().update_all(
+            from(r in Run,
+              where: r.id in ^descendant_ids and r.state in ["running", "suspended"],
+              select: r.id
+            ),
+            set: [
+              state: "cancelled",
+              error: cancelled,
+              completed_at: now,
+              next_wakeup_at: nil,
+              lease_owner: nil,
+              lease_token: nil,
+              lease_expires_at: nil
+            ]
+          )
+
+        flipped || []
+    end
+  end
+
+  # Cancel's cascade locks parent rows before child rows; completion paths
+  # must take the same order (see complete!/fail!) or the two transactions
+  # deadlock AB-BA. Locking a missing/parentless run is a no-op.
+  defp lock_parent_first(run_id) do
+    case repo().one(from(r in Run, where: r.id == ^run_id, select: r.parent_run_id)) do
+      nil ->
+        :ok
+
+      parent_run_id ->
+        repo().one(
+          from(r in Run, where: r.id == ^parent_run_id, lock: "FOR UPDATE", select: r.id)
         )
 
         :ok
@@ -1274,26 +1318,38 @@ defmodule Continuum.Runtime.Journal.Postgres do
         # live tip's mailbox so the signal is not lost in the dead root's.
         run_id = follow_continued_chain(run_id)
 
-        changeset =
-          %Signal{}
-          |> Ecto.Changeset.change(%{
-            run_id: run_id,
-            name: signal_name,
-            payload: encode_term(payload),
-            delivered: false,
-            inserted_at: now
-          })
+        # Validate the target inside the transaction: a signal accepted for a
+        # nonexistent or terminal run is silent signal loss (`:ok` with no
+        # consumer), and the in-memory adapter already rejects it.
+        case repo().one(from(r in Run, where: r.id == ^run_id, select: r.state)) do
+          nil ->
+            repo().rollback(:not_found)
 
-        with {:ok, _signal} <- repo().insert(changeset),
-             {_count, _} <-
-               repo().update_all(
-                 from(r in Run, where: r.id == ^run_id),
-                 set: [next_wakeup_at: now]
-               ),
-             {:ok, _} <- repo().query("SELECT pg_notify('continuum_signal', $1)", [run_id]) do
-          run_id
-        else
-          {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
+          state when state not in ["running", "suspended"] ->
+            repo().rollback(:run_terminal)
+
+          _active ->
+            changeset =
+              %Signal{}
+              |> Ecto.Changeset.change(%{
+                run_id: run_id,
+                name: signal_name,
+                payload: encode_term(payload),
+                delivered: false,
+                inserted_at: now
+              })
+
+            with {:ok, _signal} <- repo().insert(changeset),
+                 {_count, _} <-
+                   repo().update_all(
+                     from(r in Run, where: r.id == ^run_id),
+                     set: [next_wakeup_at: now]
+                   ),
+                 {:ok, _} <- repo().query("SELECT pg_notify('continuum_signal', $1)", [run_id]) do
+              run_id
+            else
+              {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
+            end
         end
       end)
 
@@ -1306,6 +1362,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
         })
 
         {:ok, delivered_run_id}
+
+      {:error, :not_found} ->
+        {:error, :not_found}
+
+      {:error, :run_terminal} ->
+        {:error, :run_terminal}
 
       {:error, reason} ->
         raise JournalError, op: :deliver_signal!, reason: reason
@@ -1894,6 +1956,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
       with_repo(instance, fn ->
         parent =
           run_in_transaction!(fn ->
+            lock_parent_first(run_id)
+
             :ok =
               cas_update_active_run(run_id, lease_token, %{
                 state: "completed",
@@ -1919,6 +1983,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
       with_repo(instance, fn ->
         parent =
           run_in_transaction!(fn ->
+            lock_parent_first(run_id)
+
             :ok =
               cas_update_active_run(run_id, lease_token, %{
                 state: "failed",

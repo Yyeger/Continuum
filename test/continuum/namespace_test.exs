@@ -60,7 +60,7 @@ defmodule Continuum.NamespaceTest do
 
     assert :ok = Continuum.cancel(run_id, journal: Postgres)
 
-    assert {:error, %{state: :failed, error: :cancelled}} =
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
              Continuum.await(run_id, 1_000, journal: Postgres)
   end
 

@@ -95,13 +95,11 @@ defmodule Continuum.Runtime.SignalRouterTest do
 
   test "already-pending signal journals signal_received without signal_awaited" do
     run_id = Ecto.UUID.generate()
+    :ok = Postgres.start_run(Instance.default(), run_id, DurableSignalFlow, %{})
     {:ok, _} = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
 
-    {:ok, ^run_id} =
-      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{},
-        journal: Postgres,
-        run_id: run_id
-      )
+    assert {:ok, 1} =
+             Continuum.Runtime.Dispatcher.dispatch_once(owner: "pending-signal", batch_size: 1)
 
     assert {:ok, %{state: :completed, result: {:ok, :went}}} =
              Continuum.await(run_id, 1_000, journal: Postgres)
@@ -114,31 +112,34 @@ defmodule Continuum.Runtime.SignalRouterTest do
 
   test "already-pending signal with timeout skips timeout timer creation" do
     run_id = Ecto.UUID.generate()
+    :ok = Postgres.start_run(Instance.default(), run_id, SignalTimeoutFlow, %{timeout_ms: 60_000})
     {:ok, _} = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
 
-    {:ok, ^run_id} =
-      Continuum.Runtime.Engine.start_run(SignalTimeoutFlow, %{timeout_ms: 60_000},
-        journal: Postgres,
-        run_id: run_id
-      )
+    assert {:ok, 1} =
+             Continuum.Runtime.Dispatcher.dispatch_once(
+               owner: "pending-signal-timeout",
+               batch_size: 1
+             )
 
     assert {:ok, %{state: :completed, result: {:ok, :go}}} =
              Continuum.await(run_id, 1_000, journal: Postgres)
 
     assert ["signal_received"] = event_types(run_id)
+    # The fast-path armed no timeout timer (next_wakeup_at is set by the
+    # delivery itself, so the timer table is the meaningful assertion).
     assert Repo.aggregate(from(t in Timer, where: t.run_id == ^run_id), :count) == 0
-    assert Repo.one!(from(r in Run, where: r.id == ^run_id)).next_wakeup_at == nil
   end
 
   test "already-pending signal fast-path replays without drift" do
     run_id = Ecto.UUID.generate()
+    :ok = Postgres.start_run(Instance.default(), run_id, DurableSignalFlow, %{})
     {:ok, _} = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
 
-    {:ok, ^run_id} =
-      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{},
-        journal: Postgres,
-        run_id: run_id
-      )
+    assert {:ok, 1} =
+             Continuum.Runtime.Dispatcher.dispatch_once(
+               owner: "pending-signal-replay",
+               batch_size: 1
+             )
 
     assert {:ok, %{state: :completed, result: {:ok, :went}}} =
              Continuum.await(run_id, 1_000, journal: Postgres)

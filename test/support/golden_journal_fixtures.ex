@@ -525,7 +525,7 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
       :child_started
     ])
     |> Map.put(:replay, :metadata_only)
-    |> Map.put(:run_metadata, %{terminal_state: :failed, child_terminal_state: :failed})
+    |> Map.put(:run_metadata, %{terminal_state: :cancelled, child_terminal_state: :cancelled})
   end
 
   def build_continue_as_new_chain do

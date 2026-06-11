@@ -264,7 +264,7 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     # re-parented child.
     assert :ok = Continuum.cancel(root, journal: Postgres)
 
-    assert run_state(child) == "failed"
+    assert run_state(child) == "cancelled"
 
     assert Repo.one(from(r in Run, where: r.id == ^child, select: r.error)) |> decoded() ==
              :parent_cancelled
@@ -297,7 +297,7 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
 
     assert :ok = Continuum.cancel(root, journal: Postgres)
 
-    assert run_state(tip) == "failed"
+    assert run_state(tip) == "cancelled"
 
     assert Repo.one(from(r in Run, where: r.id == ^tip, select: r.error)) |> decoded() ==
              :cancelled

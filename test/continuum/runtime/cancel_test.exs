@@ -39,7 +39,7 @@ defmodule Continuum.Runtime.CancelTest do
 
     assert :ok = Continuum.cancel(run_id)
 
-    assert {:error, %{state: :failed, error: :cancelled}} =
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
              Continuum.await(run_id, 25, journal: Postgres)
 
     task = Repo.one!(ActivityTask)
@@ -61,14 +61,14 @@ defmodule Continuum.Runtime.CancelTest do
 
     assert :ok = Continuum.cancel(run_id)
 
-    assert {:error, %{state: :failed, error: :cancelled}} =
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
              Continuum.await(run_id, 25, journal: Postgres)
 
     timer = Repo.one!(Timer)
     assert timer.fired == true
 
     run = Repo.one!(from(r in Run, where: r.id == ^run_id))
-    assert run.state == "failed"
+    assert run.state == "cancelled"
     assert run.next_wakeup_at == nil
 
     force_due(timer.id)
@@ -115,11 +115,11 @@ defmodule Continuum.Runtime.CancelTest do
     assert Registry.lookup(Continuum.Runtime.Registry, run_id) == []
     assert :ok = Continuum.cancel(run_id, journal: Postgres)
 
-    assert {:error, %{state: :failed, error: :cancelled}} =
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
              Continuum.await(run_id, 25, journal: Postgres)
 
     run = Repo.one!(from(r in Run, where: r.id == ^run_id))
-    assert run.state == "failed"
+    assert run.state == "cancelled"
     assert run.error == :erlang.term_to_binary(:cancelled)
   end
 

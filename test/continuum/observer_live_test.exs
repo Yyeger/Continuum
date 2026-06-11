@@ -59,7 +59,7 @@ defmodule Continuum.ObserverLiveTest do
 
     assert :ok = Continuum.Observer.cancel_run(run_id)
 
-    assert {:error, %{state: :failed, error: :cancelled}} =
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
              Continuum.await(run_id, 1_000, journal: Continuum.Runtime.Journal.Postgres)
 
     {:ok, view, _html} = live(build_conn(), "/continuum")
@@ -133,7 +133,7 @@ defmodule Continuum.ObserverLiveTest do
     |> element("#co-cancel-run")
     |> render_click()
 
-    assert {:error, %{state: :failed, error: :cancelled}} =
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
              Continuum.await(run_id, 1_000, journal: Continuum.Runtime.Journal.Postgres)
 
     assert_eventually(fn ->

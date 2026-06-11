@@ -288,6 +288,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
        when is_list(stacktrace),
        do: :ok
 
+  # Cancellation broadcasts one canonical state across adapters.
+  defp broadcast_failed(instance, run_id, :cancelled) do
+    Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :cancelled, :cancelled)
+  end
+
   defp broadcast_failed(instance, run_id, error) do
     Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :failed, error)
   end
