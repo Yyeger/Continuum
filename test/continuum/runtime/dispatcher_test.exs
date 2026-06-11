@@ -33,10 +33,86 @@ defmodule Continuum.Runtime.DispatcherTest do
     end
   end
 
+  defmodule WaitFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(_input) do
+      await(signal(:continue))
+    end
+  end
+
   setup do
     Repo.delete_all(Event)
     Repo.delete_all(Run)
     :ok
+  end
+
+  test "a fresh start is leased at insert; a racing dispatcher cannot steal it" do
+    run_id = Ecto.UUID.generate()
+    instance = Continuum.Runtime.Instance.default()
+
+    {:ok, %Lease{} = lease} =
+      Postgres.start_run(instance, run_id, DispatchFlow, %{seed: 2},
+        lease: [owner: "starting-engine", ttl_seconds: 30]
+      )
+
+    run = Repo.one!(from(r in Run, where: r.id == ^run_id))
+    assert run.lease_owner == "starting-engine"
+    assert run.lease_token == lease.token
+    assert run.lease_expires_at != nil
+
+    assert {:ok, 0} = Dispatcher.dispatch_once(owner: "thief", batch_size: 10)
+  end
+
+  test "dispatch_once skips runs whose engine is alive locally" do
+    run_id = Ecto.UUID.generate()
+    instance = Continuum.Runtime.Instance.default()
+
+    :ok = Postgres.start_run(instance, run_id, DispatchFlow, %{seed: 3})
+    :ok = Postgres.suspend!(instance, run_id, nil)
+
+    {:ok, _} = Registry.register(Continuum.Runtime.Registry, run_id, :engine)
+
+    try do
+      assert {:ok, 0} = Dispatcher.dispatch_once(owner: "local-skip", batch_size: 10)
+    after
+      Registry.unregister(Continuum.Runtime.Registry, run_id)
+    end
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "local-skip", batch_size: 10)
+
+    assert {:ok, %{state: :completed, result: {:ok, 9}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+  end
+
+  test "a live engine adopts a rotated lease instead of being fenced out" do
+    {:ok, run_id} = Continuum.start(WaitFlow, %{}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+    end)
+
+    [{engine_pid, _}] = Registry.lookup(Continuum.Runtime.Registry, run_id)
+
+    %{rows: [[new_token]]} =
+      Repo.query!(
+        """
+        UPDATE continuum_runs
+        SET lease_token = nextval('continuum_lease_token_seq'),
+            lease_owner = 'racing-dispatcher',
+            lease_expires_at = now() + interval '30 seconds'
+        WHERE id = $1::text::uuid
+        RETURNING lease_token
+        """,
+        [run_id]
+      )
+
+    Continuum.Runtime.Engine.adopt_lease(engine_pid, run_id, "racing-dispatcher", new_token)
+
+    :ok = Continuum.signal(run_id, :continue, :go, journal: Postgres)
+
+    assert {:ok, %{state: :completed, result: :go}} =
+             Continuum.await(run_id, 2_000, journal: Postgres)
   end
 
   test "dispatch_once leases an unowned run and starts an engine" do

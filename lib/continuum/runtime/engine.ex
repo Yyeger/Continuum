@@ -331,11 +331,17 @@ defmodule Continuum.Runtime.Engine do
     Code.ensure_loaded(journal)
     trace_context = initial_trace_context(opts)
 
-    unless Keyword.get(opts, :resume, false) do
-      :ok = start_run(journal, instance, run_id, workflow_module, input, trace_context, opts)
-    end
+    start_lease =
+      if Keyword.get(opts, :resume, false) do
+        nil
+      else
+        case start_run(journal, instance, run_id, workflow_module, input, trace_context, opts) do
+          :ok -> nil
+          {:ok, %Lease{} = lease} -> lease
+        end
+      end
 
-    {lease_owner, lease_token} = acquire_lease(instance, journal, run_id, opts)
+    {lease_owner, lease_token} = acquire_lease(instance, journal, run_id, opts, start_lease)
     trace_context = resume_trace_context(journal, instance, run_id, trace_context, opts)
     join_pg(instance, run_id)
 
@@ -378,6 +384,23 @@ defmodule Continuum.Runtime.Engine do
   @impl true
   def handle_cast(:wake, state) do
     {:noreply, state, {:continue, :run}}
+  end
+
+  # A dispatcher claimed this run while a live local engine already owned it
+  # (fresh-start race): hand the rotated token to the existing engine instead
+  # of dropping it, which would fence the engine out until the orphaned lease
+  # expired — a full TTL stall with no engine holding authority.
+  def handle_cast({:adopt_lease, run_id, owner, token}, %{run_id: run_id} = state) do
+    track_lease(state.instance, %Lease{run_id: run_id, owner: owner, token: token})
+    state = %{state | lease_owner: owner, lease_token: token}
+    {:noreply, state, {:continue, :run}}
+  end
+
+  def handle_cast({:adopt_lease, _run_id, _owner, _token}, state), do: {:noreply, state}
+
+  @doc false
+  def adopt_lease(pid, run_id, owner, token) do
+    GenServer.cast(pid, {:adopt_lease, run_id, owner, token})
   end
 
   @impl true
@@ -710,7 +733,15 @@ defmodule Continuum.Runtime.Engine do
     {:stop, :normal, state}
   end
 
-  defp acquire_lease(instance, Continuum.Runtime.Journal.Postgres, run_id, opts) do
+  # Fresh Postgres starts are leased at insert time (same transaction) — the
+  # lease comes back from start_run and there is no acquire window for a
+  # concurrent dispatcher to steal.
+  defp acquire_lease(instance, _journal, _run_id, _opts, %Lease{} = lease) do
+    track_lease(instance, lease)
+    {lease.owner, lease.token}
+  end
+
+  defp acquire_lease(instance, Continuum.Runtime.Journal.Postgres, run_id, opts, nil) do
     case {Keyword.get(opts, :lease_owner), Keyword.get(opts, :lease_token)} do
       {owner, token} when is_binary(owner) and is_integer(token) ->
         track_lease(instance, %Lease{run_id: run_id, owner: owner, token: token})
@@ -729,7 +760,7 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
-  defp acquire_lease(_instance, _journal, _run_id, _opts), do: {nil, nil}
+  defp acquire_lease(_instance, _journal, _run_id, _opts, nil), do: {nil, nil}
 
   defp track_lease(instance, %Lease{} = lease) do
     if Process.whereis(instance.heartbeater) do
@@ -776,12 +807,22 @@ defmodule Continuum.Runtime.Engine do
       journal.start_run(instance, run_id, workflow_module, input,
         trace_context: trace_context,
         namespace: Keyword.get(opts, :namespace, "default"),
-        attributes: Keyword.get(opts, :attributes, %{})
+        attributes: Keyword.get(opts, :attributes, %{}),
+        lease: start_lease_opts(journal, instance, opts)
       )
     else
       journal.start_run(instance, run_id, workflow_module, input)
     end
   end
+
+  defp start_lease_opts(Continuum.Runtime.Journal.Postgres, instance, opts) do
+    [
+      owner: Keyword.get_lazy(opts, :lease_owner, fn -> Lease.owner(instance.name) end),
+      ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
+    ]
+  end
+
+  defp start_lease_opts(_journal, _instance, _opts), do: nil
 
   defp initial_trace_context(opts) do
     case Keyword.fetch(opts, :trace_context) do

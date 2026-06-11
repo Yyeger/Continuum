@@ -90,6 +90,14 @@ defmodule Continuum.Runtime.Dispatcher do
   end
 
   defp claim(instance, owner, batch_size, ttl_seconds) do
+    # Runs with a live local engine must not be claimed: rotating their token
+    # fences out the healthy engine (Recovery applies the same exclusion).
+    {skip_local_sql, extra_params} =
+      case local_run_ids(instance) do
+        [] -> {"", []}
+        ids -> {"AND id::text <> ALL($4::text[])", [ids]}
+      end
+
     sql = """
     WITH candidates AS (
       SELECT id
@@ -97,6 +105,7 @@ defmodule Continuum.Runtime.Dispatcher do
       WHERE state IN ('running', 'suspended')
         AND (state = 'running' OR next_wakeup_at IS NULL OR next_wakeup_at <= now())
         AND (lease_owner IS NULL OR lease_expires_at < now())
+        #{skip_local_sql}
       ORDER BY next_wakeup_at NULLS FIRST, started_at
       FOR UPDATE SKIP LOCKED
       LIMIT $2
@@ -110,7 +119,7 @@ defmodule Continuum.Runtime.Dispatcher do
     RETURNING r.id::text, r.workflow, r.version_hash, r.input, r.lease_token, r.trace_context
     """
 
-    case instance.repo.query(sql, [owner, batch_size, ttl_seconds]) do
+    case instance.repo.query(sql, [owner, batch_size, ttl_seconds] ++ extra_params) do
       {:ok, %{rows: rows}} ->
         claimed = Enum.map(rows, &decode_claim(owner, &1))
 
@@ -155,13 +164,25 @@ defmodule Continuum.Runtime.Dispatcher do
       {:ok, _run_id} ->
         :ok
 
-      {:error, {:already_started, _pid}} ->
+      {:error, {:already_started, pid}} ->
+        # An engine registered between our local-registry snapshot and the
+        # claim. We rotated the token, so hand it to the live engine rather
+        # than fencing it out for a full lease TTL.
+        Engine.adopt_lease(pid, claim.run_id, claim.lease_owner, claim.lease_token)
         :ok
 
       {:error, reason} ->
         Logger.error("Continuum dispatcher failed to start #{claim.run_id}: #{inspect(reason)}")
         :error
     end
+  end
+
+  defp local_run_ids(instance) do
+    Registry.select(instance.registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
   end
 
   defp dispatcher_config do

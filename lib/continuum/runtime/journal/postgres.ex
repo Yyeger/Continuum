@@ -42,9 +42,59 @@ defmodule Continuum.Runtime.Journal.Postgres do
         trace_context: Keyword.get(opts, :trace_context)
       })
 
-    case repo().insert(changeset) do
-      {:ok, _} -> :ok
-      {:error, changeset} -> {:error, changeset}
+    case Keyword.get(opts, :lease) do
+      nil ->
+        case repo().insert(changeset) do
+          {:ok, _} -> :ok
+          {:error, changeset} -> {:error, changeset}
+        end
+
+      lease_opts ->
+        insert_run_with_lease(changeset, run_id, lease_opts)
+    end
+  end
+
+  # Insert the run row already leased, in one transaction, so no concurrent
+  # dispatcher can claim the fresh row before the starting engine acquires its
+  # lease (the fresh-start steal race). The row only becomes visible with the
+  # lease fully set.
+  defp insert_run_with_lease(changeset, run_id, lease_opts) do
+    owner = Keyword.fetch!(lease_opts, :owner)
+    ttl_seconds = Keyword.get(lease_opts, :ttl_seconds, 30)
+
+    result =
+      repo().transaction(fn ->
+        with {:ok, _run} <-
+               repo().insert(Ecto.Changeset.change(changeset, %{lease_owner: owner})),
+             {:ok, %{rows: [[token]]}} <-
+               repo().query(
+                 """
+                 UPDATE continuum_runs
+                 SET lease_token = nextval('continuum_lease_token_seq'),
+                     lease_expires_at = now() + make_interval(secs => $2)
+                 WHERE id = $1::text::uuid
+                 RETURNING lease_token
+                 """,
+                 [run_id, ttl_seconds]
+               ) do
+          token
+        else
+          {:error, reason} -> repo().rollback(reason)
+        end
+      end)
+
+    case result do
+      {:ok, token} ->
+        Telemetry.execute([:continuum, :lease, :acquired], %{}, %{
+          run_id: run_id,
+          owner: owner,
+          lease_token: token
+        })
+
+        {:ok, %Continuum.Runtime.Lease{run_id: run_id, owner: owner, token: token}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
