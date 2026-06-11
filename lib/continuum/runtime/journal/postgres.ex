@@ -619,6 +619,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
                 set: [parent_run_id: next_run_id]
               )
 
+              # Undelivered signals move to the successor's mailbox — external
+              # signalers address the logical chain, not this incarnation, and
+              # the predecessor can never consume them once terminal.
+              repo().update_all(
+                from(s in Signal, where: s.run_id == ^run_id and s.delivered == false),
+                set: [run_id: next_run_id]
+              )
+
               correlation
             else
               {:error, changeset} -> repo().rollback({:continue_as_new_failed, changeset})

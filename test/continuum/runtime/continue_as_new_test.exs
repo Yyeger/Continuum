@@ -270,6 +270,45 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
              :parent_cancelled
   end
 
+  test "undelivered signals in the predecessor's mailbox move to the successor" do
+    # The signal arrives while phase 1 is still pending: it lands in the
+    # root's mailbox before any continue_as_new runs.
+    root = Ecto.UUID.generate()
+
+    %Run{}
+    |> Ecto.Changeset.change(%{
+      id: root,
+      workflow: inspect(SignalCycleFlow),
+      version_hash: SignalCycleFlow.__continuum_workflow__().version_hash,
+      state: "suspended",
+      input: :erlang.term_to_binary(%{phase: 1}),
+      correlation_id: root,
+      next_wakeup_at:
+        DateTime.utc_now() |> DateTime.add(-1, :second) |> DateTime.truncate(:microsecond)
+    })
+    |> Repo.insert!()
+
+    {:ok, ^root} =
+      Postgres.deliver_signal!(Continuum.Runtime.Instance.default(), root, :go, :early)
+
+    # Delivery resets next_wakeup_at to app-now, which the sandbox's frozen
+    # transaction clock considers future — push it back so the dispatcher
+    # claims the run.
+    past = DateTime.utc_now() |> DateTime.add(-1, :second) |> DateTime.truncate(:microsecond)
+    Repo.update_all(from(r in Run, where: r.id == ^root), set: [next_wakeup_at: past])
+
+    pump_until(fn -> run_state(root) == "completed" and successor_of(root) != nil end)
+    tip = successor_of(root)
+
+    # The buffered signal followed the chain and phase 2 consumed it.
+    pump_until(fn -> run_state(tip) == "completed" end)
+
+    assert Repo.one(from(s in Signal, select: {s.run_id, s.delivered})) == {tip, true}
+
+    assert {:ok, %{state: :completed, result: {:ok, {:finished, :early}}}} =
+             Continuum.await(root, 2_000, journal: Postgres)
+  end
+
   test "a signal sent to the chain root is delivered to the live tip" do
     {:ok, root} = Continuum.start(SignalCycleFlow, %{phase: 1}, journal: Postgres)
 
