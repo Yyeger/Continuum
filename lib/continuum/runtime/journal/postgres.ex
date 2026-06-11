@@ -758,7 +758,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case tx_result do
       {:ok, :ok} ->
-        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token)
+        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token, __MODULE__)
         :ok
 
       {:error, reason} ->
@@ -849,7 +849,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case tx_result do
       {:ok, :ok} ->
-        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token)
+        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token, __MODULE__)
         :ok
 
       {:error, reason} ->
@@ -1455,7 +1455,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   def fire_timer!(%Instance{} = instance, run_id, timer_id, lease_token) do
     :ok = with_repo(instance, fn -> fire_timer_with_repo!(run_id, timer_id, lease_token) end)
-    Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+    Snapshotter.maybe_snapshot(instance, run_id, lease_token, __MODULE__)
   end
 
   defp fire_timer_with_repo!(run_id, timer_id, lease_token) do
@@ -1536,7 +1536,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case result do
       {:ok, :ok} ->
-        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token)
+        Snapshotter.maybe_snapshot(task.instance, task.run_id, lease_token, __MODULE__)
         :ok
 
       {:error, reason} ->
@@ -1908,7 +1908,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp maybe_snapshot_after_event(instance, run_id, event, lease_token) do
     if advancing_event?(Map.get(event, :type)) do
-      Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+      Snapshotter.maybe_snapshot(instance, run_id, lease_token, __MODULE__)
     else
       :ok
     end
@@ -1917,7 +1917,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp maybe_snapshot_after_signal_resolution(_instance, _run_id, :none, _lease_token), do: :ok
 
   defp maybe_snapshot_after_signal_resolution(instance, run_id, _value, lease_token) do
-    Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+    Snapshotter.maybe_snapshot(instance, run_id, lease_token, __MODULE__)
   end
 
   defp advancing_event?(type) do
@@ -1976,7 +1976,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             maybe_wake_parent(run_id)
           end)
 
-        Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+        Snapshotter.maybe_snapshot(instance, run_id, lease_token, __MODULE__)
         Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
         parent
       end)
@@ -2003,7 +2003,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             maybe_wake_parent(run_id)
           end)
 
-        Snapshotter.maybe_snapshot(instance, run_id, lease_token)
+        Snapshotter.maybe_snapshot(instance, run_id, lease_token, __MODULE__)
         broadcast_failed(instance, run_id, error)
         parent
       end)

@@ -64,6 +64,7 @@ defmodule Continuum.Runtime.SnapshotterTest do
 
     :ok =
       Snapshotter.snapshot_once(Instance.default(), run_id,
+        journal: Postgres,
         snapshot_threshold: 5,
         lease_token: lease_token(run_id)
       )
@@ -99,7 +100,10 @@ defmodule Continuum.Runtime.SnapshotterTest do
                Continuum.await(run_id, 1_000, journal: Postgres)
 
       :ok =
-        Snapshotter.snapshot_once(Instance.default(), run_id, lease_token: lease_token(run_id))
+        Snapshotter.snapshot_once(Instance.default(), run_id,
+          journal: Postgres,
+          lease_token: lease_token(run_id)
+        )
 
       row = Repo.one!(Snapshot)
       snapshot = Continuum.Snapshot.decode(row.payload)
@@ -120,7 +124,10 @@ defmodule Continuum.Runtime.SnapshotterTest do
                Continuum.await(run_id, 1_000, journal: Postgres)
 
       :ok =
-        Snapshotter.snapshot_once(Instance.default(), run_id, lease_token: lease_token(run_id))
+        Snapshotter.snapshot_once(Instance.default(), run_id,
+          journal: Postgres,
+          lease_token: lease_token(run_id)
+        )
 
       row = Repo.one!(Snapshot)
       snapshot = Continuum.Snapshot.decode(row.payload)
@@ -157,6 +164,7 @@ defmodule Continuum.Runtime.SnapshotterTest do
 
     :ok =
       Snapshotter.snapshot_once(Instance.default(), run_id,
+        journal: Postgres,
         snapshot_threshold: 1,
         lease_token: lease_token(run_id)
       )
@@ -215,6 +223,7 @@ defmodule Continuum.Runtime.SnapshotterTest do
 
     :ok =
       Snapshotter.snapshot_once(Instance.default(), run_id,
+        journal: Postgres,
         snapshot_threshold: 1,
         snapshot_max_size_bytes: 100,
         lease_token: lease_token(run_id)
@@ -236,6 +245,7 @@ defmodule Continuum.Runtime.SnapshotterTest do
 
     :ok =
       Snapshotter.snapshot_once(Instance.default(), run_id,
+        journal: Postgres,
         snapshot_threshold: 1,
         lease_token: lease_token(run_id)
       )

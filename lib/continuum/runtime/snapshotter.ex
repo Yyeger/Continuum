@@ -4,7 +4,7 @@ defmodule Continuum.Runtime.Snapshotter do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.Instance, Runtime.Journal, Snapshot, Telemetry}
+  alias Continuum.{Runtime.Instance, Snapshot, Telemetry}
 
   @default_max_size_bytes 1_000_000
 
@@ -14,7 +14,7 @@ defmodule Continuum.Runtime.Snapshotter do
   end
 
   @doc false
-  def maybe_snapshot(instance_or_name, run_id, lease_token \\ nil) do
+  def maybe_snapshot(instance_or_name, run_id, lease_token \\ nil, journal \\ nil) do
     instance = Instance.lookup(instance_or_name)
 
     case Process.whereis(instance.snapshotter) do
@@ -22,7 +22,7 @@ defmodule Continuum.Runtime.Snapshotter do
         :ok
 
       pid ->
-        GenServer.cast(pid, {:maybe_snapshot, run_id, lease_token})
+        GenServer.cast(pid, {:maybe_snapshot, run_id, lease_token, journal})
     end
   end
 
@@ -40,9 +40,15 @@ defmodule Continuum.Runtime.Snapshotter do
   end
 
   @impl true
-  def handle_cast({:maybe_snapshot, run_id, lease_token}, state) do
-    if state.config.threshold != :infinity do
-      take_snapshot(state.instance, run_id, lease_token, state.config)
+  def handle_cast({:maybe_snapshot, run_id, lease_token, journal}, state) do
+    # The journal adapter that wrote the run's events identifies itself; the
+    # snapshot must land in the same journal regardless of the instance-level
+    # default (an InMemory-default instance can still own durable runs started
+    # with `journal: Postgres`).
+    config = if journal, do: %{state.config | journal: journal}, else: state.config
+
+    if config.threshold != :infinity do
+      take_snapshot(state.instance, run_id, lease_token, config)
     end
 
     {:noreply, state}
@@ -198,6 +204,9 @@ defmodule Continuum.Runtime.Snapshotter do
     end
   end
 
-  defp default_journal(%{repo: nil}), do: Journal.InMemory
-  defp default_journal(_instance), do: Journal.Postgres
+  # One source of truth for journal resolution (post-2.2 audit fix): named
+  # instances pin their journal at construction, the default instance follows
+  # config — deriving it from repo presence here could disagree with the rest
+  # of the runtime.
+  defp default_journal(instance), do: Continuum.Runtime.Instance.journal(instance)
 end
