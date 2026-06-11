@@ -70,8 +70,10 @@ defmodule Continuum.Runtime.SignalRouter do
   def handle_info({:notification, _pid, _ref, _channel, _payload}, state), do: {:noreply, state}
 
   defp deliver_durable(instance, run_id, name, payload) do
-    :ok = Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
-    route(instance, run_id)
+    # Delivery resolves continue_as_new chains to the live tip; wake that run,
+    # not the (possibly dead) chain root the caller addressed.
+    {:ok, delivered_run_id} = Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
+    route(instance, delivered_run_id)
     :ok
   end
 

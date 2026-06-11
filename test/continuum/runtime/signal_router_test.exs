@@ -67,7 +67,7 @@ defmodule Continuum.Runtime.SignalRouterTest do
 
   test "already-pending signal journals signal_received without signal_awaited" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
+    {:ok, _} = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
 
     {:ok, ^run_id} =
       Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{},
@@ -86,7 +86,7 @@ defmodule Continuum.Runtime.SignalRouterTest do
 
   test "already-pending signal with timeout skips timeout timer creation" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
+    {:ok, _} = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
 
     {:ok, ^run_id} =
       Continuum.Runtime.Engine.start_run(SignalTimeoutFlow, %{timeout_ms: 60_000},
@@ -104,7 +104,7 @@ defmodule Continuum.Runtime.SignalRouterTest do
 
   test "already-pending signal fast-path replays without drift" do
     run_id = Ecto.UUID.generate()
-    :ok = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
+    {:ok, _} = Postgres.deliver_signal!(Instance.default(), run_id, :decision, :go)
 
     {:ok, ^run_id} =
       Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{},
@@ -128,7 +128,9 @@ defmodule Continuum.Runtime.SignalRouterTest do
       event_types(run_id) == ["signal_awaited"]
     end)
 
-    :ok = Postgres.deliver_signal!(Continuum.Runtime.Instance.default(), run_id, :decision, :go)
+    {:ok, _} =
+      Postgres.deliver_signal!(Continuum.Runtime.Instance.default(), run_id, :decision, :go)
+
     assert {:error, :timeout} = Continuum.await(run_id, 25, journal: Postgres)
 
     send(

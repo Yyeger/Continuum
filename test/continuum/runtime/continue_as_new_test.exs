@@ -7,7 +7,7 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
 
   alias Continuum.Runtime.{ActivityWorker, Dispatcher, Recovery}
   alias Continuum.Runtime.Journal.Postgres
-  alias Continuum.Schema.{ActivityTask, Event, Run}
+  alias Continuum.Schema.{ActivityTask, Event, Run, Signal}
 
   defmodule CycleActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
@@ -37,9 +37,23 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     end
   end
 
+  defmodule SignalCycleFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(%{phase: 1}) do
+      continue_as_new(%{phase: 2})
+    end
+
+    def run(%{phase: 2}) do
+      payload = await(signal(:go))
+      {:ok, {:finished, payload}}
+    end
+  end
+
   setup do
     Repo.delete_all(ActivityTask)
     Repo.delete_all(Event)
+    Repo.delete_all(Signal)
     Repo.delete_all(Run)
     :ok
   end
@@ -64,7 +78,9 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     assert {:ok, %{state: :completed, result: {:ok, {:done, 3}}}} =
              Continuum.await(r3.id, 2_000, journal: Postgres)
 
-    assert {:ok, %{result: {:continued, _next}}} =
+    # Awaiting the chain root follows the chain to the final terminal result;
+    # the internal {:continued, _} sentinel is never exposed.
+    assert {:ok, %{state: :completed, result: {:ok, {:done, 3}}}} =
              Continuum.await(r1.id, 2_000, journal: Postgres)
   end
 
@@ -141,6 +157,42 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     assert length(child_runs) == 3
   end
 
+  test "a signal sent to the chain root is delivered to the live tip" do
+    {:ok, root} = Continuum.start(SignalCycleFlow, %{phase: 1}, journal: Postgres)
+
+    pump_until(fn -> successor_of(root) != nil end)
+    tip = successor_of(root)
+    pump_until(fn -> run_state(tip) == "suspended" end)
+
+    :ok = Continuum.signal(root, :go, :payload, journal: Postgres)
+    pump_until(fn -> run_state(tip) == "completed" end)
+
+    # The signal landed in the tip's mailbox, not the dead root's.
+    assert Repo.aggregate(from(s in Signal, where: s.run_id == ^tip), :count) == 1
+    assert Repo.aggregate(from(s in Signal, where: s.run_id == ^root), :count) == 0
+
+    assert {:ok, %{state: :completed, result: {:ok, {:finished, :payload}}}} =
+             Continuum.await(root, 2_000, journal: Postgres)
+  end
+
+  test "cancelling the chain root cancels the live tip" do
+    {:ok, root} = Continuum.start(SignalCycleFlow, %{phase: 1}, journal: Postgres)
+
+    pump_until(fn -> successor_of(root) != nil end)
+    tip = successor_of(root)
+    pump_until(fn -> run_state(tip) == "suspended" end)
+
+    assert :ok = Continuum.cancel(root, journal: Postgres)
+
+    assert run_state(tip) == "failed"
+
+    assert Repo.one(from(r in Run, where: r.id == ^tip, select: r.error)) |> decoded() ==
+             :cancelled
+
+    # The root itself stays a completed {:continued, _} run.
+    assert run_state(root) == "completed"
+  end
+
   # --- driving helpers -------------------------------------------------------
 
   defp pump(root, attempts \\ 400)
@@ -208,6 +260,9 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
 
   defp continued?(nil), do: false
   defp continued?(binary), do: match?({:continued, _}, :erlang.binary_to_term(binary))
+
+  defp decoded(nil), do: nil
+  defp decoded(binary), do: :erlang.binary_to_term(binary)
 
   defp expire_lease(run_id) do
     past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)

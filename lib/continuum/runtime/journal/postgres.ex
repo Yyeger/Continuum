@@ -401,6 +401,17 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  @doc """
+  Resolve a run id to the live tip of its `continue_as_new` chain.
+
+  External callers hold the chain-root id; a run with no successor resolves
+  to itself. Used by signal delivery, cancel, and await so operations on a
+  continued run reach the current incarnation instead of the dead root.
+  """
+  def resolve_chain_tip(%Instance{} = instance, run_id) do
+    with_repo(instance, fn -> follow_continued_chain(run_id) end)
+  end
+
   defp follow_continued_chain(run_id) do
     sql = """
     WITH RECURSIVE chain AS (
@@ -1102,6 +1113,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     result =
       repo().transaction(fn ->
+        # Callers of a continued run hold the chain-root id; deliver into the
+        # live tip's mailbox so the signal is not lost in the dead root's.
+        run_id = follow_continued_chain(run_id)
+
         changeset =
           %Signal{}
           |> Ecto.Changeset.change(%{
@@ -1119,21 +1134,21 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  set: [next_wakeup_at: now]
                ),
              {:ok, _} <- repo().query("SELECT pg_notify('continuum_signal', $1)", [run_id]) do
-          :ok
+          run_id
         else
           {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
         end
       end)
 
     case result do
-      {:ok, :ok} ->
+      {:ok, delivered_run_id} ->
         Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
-          run_id: run_id,
+          run_id: delivered_run_id,
           signal_name: name,
           durable?: true
         })
 
-        :ok
+        {:ok, delivered_run_id}
 
       {:error, reason} ->
         raise "Continuum.Runtime.Journal.Postgres deliver_signal! failed: #{inspect(reason)}"

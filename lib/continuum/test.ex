@@ -222,8 +222,10 @@ defmodule Continuum.Test do
 
     case journal do
       Journal.Postgres ->
-        :ok = Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
-        Engine.wake(instance, run_id)
+        {:ok, delivered_run_id} =
+          Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
+
+        Engine.wake(instance, delivered_run_id)
         :ok
 
       Journal.InMemory ->

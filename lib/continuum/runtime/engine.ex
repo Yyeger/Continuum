@@ -88,10 +88,26 @@ defmodule Continuum.Runtime.Engine do
   """
   def cancel(run_id, opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    run_id = resolve_chain_tip(instance, run_id, opts)
 
     case GenServer.whereis(via(instance, run_id)) do
       nil -> durable_cancel(instance, run_id, opts)
       pid -> GenServer.call(pid, :cancel)
+    end
+  end
+
+  # Callers of a continued run hold the chain-root id; cancel must reach the
+  # live tip instead of failing with {:run_not_active, "completed"} on the
+  # dead root. Same hop signal delivery and await perform.
+  defp resolve_chain_tip(%Instance{repo: nil}, run_id, _opts), do: run_id
+
+  defp resolve_chain_tip(instance, run_id, opts) do
+    case Keyword.get(opts, :journal, Instance.journal(instance)) do
+      Continuum.Runtime.Journal.Postgres ->
+        Continuum.Runtime.Journal.Postgres.resolve_chain_tip(instance, run_id)
+
+      _other ->
+        run_id
     end
   end
 
@@ -108,6 +124,24 @@ defmodule Continuum.Runtime.Engine do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
+    await_chain(instance, run_id, deadline, journal)
+  end
+
+  # A run that continued as new completes with the internal {:continued, next}
+  # marker. Follow the chain and await the successor so callers holding the
+  # chain-root id get the final terminal result, never the sentinel.
+  defp await_chain(instance, run_id, deadline, journal) do
+    case do_await(instance, run_id, deadline, journal) do
+      {:ok, %{state: :completed, result: {:continued, next_run_id}}}
+      when is_binary(next_run_id) ->
+        await_chain(instance, next_run_id, deadline, journal)
+
+      result ->
+        result
+    end
+  end
+
+  defp do_await(instance, run_id, deadline, journal) do
     case subscribe_run(instance, run_id) do
       :ok ->
         try do
