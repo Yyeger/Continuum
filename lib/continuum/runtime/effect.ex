@@ -1669,15 +1669,25 @@ defmodule Continuum.Runtime.Effect do
     {:side_effect, kind, producer_fingerprint(producer), hash_term(ctx.workflow_module)}
   end
 
+  # Anonymous functions carry per-compilation artifacts (generated name,
+  # index, uniq) that shift whenever unrelated code in the defining module
+  # changes — including those in the fingerprint would kill every in-flight
+  # run replaying through the site on any redeploy of a helper module. The
+  # call-site ordinal already disambiguates multiple side_effect calls;
+  # identity only needs the defining module and arity.
   defp producer_fingerprint(fun) do
     info = :erlang.fun_info(fun)
 
+    name =
+      case Keyword.fetch!(info, :type) do
+        :external -> Keyword.fetch!(info, :name)
+        :local -> :anonymous
+      end
+
     {
       Keyword.fetch!(info, :module),
-      Keyword.fetch!(info, :name),
-      Keyword.fetch!(info, :arity),
-      Keyword.get(info, :new_index, Keyword.get(info, :index)),
-      Keyword.get(info, :new_uniq, Keyword.get(info, :uniq))
+      name,
+      Keyword.fetch!(info, :arity)
     }
   end
 

@@ -263,6 +263,17 @@ defmodule Continuum do
   This is a macro so Continuum can capture the source call site for a stable
   command identity. Workflow modules that `use Continuum.Workflow` already
   require `Continuum`; other modules must `require Continuum` before calling it.
+
+  > #### Helper-module caveat {: .warning}
+  >
+  > Command identity includes the call site's module and line. Inside a
+  > *workflow* module that is safe: any edit changes the version hash and
+  > in-flight runs keep resuming through the old version's entrypoint. A
+  > `Continuum.Pure` helper module has no such protection — editing a helper
+  > so that a `side_effect` call moves to a different line changes its command
+  > identity and in-flight runs replaying through it raise
+  > `Continuum.ReplayDriftError` on the next deploy. Prefer keeping
+  > `side_effect` calls in the workflow module itself.
   """
   defmacro side_effect(fun) do
     command = command_base(__CALLER__, :user)

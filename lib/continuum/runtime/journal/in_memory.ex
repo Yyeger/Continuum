@@ -276,8 +276,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   defp update_run(state, instance_name, run_id, fun) do
+    # Map.update/4 inserts its default verbatim — fun must be applied to the
+    # fresh run on both branches or the first write to an unknown run (e.g.
+    # an append) is silently dropped.
     Map.update(state, instance_name, %{run_id => fun.(init_run(run_id))}, fn runs ->
-      Map.update(runs, run_id, init_run(run_id), fun)
+      Map.update(runs, run_id, fun.(init_run(run_id)), fun)
     end)
   end
 

@@ -81,6 +81,74 @@ defmodule Continuum.ReplayTest do
         Continuum.Runtime.Context.clear()
       end
     end
+
+    test "producer identity survives recompilation that shifts anonymous fn indexes" do
+      module = Continuum.ReplayTest.FingerprintProbe
+
+      compile_probe = fn extra ->
+        previous = Code.compiler_options()
+        Code.compiler_options(ignore_module_conflict: true)
+
+        try do
+          Code.compile_string("""
+          defmodule #{inspect(module)} do
+            #{extra}
+            def producer, do: fn -> 42 end
+          end
+          """)
+        after
+          Code.compiler_options(previous)
+        end
+      end
+
+      # Journal through the v1 producer (no preceding fns in the module).
+      compile_probe.("")
+      run_id = "fingerprint-stability-#{System.unique_integer([:positive])}"
+
+      ctx = %Continuum.Runtime.Context{
+        run_id: run_id,
+        history: [],
+        cursor: 0,
+        workflow_module: TwoStepFlow,
+        lease_token: nil,
+        instance: Continuum.Runtime.Instance.default(),
+        journal: InMemory
+      }
+
+      Continuum.Runtime.Context.put(ctx)
+
+      try do
+        assert 42 == Continuum.Runtime.Effect.run({:side_effect, :user}, module.producer())
+      after
+        Continuum.Runtime.Context.clear()
+      end
+
+      history = InMemory.load(Continuum.Runtime.Instance.default(), run_id)
+      assert [%{type: :side_effect, payload: 42}] = history
+
+      # An unrelated fn added *before* the producer shifts the anonymous fn's
+      # generated name/index/uniq — replay must still match the journaled
+      # command identity instead of drifting.
+      compile_probe.("def unrelated, do: fn -> :added_earlier end")
+
+      replay_ctx = %Continuum.Runtime.Context{
+        run_id: run_id,
+        history: history,
+        cursor: 0,
+        workflow_module: TwoStepFlow,
+        lease_token: nil,
+        instance: Continuum.Runtime.Instance.default(),
+        journal: InMemory
+      }
+
+      Continuum.Runtime.Context.put(replay_ctx)
+
+      try do
+        assert 42 == Continuum.Runtime.Effect.run({:side_effect, :user}, module.producer())
+      after
+        Continuum.Runtime.Context.clear()
+      end
+    end
   end
 
   describe "signal-driven branching" do
