@@ -105,6 +105,51 @@ defmodule Continuum.Runtime.CancelTest do
              Continuum.cancel(Ecto.UUID.generate(), journal: Postgres)
   end
 
+  test "cancel distinguishes a live lease held elsewhere from a missing run" do
+    run_id = Ecto.UUID.generate()
+
+    :ok =
+      Postgres.start_run(
+        Continuum.Runtime.Instance.default(),
+        run_id,
+        TimerFlow,
+        %{ms: 60_000}
+      )
+
+    future = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.truncate(:microsecond)
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^run_id),
+      set: [
+        state: "suspended",
+        lease_owner: "othernode@nohost/Elixir.Continuum/1",
+        lease_token: 999_999_999,
+        lease_expires_at: future
+      ]
+    )
+
+    assert {:error, :owned_elsewhere} = Continuum.cancel(run_id, journal: Postgres)
+  end
+
+  test "cancel of a terminal durable run reports run_not_active" do
+    run_id = Ecto.UUID.generate()
+
+    :ok =
+      Postgres.start_run(
+        Continuum.Runtime.Instance.default(),
+        run_id,
+        TimerFlow,
+        %{ms: 60_000}
+      )
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^run_id),
+      set: [state: "failed", error: :erlang.term_to_binary(:boom)]
+    )
+
+    assert {:error, {:run_not_active, :failed}} = Continuum.cancel(run_id, journal: Postgres)
+  end
+
   test "cancelled leased activity tasks cannot be retried back to available" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(ActivityFlow, %{value: 10}, journal: Postgres)

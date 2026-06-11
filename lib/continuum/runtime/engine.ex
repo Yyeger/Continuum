@@ -91,9 +91,32 @@ defmodule Continuum.Runtime.Engine do
     run_id = resolve_chain_tip(instance, run_id, opts)
 
     case GenServer.whereis(via(instance, run_id)) do
-      nil -> durable_cancel(instance, run_id, opts)
+      nil -> cancel_without_local_engine(instance, run_id, opts)
       pid -> GenServer.call(pid, :cancel)
     end
+  end
+
+  # The engine may be healthy on another node, holding a live lease the
+  # durable path cannot (and must not) steal. Forward through the same :pg
+  # group wake/2 uses — as a call, so the caller gets a real result — before
+  # falling back to the durable lease-acquire path.
+  defp cancel_without_local_engine(instance, run_id, opts) do
+    case cancel_remote(instance, run_id) do
+      {:ok, result} -> result
+      :no_remote_engine -> durable_cancel(instance, run_id, opts)
+    end
+  end
+
+  defp cancel_remote(instance, run_id) do
+    instance
+    |> pg_members(run_id)
+    |> Enum.find_value(:no_remote_engine, fn pid ->
+      try do
+        {:ok, GenServer.call(pid, :cancel, 5_000)}
+      catch
+        :exit, _ -> nil
+      end
+    end)
   end
 
   # Callers of a continued run hold the chain-root id; cancel must reach the
@@ -653,7 +676,7 @@ defmodule Continuum.Runtime.Engine do
                ) do
           Continuum.Runtime.Journal.Postgres.cancel_run!(instance, run_id, lease.token)
         else
-          {:error, :not_acquired} -> {:error, :not_found}
+          {:error, :not_acquired} -> not_acquired_error(instance, run_id)
           {:error, reason} -> {:error, reason}
         end
 
@@ -662,6 +685,17 @@ defmodule Continuum.Runtime.Engine do
     end
   rescue
     error -> {:error, error}
+  end
+
+  # Lease.acquire refuses both nonexistent runs and live leases held by
+  # another owner; operators must be able to tell "no such run" apart from
+  # "run is owned by an unreachable node".
+  defp not_acquired_error(instance, run_id) do
+    case Continuum.Runtime.Journal.Postgres.get_run(instance, run_id) do
+      nil -> {:error, :not_found}
+      %{state: state} when state in [:running, :suspended] -> {:error, :owned_elsewhere}
+      %{state: state} -> {:error, {:run_not_active, state}}
+    end
   end
 
   defp finalize(%{status: :suspended} = state), do: {:noreply, state}
