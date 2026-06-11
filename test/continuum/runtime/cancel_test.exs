@@ -152,6 +152,33 @@ defmodule Continuum.Runtime.CancelTest do
     )
 
     assert {:error, :owned_elsewhere} = Continuum.cancel(run_id, journal: Postgres)
+
+    # The request is recorded durably for the unreachable owner to honor on
+    # its next lease heartbeat.
+    assert Repo.one!(from(r in Run, where: r.id == ^run_id)).cancel_requested_at != nil
+  end
+
+  test "a pending cancel request is honored on the next lease heartbeat" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+    end)
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    Repo.update_all(from(r in Run, where: r.id == ^run_id), set: [cancel_requested_at: now])
+
+    :ok = Continuum.Runtime.Lease.Heartbeater.renew_once(Continuum.Runtime.Instance.default())
+
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "cancelled"
+    end)
+
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
+             Continuum.await(run_id, 500, journal: Postgres)
+
+    assert Registry.lookup(Continuum.Runtime.Registry, run_id) == []
   end
 
   test "cancel of a terminal durable run reports run_not_active" do

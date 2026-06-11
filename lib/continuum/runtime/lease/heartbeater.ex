@@ -114,6 +114,12 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
         :ok ->
           acc
 
+        {:ok, :cancel_requested} ->
+          # A durable cancel request was recorded while no caller could reach
+          # this engine; the owner honors it on its heartbeat.
+          send(entry.pid, {:continuum_cancel_requested, run_id})
+          acc
+
         {:error, :lost} ->
           Telemetry.execute([:continuum, :lease, :lost], %{}, %{
             instance: acc.instance,

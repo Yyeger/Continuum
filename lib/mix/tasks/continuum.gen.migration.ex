@@ -95,6 +95,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :lease_expires_at, :utc_datetime_usec
           add :next_wakeup_at, :utc_datetime_usec
           add :retention_until, :utc_datetime_usec
+          add :cancel_requested_at, :utc_datetime_usec
         end
 
         execute \"\"\"

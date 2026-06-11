@@ -102,9 +102,39 @@ defmodule Continuum.Runtime.Engine do
   # falling back to the durable lease-acquire path.
   defp cancel_without_local_engine(instance, run_id, opts) do
     case cancel_remote(instance, run_id) do
-      {:ok, result} -> result
-      :no_remote_engine -> durable_cancel(instance, run_id, opts)
+      {:ok, result} ->
+        result
+
+      :no_remote_engine ->
+        case durable_cancel(instance, run_id, opts) do
+          {:error, :owned_elsewhere} = error ->
+            # Durable fallback: the owner holds a live lease but no engine is
+            # reachable (partition, overload). Record the request with a plain
+            # UPDATE — no lease needed — and the owning engine honors it on
+            # its next lease heartbeat.
+            request_cancel(instance, run_id)
+            error
+
+          other ->
+            other
+        end
     end
+  end
+
+  defp request_cancel(%Instance{repo: nil}, _run_id), do: :ok
+
+  defp request_cancel(instance, run_id) do
+    instance.repo.query(
+      """
+      UPDATE continuum_runs
+      SET cancel_requested_at = clock_timestamp()
+      WHERE id = $1::text::uuid
+        AND state IN ('running', 'suspended')
+      """,
+      [run_id]
+    )
+
+    :ok
   end
 
   defp cancel_remote(instance, run_id) do
@@ -450,6 +480,31 @@ defmodule Continuum.Runtime.Engine do
   end
 
   def handle_info({:continuum_lease_lost, _run_id, _token}, state), do: {:noreply, state}
+
+  # A durable cancel request recorded while this engine was unreachable
+  # (see cancel_without_local_engine/3), surfaced by the lease heartbeat.
+  def handle_info({:continuum_cancel_requested, run_id}, %{run_id: run_id} = state) do
+    try do
+      :ok = cancel_run(state)
+      state = %{state | status: :cancelled, error: :cancelled}
+      Telemetry.execute([:continuum, :run, :cancelled], %{}, run_metadata(state))
+      untrack_lease(state)
+      {:stop, :normal, state}
+    rescue
+      error in Continuum.Runtime.JournalError ->
+        # Run already terminal or lease rotated between the heartbeat and this
+        # message — nothing left to cancel.
+        Logger.debug(
+          "Workflow #{state.run_id} cancel request not applicable: " <>
+            Exception.message(error)
+        )
+
+        untrack_lease(state)
+        {:stop, :normal, state}
+    end
+  end
+
+  def handle_info({:continuum_cancel_requested, _run_id}, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do

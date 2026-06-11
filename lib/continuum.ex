@@ -136,6 +136,14 @@ defmodule Continuum do
 
   @doc """
   Cancel a running workflow.
+
+  Cancelling the root of a `continue_as_new` chain cancels the live tip. When
+  the run's engine is alive on another reachable node, the cancel is forwarded
+  to it. If the owner holds a live lease but no engine can be reached
+  (partition, overload), the request is recorded durably and honored by the
+  owning engine on its next lease heartbeat — the call returns
+  `{:error, :owned_elsewhere}` so the caller knows cancellation is pending
+  rather than complete.
   """
   @spec cancel(run_id(), keyword()) :: :ok | {:error, term()}
   def cancel(run_id, opts \\ []) do

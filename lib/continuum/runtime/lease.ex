@@ -86,10 +86,13 @@ defmodule Continuum.Runtime.Lease do
   Renew a lease by owner and token.
 
   Returns `{:error, :lost}` when the row is gone or the owner/token no longer
-  match, which means another process acquired the fencing token.
+  match, which means another process acquired the fencing token. Returns
+  `{:ok, :cancel_requested}` when the renewal succeeded but a durable cancel
+  request is pending on the run (set by `Continuum.cancel/2` when the owning
+  engine was unreachable).
   """
   @spec renew(binary(), binary(), integer(), keyword()) ::
-          :ok | {:error, :lost} | {:error, term()}
+          :ok | {:ok, :cancel_requested} | {:error, :lost} | {:error, term()}
   def renew(run_id, owner, token, opts \\ []) do
     ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
 
@@ -100,18 +103,20 @@ defmodule Continuum.Runtime.Lease do
       AND lease_owner = $2
       AND lease_token = $3
       AND state IN ('running', 'suspended')
-    RETURNING id
+    RETURNING cancel_requested_at
     """
 
     case repo(opts).query(sql, [run_id, owner, token, ttl_seconds]) do
-      {:ok, %{rows: [[_run_id]]}} ->
+      {:ok, %{rows: [[cancel_requested_at]]}} ->
         Telemetry.execute([:continuum, :lease, :renewed], %{}, %{
           run_id: run_id,
           owner: owner,
           lease_token: token
         })
 
-        :ok
+        # A durable cancel request recorded while no caller could reach the
+        # owning engine; the owner must honor it.
+        if is_nil(cancel_requested_at), do: :ok, else: {:ok, :cancel_requested}
 
       {:ok, %{rows: []}} ->
         Telemetry.execute([:continuum, :lease, :lost], %{}, %{
