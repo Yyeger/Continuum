@@ -87,6 +87,22 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
     assert child.state == "completed"
   end
 
+  test "children inherit the parent's namespace and attributes" do
+    {:ok, parent_id} =
+      Continuum.start(SequentialParentFlow, %{id: "ns"},
+        journal: Postgres,
+        namespace: "tenant-a",
+        attributes: %{tenant: "acme"}
+      )
+
+    pump(parent_id)
+
+    [child] = children_of(parent_id)
+    child_row = Repo.one!(from(r in Run, where: r.id == ^child.id))
+    assert child_row.namespace == "tenant-a"
+    assert child_row.attributes == %{"tenant" => "acme"}
+  end
+
   test "fan-out start_child + await_child returns each child's result" do
     {:ok, parent_id} =
       Continuum.start(FanOutParentFlow, %{ids: [1, 2, 3, 4, 5]}, journal: Postgres)

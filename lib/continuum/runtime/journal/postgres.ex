@@ -310,7 +310,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     result =
       repo().transaction(fn ->
-        lock_and_validate_run!(parent_run_id, lease_token)
+        parent = lock_and_load_run!(parent_run_id, lease_token)
 
         child_changeset =
           %Run{}
@@ -318,6 +318,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
             id: child.child_run_id,
             workflow: metadata.workflow,
             version_hash: metadata.version_hash,
+            # Children inherit the parent's tenant scoping; without this a
+            # namespaced parent's children silently land in "default".
+            namespace: parent.namespace,
+            attributes: parent.attributes,
             state: "running",
             input: encode_term(child.input),
             parent_run_id: parent_run_id,
@@ -537,6 +541,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
                 id: next_run_id,
                 workflow: next_workflow,
                 version_hash: next_version_hash,
+                # The successor is the same logical process: keep its tenant
+                # scoping instead of resetting to the schema defaults.
+                namespace: run.namespace,
+                attributes: run.attributes,
                 state: "running",
                 input: encode_term(next_input),
                 correlation_id: correlation,
@@ -1908,6 +1916,25 @@ defmodule Continuum.Runtime.Journal.Postgres do
     case run do
       nil -> repo().rollback({:run_not_found, run_id})
       %Run{} = run -> validate_lease!(run, lease_token)
+    end
+  end
+
+  defp lock_and_load_run!(run_id, lease_token) do
+    run =
+      repo().one(
+        from(r in Run,
+          where: r.id == ^run_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    case run do
+      nil ->
+        repo().rollback({:run_not_found, run_id})
+
+      %Run{} = run ->
+        :ok = validate_lease!(run, lease_token)
+        run
     end
   end
 

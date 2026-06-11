@@ -157,6 +157,22 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     assert length(child_runs) == 3
   end
 
+  test "the successor inherits the predecessor's namespace and attributes" do
+    {:ok, root} =
+      Continuum.start(CycleFlow, %{n: 1, max: 2},
+        journal: Postgres,
+        namespace: "tenant-b",
+        attributes: %{tenant: "globex"}
+      )
+
+    pump(root)
+
+    successor = successor_of(root)
+    run = Repo.one!(from(r in Run, where: r.id == ^successor))
+    assert run.namespace == "tenant-b"
+    assert run.attributes == %{"tenant" => "globex"}
+  end
+
   test "continue_as_new stamps the successor with the currently loaded version" do
     metadata = CycleFlow.__continuum_workflow__()
     current_hash = metadata.version_hash
