@@ -24,7 +24,7 @@ defmodule Continuum.Pure do
   end
 
   @doc false
-  def __on_definition__(env, _kind, _name, _args, _guards, body) when not is_nil(body) do
+  def __on_definition__(env, _kind, name, args, _guards, body) when not is_nil(body) do
     case Continuum.AstCheck.scan(body, env) do
       :ok ->
         :ok
@@ -37,6 +37,12 @@ defmodule Continuum.Pure do
             "Continuum.Pure module contains non-deterministic calls:\n\n" <>
               Continuum.AstCheck.format(violations)
     end
+
+    # Pure helpers run inside the workflow process: a `catch` arm around an
+    # effect call swallows the engine's suspend throw exactly like one in the
+    # workflow module would (the runtime SuspendLeakError stays the backstop,
+    # but warn at compile time too).
+    Continuum.AstCheck.check_catch_warnings(body, env, name, length(args || []))
   end
 
   def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok

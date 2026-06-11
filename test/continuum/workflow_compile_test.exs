@@ -238,6 +238,25 @@ defmodule Continuum.WorkflowCompileTest do
       assert warning =~ "m.handle/1"
     end
 
+    test "a catch arm in a Continuum.Pure helper warns" do
+      output =
+        capture_io(:standard_error, fn ->
+          defmodule CatchyPureHelper do
+            use Continuum.Pure
+
+            def guarded(fun) do
+              try do
+                fun.()
+              catch
+                _, _ -> :swallowed
+              end
+            end
+          end
+        end)
+
+      assert output =~ "uses a `catch` arm"
+    end
+
     test "plain field access (input.seed) does not warn as dynamic dispatch" do
       warning =
         capture_io(:standard_error, fn ->
