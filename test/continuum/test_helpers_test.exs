@@ -74,6 +74,23 @@ defmodule Continuum.TestHelpersTest do
              Continuum.await(run_id, 1_000)
   end
 
+  test "in-memory cancel surfaces the canonical cancelled state" do
+    Continuum.Test.reset_in_memory!()
+
+    {:ok, run_id} = Continuum.Test.start_synchronous(SignalFlow, %{})
+    assert {:error, :timeout} = Continuum.await(run_id, 25)
+
+    assert :ok = Continuum.cancel(run_id)
+
+    assert {:error, %{state: :cancelled, error: :cancelled}} = Continuum.await(run_id, 500)
+
+    assert %{state: :cancelled} =
+             Continuum.Runtime.Journal.InMemory.get_run(
+               Continuum.Runtime.Instance.default(),
+               run_id
+             )
+  end
+
   test "injects in-memory signals without using an engine signal cast" do
     Continuum.Test.reset_in_memory!()
 
