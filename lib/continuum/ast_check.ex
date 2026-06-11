@@ -184,12 +184,26 @@ defmodule Continuum.AstCheck do
 
   defp do_scan(ast, file, env) do
     acc = %{violations: [], imports: [], aliases: %{}}
+    ast = normalize_pipes(ast)
     {_, %{violations: violations}} = Macro.prewalk(ast, acc, &check_node(&1, &2, file, env))
 
     case Enum.reverse(violations) do
       [] -> :ok
       list -> {:error, list}
     end
+  end
+
+  # `x |> send(:msg)` parses as `send/1`, so exact-arity denylist lookups miss
+  # it. Rewrite pipes into the call they expand to before scanning, so the
+  # effective arity is checked.
+  defp normalize_pipes(ast) do
+    Macro.prewalk(ast, fn
+      {:|>, _meta, [lhs, {fun, call_meta, args}]} when is_atom(fun) or is_tuple(fun) ->
+        {fun, call_meta, [lhs | List.wrap(args)]}
+
+      node ->
+        node
+    end)
   end
 
   @doc """
@@ -298,21 +312,25 @@ defmodule Continuum.AstCheck do
   @spec check_dynamic_call_warnings(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
   def check_dynamic_call_warnings(ast, env, caller_fun, caller_arity) do
     {_ast, calls} =
-      Macro.prewalk(ast, [], fn
-        {{:., _, [{var, _, var_ctx}, fun]}, meta, args} = node, acc
-        when is_atom(var) and is_atom(var_ctx) and is_atom(fun) and is_list(args) ->
-          if var in [:__MODULE__, :__ENV__] or
-               (args == [] and Keyword.get(meta, :no_parens, false)) do
+      ast
+      |> normalize_pipes()
+      |> Macro.prewalk([], fn
+        # Captures of dynamic modules: &m.f/1, &input.mod.f/2, ...
+        {:&, meta, [{:/, _, [{{:., _, [receiver, fun]}, _, _}, arity]}]} = node, acc
+        when is_atom(fun) and is_integer(arity) ->
+          if static_receiver?(receiver) do
             {node, acc}
           else
-            call = %{
-              var: var,
-              function: fun,
-              arity: length(args),
-              line: Keyword.get(meta, :line)
-            }
+            {node, [dynamic_call(receiver, fun, arity, meta) | acc]}
+          end
 
-            {node, [call | acc]}
+        {{:., _, [receiver, fun]}, meta, args} = node, acc
+        when is_atom(fun) and is_list(args) ->
+          cond do
+            # Plain field access (input.seed) stays silent.
+            args == [] and Keyword.get(meta, :no_parens, false) -> {node, acc}
+            static_receiver?(receiver) -> {node, acc}
+            true -> {node, [dynamic_call(receiver, fun, length(args), meta) | acc]}
           end
 
         node, acc ->
@@ -326,12 +344,34 @@ defmodule Continuum.AstCheck do
     :ok
   end
 
+  # Receivers the main scanner can resolve at compile time; everything else is
+  # a runtime value the denylist cannot be checked against — single variables,
+  # chained field access (input.mod), call results, and so on.
+  defp static_receiver?(receiver) do
+    case receiver do
+      {:__aliases__, _, _} -> true
+      module when is_atom(module) -> true
+      {:__MODULE__, _, ctx} when is_atom(ctx) -> true
+      {:__ENV__, _, ctx} when is_atom(ctx) -> true
+      _other -> false
+    end
+  end
+
+  defp dynamic_call(receiver, fun, arity, meta) do
+    %{
+      receiver: Macro.to_string(receiver),
+      function: fun,
+      arity: arity,
+      line: Keyword.get(meta, :line)
+    }
+  end
+
   defp warn_dynamic_call(call, env, caller_fun, caller_arity) do
     IO.warn(
       """
       Continuum cannot analyze a dynamic-receiver call in workflow code:
 
-          #{call.var}.#{call.function}/#{call.arity}
+          #{call.receiver}.#{call.function}/#{call.arity}
 
       The receiver is a runtime value, so the determinism scanner cannot
       check it against the denylist. Call the module directly, or move the

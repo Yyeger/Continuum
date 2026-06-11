@@ -257,6 +257,64 @@ defmodule Continuum.WorkflowCompileTest do
       assert output =~ "uses a `catch` arm"
     end
 
+    test "a piped banned call (x |> send(...)) refuses to compile" do
+      assert_raise CompileError, ~r/send/, fn ->
+        defmodule PipedSendFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(input) do
+            self() |> send(input.msg)
+            {:ok, :sent}
+          end
+        end
+      end
+    end
+
+    test "a piped trusted call still compiles" do
+      defmodule PipedTrustedFlow do
+        use Continuum.Workflow, version: 1
+
+        def run(input) do
+          {:ok, input.items |> Enum.map(&(&1 * 2)) |> Enum.sum()}
+        end
+      end
+
+      assert function_exported?(PipedTrustedFlow, :__continuum_workflow__, 0)
+    end
+
+    test "a chained dynamic receiver (input.mod.fun(x)) warns" do
+      warning =
+        capture_io(:standard_error, fn ->
+          defmodule ChainedDynamicFlow do
+            use Continuum.Workflow, version: 1
+
+            def run(input) do
+              {:ok, input.handler.apply_rules(input.seed)}
+            end
+          end
+        end)
+
+      assert warning =~ "dynamic-receiver call"
+      assert warning =~ "input.handler.apply_rules/1"
+    end
+
+    test "a capture of a dynamic module (&m.f/1) warns" do
+      warning =
+        capture_io(:standard_error, fn ->
+          defmodule DynamicCaptureFlow do
+            use Continuum.Workflow, version: 1
+
+            def run(input) do
+              m = input.mod
+              {:ok, Enum.map(input.items, &m.transform/1)}
+            end
+          end
+        end)
+
+      assert warning =~ "dynamic-receiver call"
+      assert warning =~ "m.transform/1"
+    end
+
     test "plain field access (input.seed) does not warn as dynamic dispatch" do
       warning =
         capture_io(:standard_error, fn ->
