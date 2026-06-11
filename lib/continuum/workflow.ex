@@ -330,6 +330,8 @@ defmodule Continuum.Workflow do
       @continuum_logical_workflow unquote(logical_workflow)
       @continuum_snapshot_threshold unquote(snapshot_threshold)
       Module.register_attribute(__MODULE__, :continuum_patch_sites, accumulate: true)
+      Module.register_attribute(__MODULE__, :continuum_activity_sites, accumulate: true)
+      Module.register_attribute(__MODULE__, :continuum_compensate_all_sites, accumulate: true)
     end
   end
 
@@ -383,7 +385,7 @@ defmodule Continuum.Workflow.OnDef do
     end
 
     Continuum.AstCheck.check_helper_calls(body, env, name, length(args || []))
-    Continuum.AstCheck.check_compensation_warnings(body, env, name, length(args || []))
+    Continuum.AstCheck.collect_compensation_sites(body, env, name, length(args || []))
     Continuum.AstCheck.check_catch_warnings(body, env, name, length(args || []))
     Continuum.AstCheck.check_dynamic_call_warnings(body, env, name, length(args || []))
   end
@@ -395,6 +397,11 @@ defmodule Continuum.Workflow.BeforeCompile do
   @moduledoc false
 
   defmacro __before_compile__(env) do
+    # Compensation coverage is a whole-module property: the compensate_all
+    # call and the activities it rolls back may live in different clauses or
+    # private helpers, so the check runs once over the accumulated sites.
+    Continuum.AstCheck.emit_compensation_warnings(env)
+
     version = Module.get_attribute(env.module, :continuum_workflow_version)
     retention = Module.get_attribute(env.module, :continuum_workflow_retention)
     logical_workflow = Module.get_attribute(env.module, :continuum_logical_workflow) || env.module

@@ -345,12 +345,45 @@ defmodule Continuum.AstCheck do
   end
 
   @doc false
-  @spec check_compensation_warnings(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
-  def check_compensation_warnings(ast, env, caller_fun, caller_arity) do
-    if compensate_all_call?(ast) do
-      ast
-      |> uncompensated_activity_calls()
-      |> Enum.each(&warn_uncompensated_activity(&1, env, caller_fun, caller_arity))
+  @spec collect_compensation_sites(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
+  def collect_compensation_sites(ast, env, caller_fun, caller_arity) do
+    Macro.prewalk(ast, fn
+      {:activity, meta, args} = node when is_list(args) ->
+        Module.put_attribute(env.module, :continuum_activity_sites, %{
+          fun: caller_fun,
+          arity: caller_arity,
+          line: Keyword.get(meta, :line),
+          status: activity_compensation_status(args)
+        })
+
+        node
+
+      {:compensate_all, _meta, args} = node when is_list(args) ->
+        Module.put_attribute(env.module, :continuum_compensate_all_sites, %{
+          fun: caller_fun,
+          arity: caller_arity
+        })
+
+        node
+
+      node ->
+        node
+    end)
+
+    :ok
+  end
+
+  @doc false
+  @spec emit_compensation_warnings(Macro.Env.t()) :: :ok
+  def emit_compensation_warnings(env) do
+    compensate_all_sites = Module.get_attribute(env.module, :continuum_compensate_all_sites) || []
+    activity_sites = Module.get_attribute(env.module, :continuum_activity_sites) || []
+
+    if compensate_all_sites != [] do
+      activity_sites
+      |> Enum.filter(&(&1.status == :uncompensated))
+      |> Enum.sort_by(&{&1.fun, &1.line})
+      |> Enum.each(&warn_uncompensated_activity(&1, env))
     end
 
     :ok
@@ -358,40 +391,22 @@ defmodule Continuum.AstCheck do
 
   # ---------------------------------------------------------------------------
 
-  defp compensate_all_call?(ast) do
-    {_ast, found?} =
-      Macro.prewalk(ast, false, fn
-        {:compensate_all, _meta, args} = node, _found when is_list(args) -> {node, true}
-        node, found -> {node, found}
-      end)
+  # Literal opts are analyzable; a variable/dynamic opts argument is not, and
+  # an unanalyzable site must be silent rather than falsely flagged.
+  defp activity_compensation_status([_call]), do: :uncompensated
 
-    found?
+  defp activity_compensation_status([_call, opts]) when is_list(opts) do
+    cond do
+      not Keyword.keyword?(opts) -> :unanalyzable
+      Keyword.has_key?(opts, :compensate) -> :compensated
+      true -> :uncompensated
+    end
   end
 
-  defp uncompensated_activity_calls(ast) do
-    {_ast, calls} =
-      Macro.prewalk(ast, [], fn
-        {:activity, meta, args} = node, acc when is_list(args) ->
-          if compensated_or_opted_out?(args) do
-            {node, acc}
-          else
-            {node, [%{line: Keyword.get(meta, :line)} | acc]}
-          end
+  defp activity_compensation_status([_call, _dynamic_opts]), do: :unanalyzable
+  defp activity_compensation_status(_args), do: :unanalyzable
 
-        node, acc ->
-          {node, acc}
-      end)
-
-    Enum.reverse(calls)
-  end
-
-  defp compensated_or_opted_out?([_call, opts]) when is_list(opts) do
-    Keyword.has_key?(opts, :compensate)
-  end
-
-  defp compensated_or_opted_out?(_args), do: false
-
-  defp warn_uncompensated_activity(call, env, caller_fun, caller_arity) do
+  defp warn_uncompensated_activity(site, env) do
     IO.warn(
       """
       Continuum workflow uses compensate_all but has an activity without `compensate:`.
@@ -400,8 +415,8 @@ defmodule Continuum.AstCheck do
       `compensate: :none` to mark this activity as intentionally not compensated.
       """,
       [
-        {env.module, caller_fun, caller_arity,
-         [file: to_charlist(env.file || "nofile"), line: call.line || env.line || 0]}
+        {env.module, site.fun, site.arity,
+         [file: to_charlist(env.file || "nofile"), line: site.line || env.line || 0]}
       ]
     )
   end

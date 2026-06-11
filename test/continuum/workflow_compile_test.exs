@@ -463,6 +463,45 @@ defmodule Continuum.WorkflowCompileTest do
       refute output =~ "activity without `compensate:`"
     end
 
+    test "warns when the uncompensated activity lives in a different clause" do
+      output =
+        capture_io(:standard_error, fn ->
+          compile_workflow("CrossClauseCompensation", """
+          def run(input) do
+            prepare(input)
+            compensate_all()
+          end
+
+          defp prepare(input) do
+            activity __MODULE__.do_work(input)
+          end
+
+          def do_work(input), do: input
+          """)
+        end)
+
+      assert output =~ "uses compensate_all"
+      assert output =~ "activity without `compensate:`"
+    end
+
+    test "stays silent for an activity whose opts are not a literal keyword list" do
+      output =
+        capture_io(:standard_error, fn ->
+          compile_workflow("DynamicOptsCompensation", """
+          def run(input) do
+            opts = [compensate: {__MODULE__, :undo, [input]}]
+            activity __MODULE__.do_work(input), opts
+            compensate_all()
+          end
+
+          def do_work(input), do: {:ok, input}
+          def undo(input), do: input
+          """)
+        end)
+
+      refute output =~ "activity without `compensate:`"
+    end
+
     test "does not warn when the activity explicitly opts out" do
       output =
         capture_io(:standard_error, fn ->
