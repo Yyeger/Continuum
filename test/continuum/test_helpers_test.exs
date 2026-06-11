@@ -85,6 +85,16 @@ defmodule Continuum.TestHelpersTest do
 
     assert {:ok, %{state: :completed, result: {:ok, :go}}} =
              Continuum.await(run_id, 1_000)
+
+    # The injected signal was consumed by the live await, so the journaled
+    # signal_received carries the await's command identity — injection no
+    # longer bypasses command-id drift detection.
+    signal_event =
+      run_id
+      |> Continuum.Test.history()
+      |> Enum.find(&(&1.type == :signal_received))
+
+    assert signal_event.command_id != nil
   end
 
   defp assert_eventually(fun, attempts \\ 20)

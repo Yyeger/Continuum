@@ -177,6 +177,17 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     assert length(child_runs) == 3
   end
 
+  test "paranoid verify_run! re-replays a continued run to its sentinel" do
+    {:ok, root} = Continuum.start(CycleFlow, %{n: 1, max: 2}, journal: Postgres)
+    pump(root)
+
+    input =
+      Repo.one(from(r in Run, where: r.id == ^root, select: r.input))
+      |> :erlang.binary_to_term()
+
+    assert :ok = Continuum.Test.Paranoid.verify_run!(CycleFlow, input, root, journal: Postgres)
+  end
+
   test "the successor inherits the predecessor's namespace and attributes" do
     {:ok, root} =
       Continuum.start(CycleFlow, %{n: 1, max: 2},

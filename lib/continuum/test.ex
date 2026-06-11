@@ -214,30 +214,25 @@ defmodule Continuum.Test do
 
   @doc """
   Inject a signal into a run and wake its local engine when one exists.
+
+  Delivery goes through the same `Continuum.Runtime.SignalRouter` path as
+  `Continuum.signal/4`: in-memory signals are buffered in the run's mailbox
+  and consumed by the matching `await signal`, journaling `signal_received`
+  with the await's command identity — injected signals exercise the same
+  command-identity drift detection as production deliveries.
   """
   @spec inject_signal(binary(), atom(), term(), keyword()) :: :ok | {:error, term()}
   def inject_signal(run_id, name, payload, opts \\ []) do
     journal = Keyword.get(opts, :journal, Journal.InMemory)
-    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     case journal do
-      Journal.Postgres ->
-        {:ok, delivered_run_id} =
-          Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
-
-        Engine.wake(instance, delivered_run_id)
-        :ok
-
-      Journal.InMemory ->
-        journal.append!(
-          instance,
+      adapter when adapter in [Journal.Postgres, Journal.InMemory] ->
+        Continuum.Runtime.SignalRouter.deliver(
           run_id,
-          %{type: :signal_received, name: name, payload: payload, seq: nil},
-          nil
+          name,
+          payload,
+          Keyword.put(opts, :journal, adapter)
         )
-
-        Engine.wake(instance, run_id)
-        :ok
 
       other ->
         {:error, {:unsupported_signal_injection_journal, other}}

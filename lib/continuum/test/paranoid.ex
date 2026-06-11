@@ -4,10 +4,15 @@ defmodule Continuum.Test.Paranoid do
 
   When enabled, every workflow run that reaches a `:completed` terminal state is
   re-replayed from its journaled history through `Continuum.Test.replay/4`. The
-  re-replay asserts an identical `(event_type, decoded_payload, command_id)`
-  sequence between the original execution and the replay, and that the replay
-  produces the same result. DB-stamped fields (`:seq`, `:inserted_at`) are
-  excluded from the comparison.
+  replay loop validates each journaled event in order against what the
+  orchestration code requests — event type, effect shape, and command identity
+  (`Continuum.ReplayDriftError` on any mismatch) — and the harness additionally
+  asserts the replayed result equals the recorded one. Journaled payloads are
+  what replay *returns*; they have no independent value to compare against, so
+  payload equality is implied by the result assertion, not checked per event.
+  `assert_histories_match!/2` is a separate helper for comparing two captured
+  histories (e.g. two live executions of the same deterministic flow); the
+  re-replay paths do not produce a second history to feed it.
 
   Enable it for a whole `mix test` run with the `CONTINUUM_PARANOID=1`
   environment variable (or `config :continuum, :paranoid_replay, true`). The
@@ -74,6 +79,13 @@ defmodule Continuum.Test.Paranoid do
           assert result == recorded,
                  "paranoid replay of #{inspect(run_id)} produced #{inspect(result)} " <>
                    "but the original run recorded #{inspect(recorded)}"
+
+          :ok
+
+        {:continued, next_run_id} ->
+          assert recorded == {:continued, next_run_id},
+                 "paranoid replay of #{inspect(run_id)} continued to " <>
+                   "#{inspect(next_run_id)} but the original run recorded #{inspect(recorded)}"
 
           :ok
 
@@ -211,6 +223,16 @@ defmodule Continuum.Test.Paranoid do
                 run_id,
                 "replay result #{inspect(other)} != recorded #{inspect(recorded)}"
               )
+
+            {:continued, next_run_id} ->
+              if recorded == {:continued, next_run_id} do
+                :ok
+              else
+                record_mismatch(
+                  run_id,
+                  "replay continued to #{inspect(next_run_id)} != recorded #{inspect(recorded)}"
+                )
+              end
 
             {:error, {:error, %Continuum.ReplayDriftError{} = error, _stack}} ->
               record_mismatch(run_id, Exception.message(error))
