@@ -82,6 +82,130 @@
   `max_attempts: 1` whose worker/node dies mid-execution now fails instead
   of silently re-running its side effects; raise `max_attempts` (and supply
   an `idempotency_key/1`) for crash-resilient activities.
+- Activity task leases are now heartbeated while the activity executes
+  (TTL 30s renewed every 10s; `:task_lease_ttl_seconds` /
+  `:task_lease_renew_ms`) instead of one-shot-extended to timeout + margin.
+  A crashed worker's task expires within ~one TTL and the sweep rescues it
+  promptly, even for long-timeout activities. `mix continuum.audit` now
+  reports `expired_leased_activity_tasks` as the matching operator signal.
+
+- Signals, cancel, and await now follow `continue_as_new` chains to the
+  live tip. Signaling the chain-root id delivers into the current
+  incarnation's mailbox (previously a silent loss into the dead root's),
+  cancelling the root cancels the tip, and `Continuum.await/3` follows the
+  chain to the final terminal result — the internal `{:continued, run_id}`
+  sentinel is never exposed. When a run continues, undelivered mailbox
+  signals and live unawaited children move to the successor (so the cancel
+  cascade still reaches them; the successor cannot *await* inherited
+  children — await every child you need a result from before continuing).
+  Successors also inherit `namespace` and `attributes` (previously reset to
+  defaults on first continuation), as do child runs from their parent.
+- `continue_as_new` no longer pins the successor to the predecessor's
+  `version_hash`: the successor starts with empty history, so it is stamped
+  with the workflow's currently loaded version and chains pick up deploys.
+  An unknown version is now a per-node fact: the engine releases the lease
+  and leaves the run `suspended` for a capable node to claim, instead of
+  marking it `stuck_unknown_version` globally (which one stale node could
+  do to a new-version run during a rolling deploy, unrecoverably).
+  Registering a version (`VersionRegistry.upsert_instance/2`, run at boot)
+  flips legacy stuck rows back to `suspended`.
+- Cancel reaches runs hosted on other nodes: it forwards through the same
+  `:pg` group as wake (as a call, so the caller gets the real result). The
+  durable fallback distinguishes `{:error, :not_found}`,
+  `{:error, :owned_elsewhere}`, and `{:error, {:run_not_active, state}}`
+  (previously all `:not_found`). For an owner that is leased but
+  unreachable, the request is recorded in the new
+  `continuum_runs.cancel_requested_at` column and honored by the owning
+  engine on its next lease heartbeat.
+- Fresh durable runs are inserted already leased, in one transaction.
+  Previously the insert committed before the lease acquire, so another
+  node's dispatcher could claim the run in the window and the original
+  `Continuum.start` returned an error for a run that was actually
+  executing. The dispatcher also skips runs whose engine is alive in the
+  local registry, and when a claim races an engine registration it hands
+  the rotated token to the live engine (`Engine.adopt_lease/4`) instead of
+  fencing it out for a full lease TTL.
+- `start_child` enforces `:max_child_depth` at creation time (failing the
+  run loudly) so descendants can no longer outrun the cancel cascade's
+  depth bound; if the cascade still meets deeper legacy descendants it
+  logs and emits `[:continuum, :run, :cancel_cascade_truncated]` instead
+  of silently leaving them running.
+
+- **Behavior change:** cancellation now produces a real terminal
+  `cancelled` run state (previously `failed` with error `:cancelled`).
+  `cancel_run!` is the single broadcaster of one canonical
+  `{:run_finished, run_id, :cancelled, :cancelled}` message — including
+  for cascade-cancelled descendants, whose awaiters previously blocked for
+  their full timeout — and `await` returns
+  `{:error, %{state: :cancelled, ...}}` from both the broadcast and poll
+  paths (previously the two disagreed). A child that legitimately *failed*
+  with the user error term `:cancelled` is now classified as a failure by
+  its parent's await, not a cancellation. Legacy `failed` + `:cancelled`
+  rows still display, await, and query as cancelled. The in-memory journal
+  stores the same canonical state.
+- **Behavior change:** `Continuum.signal/3,4` returns
+  `{:error, :not_found}` / `{:error, :run_terminal}` for runs that do not
+  exist or are terminal (previously `:ok`, silently accepting a signal
+  nothing could ever consume), matching the in-memory adapter.
+- Journal write rejections are now a structured
+  `Continuum.Runtime.JournalError` (operation + rollback reason) instead of
+  `RuntimeError` message text; the engine, activity workers, and timer
+  wheel classify failures by pattern matching. **Behavior change:** code
+  rescuing `RuntimeError` from journal operations must rescue
+  `Continuum.Runtime.JournalError` instead.
+- A transient database failure while journaling a run's completion,
+  suspension, or mid-replay effect no longer marks the run `failed` with
+  the DB exception as its "error": the engine crashes and crash-and-resume
+  replays and finishes the run. Terminal transitions additionally CAS on
+  the run still being active, so a late `fail!` can never flip a
+  `completed` run.
+- `fire_timer!` validates run state as well as lease, so a timer claimed
+  just before a cancel committed can no longer append `timer_fired` into a
+  terminal run's history; the wheel drops the rejection cleanly. Cancel
+  also clears the run's lease.
+- `Continuum.set_attributes/3` merges in SQL (`attributes || $2::jsonb`),
+  so concurrent disjoint merges can no longer silently drop each other's
+  keys.
+- `Continuum.side_effect/1` producer identity no longer includes
+  per-compilation anonymous-function artifacts, so recompiling a helper
+  module (adding an unrelated function) no longer kills every in-flight run
+  replaying through it. The helper-module caveat (call-site line identity
+  without version-hash protection) is documented on `side_effect/1`.
+  **Behavior change:** histories journaled through the *bare-producer*
+  `Effect.run/2` form (not the `side_effect` macro) before this change
+  replay-break once across the upgrade.
+- Lease, retry-backoff, and signal-timeout arithmetic uses the database
+  clock end to end (expiry comparisons in SQL; retry `available_at`
+  computed in the UPDATE), so app/DB clock skew can no longer shrink or
+  stretch effective TTLs and timeouts.
+- The SignalRouter retries a failed LISTEN start (previously a node could
+  stay silently deaf to signals and parent wakeups forever), scans for
+  undelivered signals on (re)connect and every 30s as a poll backstop for
+  parked engines, and remote wakes are cast to every `:pg` member instead
+  of only the first.
+- The determinism scanner normalizes pipes before scanning (`x |>
+  send(:msg)` is now rejected as `send/2`), warns on chained dynamic
+  receivers (`input.mod.fun(x)`) and captures of dynamic modules
+  (`&m.f/1`), and warns on `catch` arms in `Continuum.Pure` helpers. The
+  uncompensated-activity check runs once per module at compile end, so
+  activities in other clauses or private helpers are caught, and call
+  sites with non-literal opts are no longer falsely flagged.
+- `Continuum.Test.inject_signal/4` delivers through the SignalRouter, so
+  injected in-memory signals are consumed by the live await and journal
+  `signal_received` with its command identity — injected signals now
+  exercise the same drift detection as production deliveries. Paranoid
+  re-replay handles `continue_as_new` runs (verifying the journaled
+  continuation) instead of skipping them silently, and its docs state
+  precisely what the re-replay checks.
+- The Snapshotter resolves its journal through the runtime instance, and
+  snapshot triggers carry the journal that wrote the events — a durable run
+  on an instance whose default journal is in-memory snapshots into
+  Postgres.
+
+### Migrations
+
+- Added `continuum_runs.cancel_requested_at timestamptz` (delta migration;
+  `mix continuum.gen.migration` includes it for new installs).
 
 ## v0.5.1 — 2026-06-04 — "Oban activity executor"
 
