@@ -1,7 +1,7 @@
 defmodule Continuum.MixProject do
   use Mix.Project
 
-  @version "0.5.1"
+  @version "0.6.0"
   @source_url "https://github.com/Yyeger/Continuum"
 
   def project do
@@ -84,7 +84,8 @@ defmodule Continuum.MixProject do
         "guides/migrations/MIGRATING_v0_2_to_v0_3.md",
         "guides/migrations/MIGRATING_v0_3_to_v0_4.md",
         "guides/migrations/MIGRATING_v0_4_to_v0_5.md",
-        "guides/migrations/MIGRATING_v0_5_to_v0_5_1.md"
+        "guides/migrations/MIGRATING_v0_5_to_v0_5_1.md",
+        "guides/migrations/MIGRATING_v0_5_1_to_v0_6.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/

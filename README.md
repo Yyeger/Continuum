@@ -82,7 +82,7 @@ Add Continuum and a Postgres driver to your dependencies:
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.5"},
+    {:continuum, "~> 0.6"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -264,7 +264,7 @@ Upgrading? See the [migration guides](./guides/migrations/) .
 
 ## Status
 
-Continuum is **v0.5.1 (pre-1.0)**. The durable engine, determinism enforcement,
+Continuum is **v0.6.0 (pre-1.0)**. The durable engine, determinism enforcement,
 workflow composition, observability, and clustering surface are implemented and
 covered by tests, including crash-resume, lease-fencing races, and
 property-based replay. APIs may still change before 1.0 — pin to a specific

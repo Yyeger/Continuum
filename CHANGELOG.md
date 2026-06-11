@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — 2026-06-11 — "Audit hardening"
+
+A full-library logic audit (activity liveness, replay-path agreement, the
+determinism scanner's negative space, identity across chains/nodes/versions,
+and signal/cancel/await consistency). See
+`guides/migrations/MIGRATING_v0_5_1_to_v0_6.md` for the upgrade guide.
 
 ### Fixes
 
