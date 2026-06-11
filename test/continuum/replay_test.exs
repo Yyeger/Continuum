@@ -118,7 +118,7 @@ defmodule Continuum.ReplayTest do
       Continuum.Runtime.Context.put(ctx)
 
       try do
-        assert 42 == Continuum.Runtime.Effect.run({:side_effect, :user}, module.producer())
+        assert 42 == Continuum.Runtime.Effect.run({:side_effect, :user}, apply(module, :producer, []))
       after
         Continuum.Runtime.Context.clear()
       end
@@ -144,7 +144,7 @@ defmodule Continuum.ReplayTest do
       Continuum.Runtime.Context.put(replay_ctx)
 
       try do
-        assert 42 == Continuum.Runtime.Effect.run({:side_effect, :user}, module.producer())
+        assert 42 == Continuum.Runtime.Effect.run({:side_effect, :user}, apply(module, :producer, []))
       after
         Continuum.Runtime.Context.clear()
       end
