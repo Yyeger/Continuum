@@ -185,8 +185,15 @@ defmodule Continuum.Workflow do
       end
 
   The current run is marked `completed` with `result: {:continued, next_run_id}`;
-  a new run starts with the given input, sharing the chain's `correlation_id`.
-  Use it to keep history bounded for long-running / cron-style workflows.
+  a new run starts with the given input, sharing the chain's `correlation_id`,
+  `namespace`, and `attributes`. Use it to keep history bounded for
+  long-running / cron-style workflows.
+
+  Children started but not yet awaited when the run continues are re-parented
+  to the successor so cancelling the chain still cascades into them. The
+  successor cannot *await* them, however — their `child_started` events live in
+  the predecessor's history. Await every child you need a result from before
+  calling `continue_as_new/1`.
   """
   @doc since: "0.3.0"
   defmacro continue_as_new(input) do

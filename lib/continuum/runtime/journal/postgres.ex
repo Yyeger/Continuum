@@ -16,6 +16,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   import Ecto.Query
 
+  require Logger
+
   alias Continuum.Runtime.{Instance, Snapshotter}
   alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Snapshot, Timer}
   alias Continuum.Telemetry
@@ -311,6 +313,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     result =
       repo().transaction(fn ->
         parent = lock_and_load_run!(parent_run_id, lease_token)
+        enforce_child_depth!(parent_run_id)
 
         child_changeset =
           %Run{}
@@ -355,6 +358,44 @@ defmodule Continuum.Runtime.Journal.Postgres do
       {:error, reason} ->
         raise "Continuum.Runtime.Journal.Postgres start_child! failed: #{inspect(reason)}"
     end
+  end
+
+  # The cancel cascade walks descendants down to :max_child_depth. Creation
+  # must respect the same bound, or descendants deeper than the cascade can
+  # never be reached by Continuum.cancel — fail loudly at start_child time
+  # instead of silently outrunning the cascade.
+  defp enforce_child_depth!(parent_run_id) do
+    max_depth = max_child_depth()
+
+    sql = """
+    WITH RECURSIVE ancestors AS (
+      SELECT id, parent_run_id, 0 AS depth FROM continuum_runs WHERE id = $1
+      UNION ALL
+      SELECT p.id, p.parent_run_id, a.depth + 1
+      FROM continuum_runs p
+      JOIN ancestors a ON p.id = a.parent_run_id
+      WHERE a.depth < $2
+    )
+    SELECT max(depth) FROM ancestors
+    """
+
+    case repo().query(sql, [Ecto.UUID.dump!(parent_run_id), max_depth]) do
+      {:ok, %{rows: [[parent_depth]]}} when is_integer(parent_depth) ->
+        if parent_depth + 1 > max_depth do
+          repo().rollback(
+            {:max_child_depth_exceeded, depth: parent_depth + 1, max_child_depth: max_depth}
+          )
+        else
+          :ok
+        end
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp max_child_depth do
+    Application.get_env(:continuum, :max_child_depth, 10)
   end
 
   @doc """
@@ -563,6 +604,17 @@ defmodule Continuum.Runtime.Journal.Postgres do
                      correlation_id: correlation,
                      completed_at: now
                    }) do
+              # Re-parent unawaited live children to the successor: their
+              # child_started events live in the dead run's history, so the
+              # successor cannot await them, but cancelling the chain must
+              # still cascade into them.
+              repo().update_all(
+                from(r in Run,
+                  where: r.parent_run_id == ^run_id and r.state in ["running", "suspended"]
+                ),
+                set: [parent_run_id: next_run_id]
+              )
+
               correlation
             else
               {:error, changeset} -> repo().rollback({:continue_as_new_failed, changeset})
@@ -961,8 +1013,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp descendant_run_ids(run_id) do
-    max_depth = Application.get_env(:continuum, :max_child_depth, 10)
+    max_depth = max_child_depth()
 
+    # Walk one level past the bound: rows at max_depth + 1 mean the cascade is
+    # about to truncate (legacy data or a lowered :max_child_depth) — that must
+    # be loud, not a silent partial cancel.
     sql = """
     WITH RECURSIVE descendants AS (
       SELECT id, 1 AS depth FROM continuum_runs WHERE parent_run_id = $1
@@ -970,14 +1025,32 @@ defmodule Continuum.Runtime.Journal.Postgres do
       SELECT c.id, d.depth + 1
       FROM continuum_runs c
       JOIN descendants d ON c.parent_run_id = d.id
-      WHERE d.depth < $2
+      WHERE d.depth < $2 + 1
     )
-    SELECT id::text FROM descendants
+    SELECT id::text, depth FROM descendants
     """
 
     case repo().query(sql, [Ecto.UUID.dump!(run_id), max_depth]) do
-      {:ok, %{rows: rows}} -> Enum.map(rows, fn [id] -> id end)
-      _ -> []
+      {:ok, %{rows: rows}} ->
+        {within, beyond} = Enum.split_with(rows, fn [_id, depth] -> depth <= max_depth end)
+
+        unless beyond == [] do
+          Logger.error(
+            "Continuum cancel cascade for run #{run_id} truncated at depth " <>
+              "#{max_depth}: #{length(beyond)}+ deeper descendant(s) keep running"
+          )
+
+          Telemetry.execute(
+            [:continuum, :run, :cancel_cascade_truncated],
+            %{count: length(beyond)},
+            %{run_id: run_id, max_child_depth: max_depth}
+          )
+        end
+
+        Enum.map(within, fn [id, _depth] -> id end)
+
+      _ ->
+        []
     end
   end
 

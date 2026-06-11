@@ -50,6 +50,26 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     end
   end
 
+  defmodule SlowChildFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(_input), do: {:ok, await(signal(:never))}
+  end
+
+  defmodule OrphaningFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(%{phase: 1}) do
+      start_child(SlowChildFlow, %{}, id: "bg")
+      continue_as_new(%{phase: 2})
+    end
+
+    def run(%{phase: 2}) do
+      payload = await(signal(:go))
+      {:ok, payload}
+    end
+  end
+
   setup do
     Repo.delete_all(ActivityTask)
     Repo.delete_all(Event)
@@ -208,6 +228,35 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
 
     assert {:ok, %{state: :completed, result: {:ok, {:done, 2}}}} =
              Continuum.await(root, 2_000, journal: Postgres)
+  end
+
+  test "continue_as_new re-parents unawaited live children to the successor" do
+    {:ok, root} = Continuum.start(OrphaningFlow, %{phase: 1}, journal: Postgres)
+
+    pump_until(fn -> successor_of(root) != nil end)
+    tip = successor_of(root)
+    pump_until(fn -> run_state(tip) == "suspended" end)
+
+    # The unawaited child now hangs off the successor, not the dead root.
+    child =
+      Repo.one(
+        from(r in Run,
+          where: r.parent_run_id == ^tip and is_nil(r.continued_from_run_id),
+          select: r.id
+        )
+      )
+
+    assert child != nil
+    pump_until(fn -> run_state(child) == "suspended" end)
+
+    # Cancelling through the chain root reaches the tip and cascades into the
+    # re-parented child.
+    assert :ok = Continuum.cancel(root, journal: Postgres)
+
+    assert run_state(child) == "failed"
+
+    assert Repo.one(from(r in Run, where: r.id == ^child, select: r.error)) |> decoded() ==
+             :parent_cancelled
   end
 
   test "a signal sent to the chain root is delivered to the live tip" do

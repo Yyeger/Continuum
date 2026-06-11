@@ -59,6 +59,18 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
     end
   end
 
+  defmodule DeepFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(%{depth: d}) do
+      if d > 0 do
+        await(child(DeepFlow.run(%{depth: d - 1})))
+      else
+        {:ok, :bottom}
+      end
+    end
+  end
+
   defmodule CancelParentFlow do
     use Continuum.Workflow, version: 1
 
@@ -85,6 +97,66 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
 
     [child] = children_of(parent_id)
     assert child.state == "completed"
+  end
+
+  test "start_child fails loudly when it would exceed max_child_depth" do
+    previous = Application.get_env(:continuum, :max_child_depth)
+    Application.put_env(:continuum, :max_child_depth, 2)
+    on_exit(fn -> restore_env(:max_child_depth, previous) end)
+
+    {:ok, root} = Continuum.start(DeepFlow, %{depth: 5}, journal: Postgres)
+
+    pump(root)
+
+    # Depths 1 and 2 are created; the grandchild's attempt to create depth 3
+    # fails its run at creation time instead of outrunning the cancel cascade.
+    failed =
+      Repo.all(from(r in Run, where: r.state == "failed", select: r.error))
+      |> Enum.map(&decode/1)
+
+    assert Enum.any?(failed, fn
+             {_kind, %RuntimeError{message: message}, _stack} ->
+               message =~ "max_child_depth_exceeded"
+
+             _other ->
+               false
+           end)
+  end
+
+  test "a cancel cascade deeper than max_child_depth is loud, not silent" do
+    previous = Application.get_env(:continuum, :max_child_depth)
+    Application.put_env(:continuum, :max_child_depth, 2)
+    on_exit(fn -> restore_env(:max_child_depth, previous) end)
+
+    # Hand-build a chain deeper than the bound (legacy data / lowered config).
+    [root, c1, c2, c3] = insert_chain(4)
+
+    handler_id = "cascade-truncated-#{System.unique_integer()}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:continuum, :run, :cancel_cascade_truncated],
+        fn event, measurements, metadata, test_pid ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert :ok = Continuum.cancel(root, journal: Postgres)
+
+    assert_receive {:telemetry, [:continuum, :run, :cancel_cascade_truncated], %{count: 1},
+                    %{run_id: ^root, max_child_depth: 2}},
+                   1_000
+
+    states = Map.new(Repo.all(from(r in Run, select: {r.id, r.state})))
+    assert states[c1] == "failed"
+    assert states[c2] == "failed"
+    # The descendant beyond the bound keeps running — that is the documented
+    # truncation the telemetry makes visible.
+    assert states[c3] == "suspended"
   end
 
   test "children inherit the parent's namespace and attributes" do
@@ -162,6 +234,30 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
 
     assert {:ok, ^result} = Continuum.Test.replay(SequentialParentFlow, %{id: "replay"}, history)
   end
+
+  defp insert_chain(count) do
+    Enum.reduce(1..count, [], fn _i, acc ->
+      run_id = Ecto.UUID.generate()
+      parent_id = List.first(acc)
+
+      %Run{}
+      |> Ecto.Changeset.change(%{
+        id: run_id,
+        workflow: inspect(SlowLeafFlow),
+        version_hash: "chain-fixture",
+        state: "suspended",
+        input: :erlang.term_to_binary(%{}),
+        parent_run_id: parent_id
+      })
+      |> Repo.insert!()
+
+      [run_id | acc]
+    end)
+    |> Enum.reverse()
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:continuum, key)
+  defp restore_env(key, value), do: Application.put_env(:continuum, key, value)
 
   defp children_of(parent_id) do
     Repo.all(
