@@ -51,7 +51,11 @@ defmodule Continuum.Runtime.SignalRouterTest do
       event_types(run_id) == ["signal_awaited"]
     end)
 
-    assert Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+    # The signal_awaited event is journaled before the engine commits the
+    # suspended state — poll for the transition instead of racing it.
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+    end)
 
     :ok = Continuum.signal(run_id, :decision, :go)
 
@@ -63,6 +67,30 @@ defmodule Continuum.Runtime.SignalRouterTest do
     signal = Repo.one!(from(s in Signal, where: s.run_id == ^run_id))
     assert signal.name == "decision"
     assert signal.delivered == true
+  end
+
+  test "catch_up_once wakes a local engine with an undelivered mailbox row" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)
+
+    assert_eventually(fn ->
+      event_types(run_id) == ["signal_awaited"]
+    end)
+
+    # Insert the signal row directly — no pg_notify, no wake — simulating a
+    # dropped notification while the engine is parked on a live lease.
+    Repo.insert!(%Signal{
+      run_id: run_id,
+      name: "decision",
+      payload: :erlang.term_to_binary(:go),
+      delivered: false,
+      inserted_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    })
+
+    assert :ok = Continuum.Runtime.SignalRouter.catch_up_once()
+
+    assert {:ok, %{state: :completed, result: {:ok, :went}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
   end
 
   test "already-pending signal journals signal_received without signal_awaited" do

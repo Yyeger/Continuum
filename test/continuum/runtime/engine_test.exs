@@ -27,6 +27,35 @@ defmodule Continuum.Runtime.EngineTest do
     end
   end
 
+  test "wake reaches a live pg member even when a stale dead member is present" do
+    instance = Continuum.Runtime.Instance.default()
+    run_id = Ecto.UUID.generate()
+    test_pid = self()
+
+    dead = spawn(fn -> :ok end)
+    ref = Process.monitor(dead)
+    assert_receive {:DOWN, ^ref, :process, ^dead, _}, 1_000
+
+    live =
+      spawn(fn ->
+        receive do
+          {:"$gen_cast", :wake} -> send(test_pid, :live_member_woke)
+        end
+      end)
+
+    # A dead pid can linger in :pg membership briefly; wake must not stop at
+    # the head of the member list.
+    :ok = :pg.join(:continuum, {instance.name, run_id}, live)
+
+    try do
+      assert :ok = Engine.wake(instance, run_id)
+      assert_receive :live_member_woke, 1_000
+    after
+      :pg.leave(:continuum, {instance.name, run_id}, live)
+      Process.exit(live, :kill)
+    end
+  end
+
   test "wake falls back to a pg member when the run is not local" do
     instance = Continuum.Runtime.Instance.default()
     run_id = Ecto.UUID.generate()

@@ -293,15 +293,22 @@ defmodule Continuum.Runtime.Engine do
       [] ->
         {:error, :not_found}
 
-      [pid | _] ->
-        Telemetry.execute([:continuum, :run, :forwarded], %{}, %{
-          instance: instance.name,
-          run_id: run_id,
-          from_node: node(),
-          to_node: node(pid)
-        })
+      members ->
+        # Cast to every member, not just the head — membership can briefly
+        # contain a stale pid of a dead engine, and a wake to a dead pid is a
+        # harmless no-op while a missed wake strands the run.
+        Enum.each(members, fn pid ->
+          Telemetry.execute([:continuum, :run, :forwarded], %{}, %{
+            instance: instance.name,
+            run_id: run_id,
+            from_node: node(),
+            to_node: node(pid)
+          })
 
-        GenServer.cast(pid, :wake)
+          GenServer.cast(pid, :wake)
+        end)
+
+        :ok
     end
   end
 

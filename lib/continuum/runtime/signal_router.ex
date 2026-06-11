@@ -15,8 +15,12 @@ defmodule Continuum.Runtime.SignalRouter do
   """
 
   use GenServer
+  require Logger
 
   alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Telemetry}
+
+  @listener_retry_ms 5_000
+  @catch_up_interval_ms 30_000
 
   def start_link(opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -40,6 +44,18 @@ defmodule Continuum.Runtime.SignalRouter do
     end
   end
 
+  @doc """
+  Scan `continuum_signals` for undelivered rows whose runs have a local engine
+  and wake them. The LISTEN path is best-effort (notifications can be dropped,
+  the listener can be down); this is the poll backstop the router runs
+  periodically while listening, exposed for tests and operators.
+  """
+  @spec catch_up_once(keyword()) :: :ok
+  def catch_up_once(opts \\ []) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    catch_up(instance)
+  end
+
   @impl true
   def init(opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -49,6 +65,12 @@ defmodule Continuum.Runtime.SignalRouter do
       instance: instance,
       listen?:
         Keyword.get(opts, :listen?, Keyword.get(config, :listen?, listen_enabled?(instance))),
+      catch_up_interval_ms:
+        Keyword.get(
+          opts,
+          :catch_up_interval_ms,
+          Keyword.get(config, :catch_up_interval_ms, @catch_up_interval_ms)
+        ),
       notifier: nil,
       ref: nil
     }
@@ -68,6 +90,16 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   def handle_info({:notification, _pid, _ref, _channel, _payload}, state), do: {:noreply, state}
+
+  def handle_info(:start_listener, state) do
+    {:noreply, start_listener(state)}
+  end
+
+  def handle_info(:catch_up, state) do
+    catch_up(state.instance)
+    schedule_catch_up(state)
+    {:noreply, state}
+  end
 
   defp deliver_durable(instance, run_id, name, payload) do
     # Delivery resolves continue_as_new chains to the live tip; wake that run,
@@ -107,6 +139,8 @@ defmodule Continuum.Runtime.SignalRouter do
 
   defp start_listener(%{listen?: false} = state), do: state
 
+  defp start_listener(%{notifier: notifier} = state) when is_pid(notifier), do: state
+
   defp start_listener(state) do
     if state.instance.repo == nil do
       state
@@ -117,11 +151,58 @@ defmodule Continuum.Runtime.SignalRouter do
         {:ok, notifier} ->
           {:ok, ref} = Postgrex.Notifications.listen(notifier, "continuum_signal")
           {:ok, _wake_ref} = Postgrex.Notifications.listen(notifier, "continuum_run_wake")
+
+          # Anything delivered while we were deaf is woken now; afterwards the
+          # periodic backstop covers dropped notifications.
+          catch_up(state.instance)
+          schedule_catch_up(state)
+
           %{state | notifier: notifier, ref: ref}
 
-        {:error, _reason} ->
+        {:error, reason} ->
+          # A node that silently never LISTENs is deaf to signals and parent
+          # wakeups forever — log and retry instead of giving up at init.
+          Logger.warning(
+            "Continuum.SignalRouter listener failed to start " <>
+              "(#{inspect(reason)}); retrying in #{@listener_retry_ms}ms"
+          )
+
+          Process.send_after(self(), :start_listener, @listener_retry_ms)
           state
       end
+    end
+  end
+
+  defp schedule_catch_up(state) do
+    Process.send_after(self(), :catch_up, state.catch_up_interval_ms)
+  end
+
+  defp catch_up(%Instance{repo: nil}), do: :ok
+
+  defp catch_up(instance) do
+    sql = """
+    SELECT DISTINCT s.run_id::text
+    FROM continuum_signals AS s
+    JOIN continuum_runs AS r ON r.id = s.run_id
+    WHERE s.delivered = false
+      AND r.state IN ('running', 'suspended')
+    """
+
+    case instance.repo.query(sql, []) do
+      {:ok, %{rows: rows}} ->
+        Enum.each(rows, fn [run_id] ->
+          # Local engines only: parked engines holding live leases are
+          # invisible to the dispatcher, so a missed wake strands them.
+          # Runs without a local engine are the dispatcher's job.
+          case Registry.lookup(instance.registry, run_id) do
+            [{_pid, _}] -> Engine.wake(instance, run_id)
+            [] -> :ok
+          end
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Continuum.SignalRouter catch-up scan failed: #{inspect(reason)}")
+        :ok
     end
   end
 
