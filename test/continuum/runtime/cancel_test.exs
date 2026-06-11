@@ -207,7 +207,7 @@ defmodule Continuum.Runtime.CancelTest do
         Continuum.Runtime.Instance.default(),
         claimed_task,
         :boom,
-        DateTime.utc_now(),
+        1_000,
         run.lease_token
       )
     end

@@ -80,7 +80,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
       WHERE t.id = $1::text::uuid
         AND t.state = 'available'
         AND t.attempt = $2
-        AND t.available_at <= now()
+        AND t.available_at <= clock_timestamp()
         AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
         AND r.state IN ('running', 'suspended')
         AND r.lease_token IS NOT NULL
@@ -171,7 +171,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
       FROM continuum_activity_tasks AS t
       JOIN continuum_runs AS r ON r.id = t.run_id
       WHERE t.state = 'available'
-        AND t.available_at <= now()
+        AND t.available_at <= clock_timestamp()
         AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
         AND r.state IN ('running', 'suspended')
         AND r.lease_token IS NOT NULL
@@ -220,7 +220,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     FROM continuum_activity_tasks AS t
     JOIN continuum_runs AS r ON r.id = t.run_id
     WHERE t.state = 'available'
-      AND t.available_at <= now()
+      AND t.available_at <= clock_timestamp()
       AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
       AND r.state IN ('running', 'suspended')
       AND r.lease_token IS NOT NULL

@@ -266,14 +266,21 @@ defmodule Continuum.Runtime.ActivityWorker do
   end
 
   defp retry(task, error, started_at) do
-    retry_at = retry_at(task)
+    backoff_ms = backoff_ms(task.retry, task.attempt)
+
+    # The authoritative available_at is computed on the database clock inside
+    # retry_activity_task!; this app-clock timestamp is observability metadata.
+    retry_at =
+      DateTime.utc_now()
+      |> DateTime.add(backoff_ms, :millisecond)
+      |> DateTime.truncate(:microsecond)
 
     :ok =
       Journal.Postgres.retry_activity_task!(
         task.instance,
         task,
         error,
-        retry_at,
+        backoff_ms,
         task.run_lease_token
       )
 
@@ -377,12 +384,6 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   defp idempotency_opts(nil), do: []
   defp idempotency_opts(idempotency), do: [idempotency: idempotency]
-
-  defp retry_at(task) do
-    DateTime.utc_now()
-    |> DateTime.add(backoff_ms(task.retry, task.attempt), :millisecond)
-    |> DateTime.truncate(:microsecond)
-  end
 
   defp backoff_ms(retry, attempt) do
     retry = retry || []

@@ -877,33 +877,44 @@ defmodule Continuum.Runtime.Journal.Postgres do
     )
   end
 
-  def retry_activity_task!(%Instance{} = instance, task, error, retry_at, lease_token) do
+  def retry_activity_task!(%Instance{} = instance, task, error, backoff_ms, lease_token) do
     with_repo(instance, fn ->
-      retry_activity_task_with_repo!(task, error, retry_at, lease_token)
+      retry_activity_task_with_repo!(task, error, backoff_ms, lease_token)
     end)
   end
 
-  defp retry_activity_task_with_repo!(task, error, retry_at, lease_token) do
+  defp retry_activity_task_with_repo!(task, error, backoff_ms, lease_token) do
+    backoff_seconds = backoff_ms / 1_000
+    next_attempt = task.attempt + 1
+    encoded_error = encode_term(error)
+
     result =
       repo().transaction(fn ->
         lock_and_validate_active_run!(task.run_id, lease_token)
         lock_and_validate_activity_task!(task)
 
-        case repo().update_all(
-               from(t in ActivityTask,
-                 where:
-                   t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
-                     t.lease_owner == ^task.lease_owner
-               ),
-               set: [
-                 state: "available",
-                 attempt: task.attempt + 1,
-                 available_at: retry_at,
-                 lease_owner: nil,
-                 lease_expires_at: nil,
-                 error: encode_term(error)
-               ]
-             ) do
+        # available_at is computed on the database clock so the claim
+        # comparison (also DB time) measures the intended backoff regardless
+        # of app/DB clock skew.
+        query =
+          from(t in ActivityTask,
+            where:
+              t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
+                t.lease_owner == ^task.lease_owner,
+            update: [
+              set: [
+                state: "available",
+                attempt: ^next_attempt,
+                available_at:
+                  fragment("clock_timestamp() + make_interval(secs => ?)", ^backoff_seconds),
+                lease_owner: nil,
+                lease_expires_at: nil,
+                error: ^encoded_error
+              ]
+            ]
+          )
+
+        case repo().update_all(query, []) do
           {1, _} -> :ok
           {0, _} -> repo().rollback({:activity_task_retry_failed, :task_lease_mismatch})
         end
@@ -1533,37 +1544,44 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp lock_and_validate_activity_task!(task) do
-    db_task =
+    # Expiry is measured on the database clock — the same clock that wrote
+    # lease_expires_at — so app/DB skew cannot shrink or stretch the TTL.
+    result =
       repo().one(
         from(t in ActivityTask,
           where: t.id == ^task.id,
-          lock: "FOR UPDATE"
+          lock: "FOR UPDATE",
+          select: {t, fragment("clock_timestamp()")}
         )
       )
 
-    cond do
-      is_nil(db_task) ->
+    case result do
+      nil ->
         repo().rollback({:activity_task_not_found, task.id})
 
-      db_task.run_id != task.run_id ->
-        repo().rollback({:activity_task_run_mismatch, task.id})
+      {db_task, db_now} ->
+        cond do
+          db_task.run_id != task.run_id ->
+            repo().rollback({:activity_task_run_mismatch, task.id})
 
-      db_task.state != "leased" ->
-        repo().rollback({:activity_task_not_leased, db_task.state})
+          db_task.state != "leased" ->
+            repo().rollback({:activity_task_not_leased, db_task.state})
 
-      db_task.lease_owner != task.lease_owner ->
-        repo().rollback(
-          {:activity_task_lease_mismatch, expected: task.lease_owner, actual: db_task.lease_owner}
-        )
+          db_task.lease_owner != task.lease_owner ->
+            repo().rollback(
+              {:activity_task_lease_mismatch,
+               expected: task.lease_owner, actual: db_task.lease_owner}
+            )
 
-      is_nil(db_task.lease_expires_at) ->
-        repo().rollback({:activity_task_lease_missing_expiry, task.id})
+          is_nil(db_task.lease_expires_at) ->
+            repo().rollback({:activity_task_lease_missing_expiry, task.id})
 
-      DateTime.compare(db_task.lease_expires_at, DateTime.utc_now()) == :lt ->
-        repo().rollback({:activity_task_lease_expired, task.id})
+          DateTime.compare(db_task.lease_expires_at, db_now) == :lt ->
+            repo().rollback({:activity_task_lease_expired, task.id})
 
-      true ->
-        :ok
+          true ->
+            :ok
+        end
     end
   end
 
@@ -1679,7 +1697,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
          run_id,
          %{timeout_timer_id: timer_id, timeout_at: timeout_at} = event
        ) do
-    if DateTime.compare(DateTime.utc_now(), timeout_at) in [:gt, :eq] do
+    if DateTime.compare(db_now(), timeout_at) in [:gt, :eq] do
       winner_event =
         insert_event!(run_id, %{
           type: :timer_fired,
@@ -2132,6 +2150,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
       version_hash: run.version_hash,
       trace_context: run.trace_context
     }
+  end
+
+  # Real database time (advances inside a transaction, unlike now()) — used
+  # where a comparison needs "current time" on the same clock that wrote the
+  # compared column.
+  defp db_now do
+    {:ok, %{rows: [[now]]}} = repo().query("SELECT clock_timestamp()")
+    now
   end
 
   defp encode_term(nil), do: nil
