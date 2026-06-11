@@ -953,7 +953,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  state: "failed",
                  error: encode_term(:cancelled),
                  completed_at: DateTime.utc_now(),
-                 next_wakeup_at: nil
+                 next_wakeup_at: nil,
+                 lease_owner: nil,
+                 lease_token: nil,
+                 lease_expires_at: nil
                ]
              ) do
           {1, _} -> maybe_wake_parent(run_id)
@@ -1377,7 +1380,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp fire_timer_with_repo!(run_id, timer_id, lease_token) do
     result =
       repo().transaction(fn ->
-        lock_and_validate_run!(run_id, lease_token)
+        # State and lease, not lease only: a cancel committing between the
+        # wheel's claim and this fire must roll back as {:run_not_active, _}
+        # instead of appending timer_fired to a terminal run's history.
+        lock_and_validate_active_run!(run_id, lease_token)
 
         case timer_winner(run_id, timer_id) do
           {:pending, timer_event, winner_seq} ->

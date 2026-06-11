@@ -76,6 +76,29 @@ defmodule Continuum.Runtime.CancelTest do
     assert event_types(run_id) == ["timer_started"]
   end
 
+  test "fire_timer! refuses to append timer_fired to a cancelled run" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.aggregate(Timer, :count) == 1
+    end)
+
+    timer = Repo.one!(Timer)
+    lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+
+    assert :ok = Continuum.cancel(run_id)
+
+    # Simulate a TimerWheel that claimed before the cancel committed and fires
+    # after: the journal must reject by run state, never append to the
+    # terminal run's history.
+    assert_raise Continuum.Runtime.JournalError, ~r/run_not_active/, fn ->
+      Postgres.fire_timer!(Continuum.Runtime.Instance.default(), run_id, timer.id, lease_token)
+    end
+
+    assert event_types(run_id) == ["timer_started"]
+  end
+
   test "cancel can complete durable suspended run without a local engine" do
     run_id = Ecto.UUID.generate()
 

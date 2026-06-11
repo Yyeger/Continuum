@@ -218,6 +218,27 @@ defmodule Continuum.Runtime.TimerWheel do
       run_id: timer.run_id,
       timer_id: timer.id
     })
+  rescue
+    error in Continuum.Runtime.JournalError ->
+      # Expected races, not wheel bugs: the run was cancelled/completed or its
+      # lease rotated between our claim and the fire. The journal write rolled
+      # back; whoever owns the run now (or nobody) handles the timer.
+      if terminal_or_fenced?(error) do
+        Logger.debug(
+          "TimerWheel dropped fire for timer #{timer.id} (run #{timer.run_id}): " <>
+            Exception.message(error)
+        )
+      else
+        reraise(error, __STACKTRACE__)
+      end
+  end
+
+  defp terminal_or_fenced?(%Continuum.Runtime.JournalError{reason: reason} = error) do
+    case reason do
+      {:run_not_active, _state} -> true
+      {:run_not_found, _run_id} -> true
+      _other -> Continuum.Runtime.JournalError.lease_lost?(error)
+    end
   end
 
   defp hydrate_window(%{instance: %{repo: nil}} = state), do: state
