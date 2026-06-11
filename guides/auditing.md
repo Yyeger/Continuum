@@ -10,7 +10,10 @@ mix continuum.audit --repo MyApp.Repo --strict
 ```
 
 The task reports loaded workflow versions, their `Continuum.patched?/1` call
-sites, and whether each patch is still needed by non-terminal runs.
+sites, and whether each patch is still needed by non-terminal runs. It also
+counts `expired_leased_activity_tasks` — tasks still `leased` past their lease
+expiry. A persistently non-zero count means workers are dying between claim
+and completion faster than the steady-state sweep rescues them.
 
 Patch verdicts:
 
