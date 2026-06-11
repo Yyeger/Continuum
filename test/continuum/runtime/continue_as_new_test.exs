@@ -157,6 +157,43 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     assert length(child_runs) == 3
   end
 
+  test "continue_as_new stamps the successor with the currently loaded version" do
+    metadata = CycleFlow.__continuum_workflow__()
+    current_hash = metadata.version_hash
+    old_hash = "superseded-version-hash"
+
+    # Simulate a run started under a previous deploy of CycleFlow: its row is
+    # pinned to old_hash, which still resolves to a loaded entrypoint.
+    :ok = Continuum.VersionRegistry.register(CycleFlow, 1, old_hash, metadata.entrypoint)
+
+    root = Ecto.UUID.generate()
+
+    %Run{}
+    |> Ecto.Changeset.change(%{
+      id: root,
+      workflow: inspect(CycleFlow),
+      version_hash: old_hash,
+      state: "suspended",
+      input: :erlang.term_to_binary(%{n: 1, max: 2}),
+      correlation_id: root,
+      next_wakeup_at:
+        DateTime.utc_now() |> DateTime.add(-1, :second) |> DateTime.truncate(:microsecond)
+    })
+    |> Repo.insert!()
+
+    pump(root)
+
+    successor = successor_of(root)
+
+    # The successor starts with empty history, so it picks up the latest
+    # loaded version instead of inheriting the superseded pin.
+    assert Repo.one(from(r in Run, where: r.id == ^successor, select: r.version_hash)) ==
+             current_hash
+
+    assert {:ok, %{state: :completed, result: {:ok, {:done, 2}}}} =
+             Continuum.await(root, 2_000, journal: Postgres)
+  end
+
   test "a signal sent to the chain root is delivered to the live tip" do
     {:ok, root} = Continuum.start(SignalCycleFlow, %{phase: 1}, journal: Postgres)
 

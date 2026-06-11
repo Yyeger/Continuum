@@ -469,6 +469,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
           %Run{} = run ->
             :ok = validate_lease!(run, lease_token)
             correlation = run.correlation_id || run.id
+            {next_workflow, next_version_hash} = successor_workflow_version(run)
 
             event_changeset =
               %Event{}
@@ -484,8 +485,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
               %Run{}
               |> Ecto.Changeset.change(%{
                 id: next_run_id,
-                workflow: run.workflow,
-                version_hash: run.version_hash,
+                workflow: next_workflow,
+                version_hash: next_version_hash,
                 state: "running",
                 input: encode_term(next_input),
                 correlation_id: correlation,
@@ -517,6 +518,17 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       {:error, reason} ->
         raise "Continuum.Runtime.Journal.Postgres continue_as_new! failed: #{inspect(reason)}"
+    end
+  end
+
+  # The successor starts with empty history, so any loaded version is
+  # replay-safe. Stamp it with the workflow's currently loaded version instead
+  # of pinning the predecessor's hash — a pinned chain never picks up deploys
+  # and goes unknown-version once the old module is gone.
+  defp successor_workflow_version(run) do
+    case Continuum.VersionRegistry.ensure_registered(Module.concat([run.workflow])) do
+      {:ok, metadata} -> {metadata.workflow_string, metadata.version_hash}
+      {:error, _reason} -> {run.workflow, run.version_hash}
     end
   end
 
@@ -1771,12 +1783,22 @@ defmodule Continuum.Runtime.Journal.Postgres do
     :ok
   end
 
-  def mark_unknown_version!(%Instance{} = instance, run_id, error, lease_token) do
+  @doc """
+  Release a run whose version is not loaded on this node.
+
+  Clears the lease and leaves the run `suspended` so another node that has
+  the version loaded can claim it — an unknown version is a per-node fact,
+  not a global one. Runs are no longer marked `stuck_unknown_version`;
+  `Continuum.VersionRegistry.upsert_instance/2` recovers legacy stuck rows.
+  """
+  def release_unknown_version!(%Instance{} = instance, run_id, lease_token) do
     with_repo(instance, fn ->
       :ok =
         cas_update_run(run_id, lease_token, %{
-          state: "stuck_unknown_version",
-          error: encode_term(error)
+          state: "suspended",
+          lease_owner: nil,
+          lease_token: nil,
+          lease_expires_at: nil
         })
     end)
   end

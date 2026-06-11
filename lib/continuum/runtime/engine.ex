@@ -589,12 +589,15 @@ defmodule Continuum.Runtime.Engine do
       if lease_lost?(:error, error), do: lease_lost(state), else: reraise(error, __STACKTRACE__)
   end
 
+  # An unknown version is a fact about *this node*, not the run: release the
+  # lease and leave the run suspended so a node that has the version loaded
+  # can claim it. Marking it stuck globally would let one stale node poison a
+  # run forever (rolling deploys).
   defp unknown_version(%{journal: Continuum.Runtime.Journal.Postgres} = state, error) do
     :ok =
-      Continuum.Runtime.Journal.Postgres.mark_unknown_version!(
+      Continuum.Runtime.Journal.Postgres.release_unknown_version!(
         state.instance,
         state.run_id,
-        error,
         state.lease_token
       )
 
@@ -608,13 +611,9 @@ defmodule Continuum.Runtime.Engine do
       })
     )
 
-    Continuum.Observer.broadcast_run_state_changed(
-      state.instance,
-      state.run_id,
-      :stuck_unknown_version
-    )
+    Continuum.Observer.broadcast_run_state_changed(state.instance, state.run_id, :suspended)
 
-    %{state | status: :stuck_unknown_version, error: error}
+    %{state | status: :unknown_version_released, error: error}
   rescue
     mark_error ->
       if lease_lost?(:error, mark_error),

@@ -62,13 +62,18 @@ If `workflow_modules:` is omitted, Continuum falls back to
 
 ## Unknown Versions
 
-If a Postgres run references a `(workflow, version_hash)` that is no longer
-loaded, Continuum marks it `:stuck_unknown_version` and emits
-`[:continuum, :run, :unknown_version]`. The dispatcher excludes that state so
-the run does not enter a reclaim loop.
+If a node claims a Postgres run whose `(workflow, version_hash)` is not loaded
+on that node, it emits `[:continuum, :run, :unknown_version]`, releases the
+lease, and leaves the run `suspended`. An unknown version is a fact about one
+node, not the run: another node in the cluster that has the version loaded can
+claim and resume it on its next dispatcher poll (the common case during rolling
+deploys).
 
-To recover, deploy the missing entrypoint again or cancel the stuck run if it is
-no longer needed.
+If no node has the version, the run stays suspended and the telemetry event
+fires on each claim attempt. To recover, deploy the missing entrypoint again or
+cancel the run if it is no longer needed. Runs marked `stuck_unknown_version`
+by older releases are flipped back to `suspended` at boot when a matching
+version registers (`Continuum.VersionRegistry.upsert_instance/2`).
 
 ## Relationship To `patched?/1`
 

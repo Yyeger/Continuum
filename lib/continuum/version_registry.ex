@@ -8,8 +8,10 @@ defmodule Continuum.VersionRegistry do
   that upserts loaded versions into the configured instance's repo.
   """
 
+  import Ecto.Query
+
   alias Continuum.Runtime.Instance
-  alias Continuum.Schema.WorkflowVersion
+  alias Continuum.Schema.{Run, WorkflowVersion}
 
   @registry_key {__MODULE__, :entries}
 
@@ -168,12 +170,37 @@ defmodule Continuum.VersionRegistry do
         on_conflict: {:replace, [:entrypoint, :registered_at]},
         conflict_target: [:workflow, :version_hash]
       )
+
+      recover_stuck_runs(instance, rows)
     end
 
     :ok
   rescue
     error in Postgrex.Error ->
       if missing_workflow_versions_table?(error), do: :ok, else: reraise(error, __STACKTRACE__)
+  end
+
+  # Runs marked stuck_unknown_version by pre-0.5.2 nodes become runnable the
+  # moment their version is registered again: flip them back to suspended with
+  # a cleared lease so the dispatcher can claim them.
+  defp recover_stuck_runs(instance, rows) do
+    Enum.each(rows, fn %{workflow: workflow, version_hash: version_hash} ->
+      instance.repo.update_all(
+        from(r in Run,
+          where:
+            r.state == "stuck_unknown_version" and r.workflow == ^workflow and
+              r.version_hash == ^version_hash
+        ),
+        set: [
+          state: "suspended",
+          error: nil,
+          lease_owner: nil,
+          lease_token: nil,
+          lease_expires_at: nil,
+          next_wakeup_at: nil
+        ]
+      )
+    end)
   end
 
   defp configured_modules(nil) do

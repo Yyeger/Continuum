@@ -2,9 +2,16 @@ defmodule Continuum.Runtime.UnknownVersionTest do
   use Continuum.Test.DataCase, async: false
 
   alias Continuum.Runtime.Dispatcher
+  alias Continuum.Runtime.Instance
   alias Continuum.Schema.{Event, Run, WorkflowVersion}
 
   defmodule MissingLogicalFlow do
+  end
+
+  defmodule RecoverableFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(_input), do: {:ok, :recovered}
   end
 
   setup do
@@ -14,23 +21,8 @@ defmodule Continuum.Runtime.UnknownVersionTest do
     :ok
   end
 
-  test "marks an unresolved workflow version as stuck exactly once" do
-    run_id = Ecto.UUID.generate()
-    missing_hash = "missing-version-hash"
-
-    %Run{}
-    |> Ecto.Changeset.change(%{
-      id: run_id,
-      workflow: inspect(MissingLogicalFlow),
-      version_hash: missing_hash,
-      state: "suspended",
-      input: :erlang.term_to_binary(%{}),
-      next_wakeup_at:
-        DateTime.utc_now()
-        |> DateTime.add(-1, :second)
-        |> DateTime.truncate(:microsecond)
-    })
-    |> Repo.insert!()
+  test "an unresolvable version releases the lease and leaves the run suspended" do
+    run_id = insert_run(inspect(MissingLogicalFlow), "missing-version-hash", "suspended")
 
     handler_id = "unknown-version-#{System.unique_integer()}"
 
@@ -48,16 +40,58 @@ defmodule Continuum.Runtime.UnknownVersionTest do
 
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "unknown-version", batch_size: 1)
 
-    assert_eventually(fn ->
-      Repo.get!(Run, run_id).state == "stuck_unknown_version"
-    end)
-
     assert_receive {:telemetry, [:continuum, :run, :unknown_version], %{},
-                    %{run_id: ^run_id, version_hash: ^missing_hash}},
+                    %{run_id: ^run_id, version_hash: "missing-version-hash"}},
                    1_000
 
-    assert {:ok, 0} = Dispatcher.dispatch_once(owner: "unknown-version", batch_size: 1)
-    refute_receive {:telemetry, [:continuum, :run, :unknown_version], %{}, _metadata}, 100
+    # The run is not marked stuck globally: it stays suspended with a cleared
+    # lease so a node that has the version loaded can claim it.
+    assert_eventually(fn ->
+      run = Repo.get!(Run, run_id)
+      run.state == "suspended" and is_nil(run.lease_owner) and is_nil(run.lease_token)
+    end)
+
+    # Still claimable — another (capable) node would pick it up.
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "unknown-version-retry", batch_size: 1)
+  end
+
+  test "registering a version recovers legacy stuck_unknown_version runs" do
+    metadata = RecoverableFlow.__continuum_workflow__()
+
+    run_id =
+      insert_run(inspect(RecoverableFlow), metadata.version_hash, "stuck_unknown_version")
+
+    :ok = Continuum.VersionRegistry.upsert_instance(Instance.default(), [RecoverableFlow])
+
+    run = Repo.get!(Run, run_id)
+    assert run.state == "suspended"
+    assert is_nil(run.lease_owner)
+    assert is_nil(run.error)
+
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "unknown-version-recovered", batch_size: 1)
+
+    assert {:ok, %{state: :completed, result: {:ok, :recovered}}} =
+             Continuum.await(run_id, 1_000, journal: Continuum.Runtime.Journal.Postgres)
+  end
+
+  defp insert_run(workflow, version_hash, state) do
+    run_id = Ecto.UUID.generate()
+
+    %Run{}
+    |> Ecto.Changeset.change(%{
+      id: run_id,
+      workflow: workflow,
+      version_hash: version_hash,
+      state: state,
+      input: :erlang.term_to_binary(%{}),
+      next_wakeup_at:
+        DateTime.utc_now()
+        |> DateTime.add(-1, :second)
+        |> DateTime.truncate(:microsecond)
+    })
+    |> Repo.insert!()
+
+    run_id
   end
 
   defp assert_eventually(fun, attempts \\ 20)

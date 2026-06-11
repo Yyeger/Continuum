@@ -648,20 +648,26 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
     |> Repo.insert!()
 
     {:ok, 1} = Dispatcher.dispatch_once(owner: "golden-unknown-version", batch_size: 1)
-    pump_runs_until(fn -> run_state(run_id) == "stuck_unknown_version" end)
+
+    # The node lacking the version releases the lease and leaves the run
+    # suspended (it is no longer marked stuck globally).
+    pump_runs_until(fn ->
+      run = Repo.get!(Run, run_id)
+      run.state == "suspended" and is_nil(run.lease_owner)
+    end)
 
     fixture(
       "unknown_workflow_version",
       __MODULE__.MissingLogicalFlow,
       %{},
-      :stuck_unknown_version,
+      :suspended,
       [],
       []
     )
     |> Map.put(:replay, :metadata_only)
     |> Map.put(:run_metadata, %{
       version_hash: version_hash,
-      terminal_state: :stuck_unknown_version
+      terminal_state: :suspended
     })
   end
 
