@@ -517,7 +517,7 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
     pump_runs_until(fn -> match?([%{state: "suspended"}], children_of(run_id)) end)
 
     :ok = Continuum.cancel(run_id, journal: Journal.Postgres)
-    pump_runs_until(fn -> run_state(run_id) == "failed" end)
+    pump_runs_until(fn -> run_state(run_id) == "cancelled" end)
 
     history = Journal.Postgres.load(Instance.default(), run_id)
 
