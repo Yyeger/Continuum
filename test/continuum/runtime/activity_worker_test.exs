@@ -378,7 +378,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
     lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
 
-    assert_raise RuntimeError, ~r/activity_task_lease_mismatch/, fn ->
+    assert_raise Continuum.Runtime.JournalError, ~r/activity_task_lease_mismatch/, fn ->
       Postgres.complete_activity_task!(
         Continuum.Runtime.Instance.default(),
         stale_task,
@@ -419,7 +419,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
     current_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
 
-    assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+    assert_raise Continuum.Runtime.JournalError, ~r/lease_mismatch/, fn ->
       Postgres.complete_activity_task!(
         Continuum.Runtime.Instance.default(),
         claimed_task,

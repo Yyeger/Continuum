@@ -124,7 +124,7 @@ defmodule Continuum.Runtime.TimerWheelTest do
     timer = Repo.one!(Timer)
     run = Repo.one!(from(r in Run, where: r.id == ^run_id))
 
-    assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+    assert_raise Continuum.Runtime.JournalError, ~r/lease_mismatch/, fn ->
       Postgres.fire_timer!(
         Continuum.Runtime.Instance.default(),
         run_id,

@@ -82,8 +82,8 @@ defmodule Continuum.Runtime.ActivityWorker do
   defp fenced(task, fun) do
     fun.()
   rescue
-    error in RuntimeError ->
-      case classify_fenced(error.message) do
+    error in Continuum.Runtime.JournalError ->
+      case classify_fenced(error.reason) do
         :requeue -> release_fenced_task(task, error)
         :discard -> discard_fenced_task(task, error)
         :drop -> log_fenced(task, :dropped, error)
@@ -91,23 +91,23 @@ defmodule Continuum.Runtime.ActivityWorker do
       end
   end
 
-  defp classify_fenced(message) do
-    cond do
+  defp classify_fenced(reason) do
+    case reason do
       # Task lease still ours, only expired/incomplete: safe to re-execute.
-      String.contains?(message, ":activity_task_lease_expired") -> :requeue
-      String.contains?(message, ":activity_task_lease_missing_expiry") -> :requeue
-      # Task no longer ours: another claimer owns it, leave it alone.
-      String.contains?(message, ":activity_task_lease_mismatch") -> :drop
-      String.contains?(message, ":activity_task_not_leased") -> :drop
-      String.contains?(message, ":activity_task_not_found") -> :drop
-      String.contains?(message, ":activity_task_run_mismatch") -> :drop
-      String.contains?(message, ":task_lease_mismatch") -> :drop
+      {:activity_task_lease_expired, _} -> :requeue
+      {:activity_task_lease_missing_expiry, _} -> :requeue
       # Run lease rotated under us: the new engine still needs this activity.
-      String.contains?(message, ":lease_mismatch") -> :requeue
+      {:lease_mismatch, _} -> :requeue
+      # Task no longer ours: another claimer owns it, leave it alone.
+      {:activity_task_lease_mismatch, _} -> :drop
+      {:activity_task_not_leased, _} -> :drop
+      {:activity_task_not_found, _} -> :drop
+      {:activity_task_run_mismatch, _} -> :drop
+      {_op, :task_lease_mismatch} -> :drop
       # Run is terminal or gone: the result has nowhere to land.
-      String.contains?(message, ":run_not_found") -> :discard
-      String.contains?(message, ":run_not_active") -> :discard
-      true -> :reraise
+      {:run_not_found, _} -> :discard
+      {:run_not_active, _} -> :discard
+      _other -> :reraise
     end
   end
 
@@ -144,7 +144,7 @@ defmodule Continuum.Runtime.ActivityWorker do
   defp log_fenced(task, action, error) do
     Logger.warning(
       "Continuum activity task #{task.id} (run #{task.run_id}) write was fenced out; " <>
-        "#{action}: #{error.message}"
+        "#{action}: #{Exception.message(error)}"
     )
 
     Telemetry.execute([:continuum, :activity, :fenced], %{}, %{

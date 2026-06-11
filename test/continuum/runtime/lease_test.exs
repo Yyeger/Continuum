@@ -113,7 +113,7 @@ defmodule Continuum.Runtime.LeaseTest do
       assert {:ok, %Lease{token: current_token}} = Lease.acquire(run_id, owner: "node-b")
       assert current_token > stale_token
 
-      assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+      assert_raise Continuum.Runtime.JournalError, ~r/lease_mismatch/, fn ->
         Postgres.append!(
           Continuum.Runtime.Instance.default(),
           run_id,
@@ -135,7 +135,7 @@ defmodule Continuum.Runtime.LeaseTest do
       assert {:ok, %Lease{token: current_token}} = Lease.acquire(run_id, owner: "node-b")
       assert current_token > stale_token
 
-      assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+      assert_raise Continuum.Runtime.JournalError, ~r/lease_mismatch/, fn ->
         Postgres.cancel_run!(Continuum.Runtime.Instance.default(), run_id, stale_token)
       end
 
@@ -176,7 +176,7 @@ defmodule Continuum.Runtime.LeaseTest do
       assert {:ok, %Lease{token: current_token}} = Lease.acquire(run_id, owner: "node-b")
       assert current_token > run.lease_token
 
-      assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+      assert_raise Continuum.Runtime.JournalError, ~r/lease_mismatch/, fn ->
         Postgres.complete_activity_task!(
           Continuum.Runtime.Instance.default(),
           claimed_task,

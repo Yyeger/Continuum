@@ -18,7 +18,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   require Logger
 
-  alias Continuum.Runtime.{Instance, Snapshotter}
+  alias Continuum.Runtime.{Instance, JournalError, Snapshotter}
   alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Snapshot, Timer}
   alias Continuum.Telemetry
 
@@ -173,7 +173,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres append! failed: #{inspect(reason)}"
+        raise JournalError, op: :append!, reason: reason
     end
   end
 
@@ -214,7 +214,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         value
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres load_with_snapshot failed: #{inspect(reason)}"
+        raise JournalError, op: :load_with_snapshot, reason: reason
     end
   end
 
@@ -289,7 +289,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres schedule_activity! failed: #{inspect(reason)}"
+        raise JournalError, op: :schedule_activity!, reason: reason
     end
   end
 
@@ -356,7 +356,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres start_child! failed: #{inspect(reason)}"
+        raise JournalError, op: :start_child!, reason: reason
     end
   end
 
@@ -466,7 +466,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         value
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres await_child_terminal! failed: #{inspect(reason)}"
+        raise JournalError, op: :await_child_terminal!, reason: reason
     end
   end
 
@@ -627,7 +627,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         correlation
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres continue_as_new! failed: #{inspect(reason)}"
+        raise JournalError, op: :continue_as_new!, reason: reason
     end
   end
 
@@ -707,7 +707,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres schedule_compensations! failed: #{inspect(reason)}"
+        raise JournalError, op: :schedule_compensations!, reason: reason
     end
   end
 
@@ -750,7 +750,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres compensation task result failed: #{inspect(reason)}"
+        raise JournalError, op: :complete_compensation_task!, reason: reason
     end
   end
 
@@ -841,7 +841,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres activity task result failed: #{inspect(reason)}"
+        raise JournalError, op: :activity_task_result!, reason: reason
     end
   end
 
@@ -914,7 +914,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres activity task retry failed: #{inspect(reason)}"
+        raise JournalError, op: :retry_activity_task!, reason: reason
     end
   end
 
@@ -968,7 +968,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres cancel_run! failed: #{inspect(reason)}"
+        raise JournalError, op: :cancel_run!, reason: reason
     end
   end
 
@@ -1081,7 +1081,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         value
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres transaction failed: #{inspect(reason)}"
+        raise JournalError, op: :transaction, reason: reason
     end
   end
 
@@ -1135,7 +1135,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres schedule_timer! failed: #{inspect(reason)}"
+        raise JournalError, op: :schedule_timer!, reason: reason
     end
   end
 
@@ -1181,7 +1181,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres schedule_signal_await! failed: #{inspect(reason)}"
+        raise JournalError, op: :schedule_signal_await!, reason: reason
     end
   end
 
@@ -1222,7 +1222,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         value
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres consume_pending_signal! failed: #{inspect(reason)}"
+        raise JournalError, op: :consume_pending_signal!, reason: reason
     end
   end
 
@@ -1242,7 +1242,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         value
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres resolve_signal_await failed: #{inspect(reason)}"
+        raise JournalError, op: :resolve_signal_await, reason: reason
     end
   end
 
@@ -1294,7 +1294,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         {:ok, delivered_run_id}
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres deliver_signal! failed: #{inspect(reason)}"
+        raise JournalError, op: :deliver_signal!, reason: reason
     end
   end
 
@@ -1365,7 +1365,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         value
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres consume_signal failed: #{inspect(reason)}"
+        raise JournalError, op: :consume_signal, reason: reason
     end
   end
 
@@ -1413,7 +1413,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres fire_timer! failed: #{inspect(reason)}"
+        raise JournalError, op: :fire_timer!, reason: reason
     end
   end
 
@@ -1453,7 +1453,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise "Continuum.Runtime.Journal.Postgres activity task result failed: #{inspect(reason)}"
+        raise JournalError, op: :activity_task_result!, reason: reason
     end
   end
 
@@ -1861,7 +1861,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp suspend_with_repo!(run_id, lease_token) do
-    cas_update_run(run_id, lease_token, %{state: "suspended"})
+    cas_update_active_run(run_id, lease_token, %{state: "suspended"})
   end
 
   @impl true
@@ -1871,7 +1871,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         parent =
           run_in_transaction!(fn ->
             :ok =
-              cas_update_run(run_id, lease_token, %{
+              cas_update_active_run(run_id, lease_token, %{
                 state: "completed",
                 result: encode_term(result),
                 completed_at: DateTime.utc_now()
@@ -1896,7 +1896,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         parent =
           run_in_transaction!(fn ->
             :ok =
-              cas_update_run(run_id, lease_token, %{
+              cas_update_active_run(run_id, lease_token, %{
                 state: "failed",
                 error: encode_term(error),
                 completed_at: DateTime.utc_now()
@@ -1925,7 +1925,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   def release_unknown_version!(%Instance{} = instance, run_id, lease_token) do
     with_repo(instance, fn ->
       :ok =
-        cas_update_run(run_id, lease_token, %{
+        cas_update_active_run(run_id, lease_token, %{
           state: "suspended",
           lease_owner: nil,
           lease_token: nil,
@@ -1961,7 +1961,24 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {0, _} ->
-        raise "Continuum.Runtime.Journal.Postgres CAS update failed for run #{inspect(run_id)} — lease token mismatch or run not found"
+        raise JournalError, op: :cas_update_run, reason: {:cas_failed, run_id}
+    end
+  end
+
+  # Terminal and suspension transitions additionally require the run to still
+  # be active: a late fail!/suspend! must never flip a run that already
+  # reached completed/failed (e.g. a raise after complete! committed).
+  defp cas_update_active_run(run_id, lease_token, updates) do
+    query =
+      leased_run_query(run_id, lease_token)
+      |> where([r], r.state in ["running", "suspended"])
+
+    case repo().update_all(query, set: Map.to_list(updates)) do
+      {1, _} ->
+        :ok
+
+      {0, _} ->
+        raise JournalError, op: :cas_update_run, reason: {:cas_failed, run_id}
     end
   end
 

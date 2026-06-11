@@ -115,8 +115,8 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
       |> Enum.map(&decode/1)
 
     assert Enum.any?(failed, fn
-             {_kind, %RuntimeError{message: message}, _stack} ->
-               message =~ "max_child_depth_exceeded"
+             {_kind, %Continuum.Runtime.JournalError{} = error, _stack} ->
+               Exception.message(error) =~ "max_child_depth_exceeded"
 
              _other ->
                false

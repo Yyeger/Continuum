@@ -179,7 +179,7 @@ defmodule Continuum.Runtime.CancelTest do
 
     assert :ok = Continuum.cancel(run_id)
 
-    assert_raise RuntimeError, ~r/run_not_active/, fn ->
+    assert_raise Continuum.Runtime.JournalError, ~r/run_not_active/, fn ->
       Postgres.retry_activity_task!(
         Continuum.Runtime.Instance.default(),
         claimed_task,

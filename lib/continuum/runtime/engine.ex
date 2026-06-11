@@ -462,29 +462,58 @@ defmodule Continuum.Runtime.Engine do
 
     Context.put(ctx)
 
-    try do
-      result = state.workflow_module.run(state.input)
-      assert_suspend_not_swallowed!(state)
-      complete_run(state, result)
-    catch
-      {:continuum_suspend, reason} ->
-        suspend_run(state, reason)
+    # Only the workflow body runs inside the try: a journal exception during
+    # complete_run/suspend_run must crash the engine (crash-and-resume replays
+    # and finishes the run) instead of being caught here and turning a run
+    # whose logic succeeded into a permanent failure.
+    outcome =
+      try do
+        result = state.workflow_module.run(state.input)
+        assert_suspend_not_swallowed!(state)
+        {:completed, result}
+      catch
+        :throw, {:continuum_suspend, reason} ->
+          {:suspended, reason}
 
-      {:continuum_continued_as_new, next_run_id} ->
-        continued_run(state, next_run_id)
+        :throw, {:continuum_continued_as_new, next_run_id} ->
+          {:continued, next_run_id}
 
-      kind, reason ->
-        stacktrace = __STACKTRACE__
+        kind, reason ->
+          stacktrace = __STACKTRACE__
 
-        if lease_lost?(kind, reason) do
-          lease_lost(state)
-        else
-          fail_run(state, {kind, reason, stacktrace}, {kind, reason})
-        end
-    after
-      Context.clear()
+          cond do
+            lease_lost?(kind, reason) ->
+              :lease_lost
+
+            journal_exception?(kind, reason) ->
+              # A journal-layer failure mid-effect is not a workflow failure:
+              # the write rolled back, so rethrow past this catch-all and let
+              # crash-and-resume retry, rather than failing the run with a DB
+              # exception as its "error".
+              :erlang.raise(kind, reason, stacktrace)
+
+            true ->
+              {:failed, {kind, reason, stacktrace}, {kind, reason}}
+          end
+      after
+        Context.clear()
+      end
+
+    case outcome do
+      {:completed, result} -> complete_run(state, result)
+      {:suspended, reason} -> suspend_run(state, reason)
+      {:continued, next_run_id} -> continued_run(state, next_run_id)
+      :lease_lost -> lease_lost(state)
+      {:failed, journal_error, state_error} -> fail_run(state, journal_error, state_error)
     end
   end
+
+  # Only raw database exceptions are transient: a JournalError is a
+  # deterministic, already-rolled-back rejection (lease cases are handled by
+  # lease_lost?/2 before this) and should fail the run like any other error.
+  defp journal_exception?(:error, %DBConnection.ConnectionError{}), do: true
+  defp journal_exception?(:error, %Postgrex.Error{}), do: true
+  defp journal_exception?(_kind, _reason), do: false
 
   # The workflow body returned normally although an effect suspended the run
   # (the suspend throw was already journaled when it was thrown). A user
@@ -888,6 +917,10 @@ defmodule Continuum.Runtime.Engine do
       trace_context: state.trace_context
     }
     |> Map.merge(extra)
+  end
+
+  defp lease_lost?(:error, %Continuum.Runtime.JournalError{} = error) do
+    Continuum.Runtime.JournalError.lease_lost?(error)
   end
 
   defp lease_lost?(:error, %RuntimeError{message: message}) do

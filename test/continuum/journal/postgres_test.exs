@@ -211,7 +211,7 @@ defmodule Continuum.Journal.PostgresTest do
 
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
 
-      assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+      assert_raise Continuum.Runtime.JournalError, ~r/lease_mismatch/, fn ->
         Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, 99)
       end
     end
@@ -225,7 +225,7 @@ defmodule Continuum.Journal.PostgresTest do
         set: [lease_token: 42, lease_owner: "node-1"]
       )
 
-      assert_raise RuntimeError, ~r/CAS update failed/, fn ->
+      assert_raise Continuum.Runtime.JournalError, ~r/cas_failed/, fn ->
         Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, {:ok, 1}, 99)
       end
     end
@@ -239,9 +239,31 @@ defmodule Continuum.Journal.PostgresTest do
         set: [lease_token: 42, lease_owner: "node-1"]
       )
 
-      assert_raise RuntimeError, ~r/CAS update failed/, fn ->
+      assert_raise Continuum.Runtime.JournalError, ~r/cas_failed/, fn ->
         Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, {:ok, 1}, nil)
       end
+    end
+
+    test "fail! cannot flip a run that already completed" do
+      run_id = generate_uuid()
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
+
+      Repo.update_all(
+        from(r in Continuum.Schema.Run, where: r.id == ^run_id),
+        set: [lease_token: 42, lease_owner: "node-1"]
+      )
+
+      :ok = Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, {:ok, 1}, 42)
+
+      # A late raise with a still-matching token must not turn a completed
+      # run into a failed one.
+      assert_raise Continuum.Runtime.JournalError, ~r/cas_failed/, fn ->
+        Postgres.fail!(Continuum.Runtime.Instance.default(), run_id, :late_boom, 42)
+      end
+
+      run = Repo.get!(Continuum.Schema.Run, run_id)
+      assert run.state == "completed"
+      assert run.error == nil
     end
 
     test "append! with nil lease_token succeeds for unleased runs" do
@@ -264,7 +286,7 @@ defmodule Continuum.Journal.PostgresTest do
 
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
 
-      assert_raise RuntimeError, ~r/lease_mismatch/, fn ->
+      assert_raise Continuum.Runtime.JournalError, ~r/lease_mismatch/, fn ->
         Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
       end
     end
