@@ -128,6 +128,23 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule SlowActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(sleep_ms) do
+      Process.sleep(sleep_ms)
+      {:ok, :slept}
+    end
+  end
+
+  defmodule SlowActivityFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      activity(SlowActivity.run(input.sleep_ms))
+    end
+  end
+
   setup do
     start_supervised!(%{
       id: FlakyActivity,
@@ -580,7 +597,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert decode_term(failed.error) == :attempts_exhausted
   end
 
-  test "execute extends the task lease to cover the activity timeout" do
+  test "execute renews the task lease on a short horizon, not timeout + margin" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 6}, journal: Postgres)
 
@@ -591,7 +608,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     task = Repo.one!(ActivityTask)
 
     # Claim with an already-expired TTL: without the execution-time lease
-    # extension, the completion write would reject with
+    # renewal, the completion write would reject with
     # :activity_task_lease_expired and the task would wedge.
     assert {:ok, claimed} =
              Dispatcher.claim_one(
@@ -610,10 +627,58 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     task = Repo.one!(ActivityTask)
     assert task.state == "completed"
 
-    # DoubleActivity uses the default {:seconds, 30} timeout; the extended
-    # lease must cover timeout + margin, well past the original claim TTL.
-    assert DateTime.compare(task.lease_expires_at, DateTime.add(DateTime.utc_now(), 45, :second)) ==
-             :gt
+    # The lease horizon stays short (one heartbeat TTL, default 30s) — a
+    # crashed worker's task is rescuable within ~TTL instead of waiting out
+    # the activity timeout + margin.
+    assert DateTime.compare(task.lease_expires_at, DateTime.utc_now()) == :gt
+
+    assert DateTime.compare(
+             task.lease_expires_at,
+             DateTime.add(DateTime.utc_now(), 35, :second)
+           ) == :lt
+  end
+
+  test "the heartbeat keeps a long-running activity's lease alive" do
+    previous_ttl = Application.get_env(:continuum, :task_lease_ttl_seconds)
+    previous_renew = Application.get_env(:continuum, :task_lease_renew_ms)
+    Application.put_env(:continuum, :task_lease_ttl_seconds, 1)
+    Application.put_env(:continuum, :task_lease_renew_ms, 100)
+
+    on_exit(fn ->
+      restore_env(:task_lease_ttl_seconds, previous_ttl)
+      restore_env(:task_lease_renew_ms, previous_renew)
+    end)
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(
+        SlowActivityFlow,
+        %{sleep_ms: 1_500},
+        journal: Postgres
+      )
+
+    assert_eventually(fn ->
+      Repo.aggregate(ActivityTask, :count) == 1
+    end)
+
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "heartbeat-worker",
+               30
+             )
+
+    # The activity outlives the 1s lease TTL; without renewals the completion
+    # write would reject with :activity_task_lease_expired.
+    assert :ok = Continuum.Runtime.ActivityWorker.execute(claimed)
+
+    assert {:ok, %{state: :completed, result: {:ok, :slept}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Repo.one!(ActivityTask).state == "completed"
   end
 
   test "fenced-out completion releases the task and the run still makes progress" do
@@ -753,6 +818,9 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
       )
     )
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:continuum, key)
+  defp restore_env(key, value), do: Application.put_env(:continuum, key, value)
 
   defp future_time do
     DateTime.utc_now()

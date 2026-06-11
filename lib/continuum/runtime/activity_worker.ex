@@ -5,35 +5,39 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
 
-  @lease_margin_seconds 30
-
   def execute(task) do
     started_at = System.monotonic_time(:millisecond)
 
-    case extend_task_lease(task) do
+    case renew_task_lease(task) do
       :ok ->
-        fenced(task, fn ->
-          if task.attempt > max_attempts(task.retry) do
-            # Only crash requeues push attempt past the policy: the previous
-            # execution died mid-flight and consumed the final attempt. Fail
-            # without re-executing rather than re-running a poison task (or a
-            # non-retryable side effect) forever.
-            fail(task, :attempts_exhausted, started_at)
-          else
-            emit_started(task)
+        heartbeat = start_task_lease_heartbeat(task)
 
-            case idempotency_hit(task) do
-              {:hit, result} ->
-                complete(task, result, started_at, idempotency_hit?: true)
+        try do
+          fenced(task, fn ->
+            if task.attempt > max_attempts(task.retry) do
+              # Only crash requeues push attempt past the policy: the previous
+              # execution died mid-flight and consumed the final attempt. Fail
+              # without re-executing rather than re-running a poison task (or a
+              # non-retryable side effect) forever.
+              fail(task, :attempts_exhausted, started_at)
+            else
+              emit_started(task)
 
-              :miss ->
-                case run_activity(task) do
-                  {:ok, result} -> complete(task, result, started_at)
-                  {:error, error} -> fail_or_retry(task, error, started_at)
-                end
+              case idempotency_hit(task) do
+                {:hit, result} ->
+                  complete(task, result, started_at, idempotency_hit?: true)
+
+                :miss ->
+                  case run_activity(task) do
+                    {:ok, result} -> complete(task, result, started_at)
+                    {:error, error} -> fail_or_retry(task, error, started_at)
+                  end
+              end
             end
-          end
-        end)
+          end)
+        after
+          stop_task_lease_heartbeat(heartbeat)
+        end
 
         :ok
 
@@ -49,19 +53,20 @@ defmodule Continuum.Runtime.ActivityWorker do
   # The dispatcher claims tasks with a short TTL that only needs to cover the
   # claim-to-execution window. The activity may legally run for its full
   # configured timeout, and every completion/retry write validates task-lease
-  # expiry — so the lease must outlive the timeout, not the claim.
-  defp extend_task_lease(task) do
-    lease_seconds = div(Map.get(task, :timeout_ms) || 0, 1_000) + @lease_margin_seconds
-
+  # expiry — so the worker heartbeats the task lease on a short horizon while
+  # executing. A crashed worker's task therefore expires within one TTL and
+  # the steady-state sweep rescues it promptly, instead of waiting out a
+  # one-shot timeout + margin extension (minutes for long activities).
+  defp renew_task_lease(task) do
     sql = """
     UPDATE continuum_activity_tasks
-    SET lease_expires_at = now() + make_interval(secs => $3)
+    SET lease_expires_at = clock_timestamp() + make_interval(secs => $3)
     WHERE id = $1::text::uuid
       AND state = 'leased'
       AND lease_owner = $2
     """
 
-    case task.instance.repo.query(sql, [task.id, task.lease_owner, lease_seconds]) do
+    case task.instance.repo.query(sql, [task.id, task.lease_owner, task_lease_ttl_seconds()]) do
       {:ok, %{num_rows: 1}} ->
         :ok
 
@@ -69,8 +74,60 @@ defmodule Continuum.Runtime.ActivityWorker do
         :lost
 
       {:error, reason} ->
-        raise "Continuum activity task lease extension failed: #{inspect(reason)}"
+        raise "Continuum activity task lease renewal failed: #{inspect(reason)}"
     end
+  end
+
+  defp start_task_lease_heartbeat(task) do
+    worker = self()
+
+    # Unlinked on purpose: a renewal hiccup must not kill the executing
+    # worker. The monitor stops the heartbeat if the worker dies, so the
+    # lease then expires within one TTL and the sweep rescues the task.
+    spawn(fn ->
+      ref = Process.monitor(worker)
+      task_lease_heartbeat_loop(task, ref)
+    end)
+  end
+
+  defp stop_task_lease_heartbeat(pid) do
+    send(pid, :stop)
+    :ok
+  end
+
+  defp task_lease_heartbeat_loop(task, ref) do
+    receive do
+      :stop -> :ok
+      {:DOWN, ^ref, :process, _pid, _reason} -> :ok
+    after
+      task_lease_renew_ms() ->
+        case safe_renew_task_lease(task) do
+          :ok -> task_lease_heartbeat_loop(task, ref)
+          :lost -> :ok
+        end
+    end
+  end
+
+  defp safe_renew_task_lease(task) do
+    renew_task_lease(task)
+  rescue
+    error ->
+      # Transient DB trouble: stop heartbeating rather than crash-loop; the
+      # completion write still validates the lease, and the current horizon
+      # buys enough time for short activities.
+      Logger.warning(
+        "Continuum task lease heartbeat for #{task.id} stopped: #{Exception.message(error)}"
+      )
+
+      :lost
+  end
+
+  defp task_lease_ttl_seconds do
+    Application.get_env(:continuum, :task_lease_ttl_seconds, 30)
+  end
+
+  defp task_lease_renew_ms do
+    Application.get_env(:continuum, :task_lease_renew_ms, 10_000)
   end
 
   # Fencing rejections (run lease rotated, task lease expired or taken over,
