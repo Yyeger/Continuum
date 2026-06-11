@@ -98,19 +98,19 @@ defmodule Continuum.Query do
   def set_attributes(run_id, attributes, opts) when is_map(attributes) do
     with {:ok, instance} <- repo_instance(opts),
          {:ok, attributes} <- normalize_attributes(attributes) do
-      case instance.repo.one(from(r in Run, where: r.id == ^run_id)) do
-        nil ->
-          {:error, :not_found}
+      # Merge in SQL: jsonb concatenation is atomic per statement, so two
+      # concurrent callers cannot interleave a read-merge-write and silently
+      # drop each other's keys.
+      sql = """
+      UPDATE continuum_runs
+      SET attributes = COALESCE(attributes, '{}'::jsonb) || $2::jsonb
+      WHERE id = $1::text::uuid
+      """
 
-        %Run{} = run ->
-          merged = Map.merge(run.attributes || %{}, attributes)
-
-          {1, _} =
-            instance.repo.update_all(from(r in Run, where: r.id == ^run_id),
-              set: [attributes: merged]
-            )
-
-          :ok
+      case instance.repo.query(sql, [run_id, attributes]) do
+        {:ok, %{num_rows: 1}} -> :ok
+        {:ok, %{num_rows: 0}} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
       end
     end
   end
