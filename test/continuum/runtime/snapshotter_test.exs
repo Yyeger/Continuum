@@ -309,7 +309,12 @@ defmodule Continuum.Runtime.SnapshotterTest do
       )
 
     assert Repo.aggregate(Snapshot, :count) == 0
-    assert_receive {:telemetry, [:continuum, :snapshot, :skipped], %{}, metadata}
+
+    # Pin on this run's id: the Snapshotter may also emit :skipped for stale
+    # maybe_snapshot casts left over from a previous test's (rolled-back) runs.
+    assert_receive {:telemetry, [:continuum, :snapshot, :skipped], %{},
+                    %{run_id: ^run_id} = metadata}
+
     assert {:snapshot_too_large, _actual, 100} = metadata.reason
   end
 
