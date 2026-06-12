@@ -69,6 +69,26 @@ defmodule Continuum.Runtime.SignalRouterTest do
     assert signal.delivered == true
   end
 
+  test "signaling a missing run returns {:error, :not_found}" do
+    assert {:error, :not_found} = Continuum.signal(Ecto.UUID.generate(), :decision, :go)
+  end
+
+  test "signaling a terminal run returns {:error, :run_terminal}" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)
+
+    assert_eventually(fn ->
+      event_types(run_id) == ["signal_awaited"]
+    end)
+
+    :ok = Continuum.signal(run_id, :decision, :go)
+
+    assert {:ok, %{state: :completed, result: {:ok, :went}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert {:error, :run_terminal} = Continuum.signal(run_id, :decision, :go)
+  end
+
   test "catch_up_once wakes a local engine with an undelivered mailbox row" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)

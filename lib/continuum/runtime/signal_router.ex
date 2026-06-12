@@ -104,9 +104,14 @@ defmodule Continuum.Runtime.SignalRouter do
   defp deliver_durable(instance, run_id, name, payload) do
     # Delivery resolves continue_as_new chains to the live tip; wake that run,
     # not the (possibly dead) chain root the caller addressed.
-    {:ok, delivered_run_id} = Journal.Postgres.deliver_signal!(instance, run_id, name, payload)
-    route(instance, delivered_run_id)
-    :ok
+    case Journal.Postgres.deliver_signal!(instance, run_id, name, payload) do
+      {:ok, delivered_run_id} ->
+        route(instance, delivered_run_id)
+        :ok
+
+      {:error, _reason} = error ->
+        error
+    end
   end
 
   # Buffer-then-wake, mirroring the durable mailbox: the engine consumes the
