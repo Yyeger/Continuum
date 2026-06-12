@@ -596,7 +596,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
                 continued_from_run_id: run_id,
                 parent_run_id: run.parent_run_id,
                 parent_command_id: run.parent_command_id,
-                trace_context: run.trace_context
+                trace_context: run.trace_context,
+                # A durable cancel request addresses the logical chain, not
+                # one iteration: continuing must not let an acknowledged
+                # cancel evaporate before the owner's next heartbeat sees it.
+                cancel_requested_at: run.cancel_requested_at
               })
 
             with {:ok, _event} <- repo().insert(event_changeset),
