@@ -14,6 +14,7 @@ defmodule Continuum.VersionRegistry do
   alias Continuum.Schema.{Run, WorkflowVersion}
 
   @registry_key {__MODULE__, :entries}
+  @snapshot_hint_key {__MODULE__, :any_snapshot_threshold}
 
   @type entry :: %{
           workflow: module(),
@@ -247,7 +248,27 @@ defmodule Continuum.VersionRegistry do
 
   defp put_entry(%{workflow_string: workflow, version_hash: hash} = entry) do
     :persistent_term.put(@registry_key, Map.put(entry_map(), {workflow, hash}, entry))
+    maybe_flag_snapshot_threshold(entry)
     entry
+  end
+
+  # Sticky fast-path hint for the Snapshotter: with the app-level threshold at
+  # :infinity, the per-event maybe_snapshot cast only pays the run lookup when
+  # at least one registered entrypoint declares its own snapshot_threshold.
+  @doc false
+  def any_snapshot_threshold? do
+    :persistent_term.get(@snapshot_hint_key, false)
+  end
+
+  defp maybe_flag_snapshot_threshold(%{entrypoint: entrypoint}) do
+    with false <- any_snapshot_threshold?(),
+         true <- function_exported?(entrypoint, :__continuum_workflow__, 0),
+         threshold when not is_nil(threshold) <-
+           Map.get(entrypoint.__continuum_workflow__(), :snapshot_threshold) do
+      :persistent_term.put(@snapshot_hint_key, true)
+    end
+
+    :ok
   end
 
   defp discover(workflow_string, version_hash) do

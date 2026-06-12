@@ -99,17 +99,48 @@ defmodule Continuum.Runtime.SnapshotterTest do
       assert {:ok, %{state: :completed, result: {:ok, 3}}} =
                Continuum.await(run_id, 1_000, journal: Postgres)
 
+      # No manual snapshot_once: the journal write hooks cast maybe_snapshot,
+      # and the registry hint lets the per-workflow threshold engage even
+      # though the Snapshotter's instance-level config is :infinity.
+      assert_eventually(fn ->
+        Repo.aggregate(from(s in Snapshot, where: s.run_id == ^run_id), :count) >= 1
+      end)
+
+      row =
+        Repo.one!(
+          from(s in Snapshot,
+            where: s.run_id == ^run_id,
+            order_by: [desc: s.through_seq],
+            limit: 1
+          )
+        )
+
+      snapshot = Continuum.Snapshot.decode(row.payload)
+
+      assert row.through_seq >= 1
+      assert snapshot.through_seq == row.through_seq
+    end)
+  end
+
+  test "snapshot_once resolves the per-workflow threshold without app config" do
+    with_snapshot_threshold(:infinity, fn ->
+      steps = [1, 2]
+
+      {:ok, run_id} =
+        Continuum.Runtime.Engine.start_run(PerWorkflowSnapshotFlow, %{steps: steps},
+          journal: Postgres
+        )
+
+      assert {:ok, %{state: :completed, result: {:ok, 3}}} =
+               Continuum.await(run_id, 1_000, journal: Postgres)
+
       :ok =
         Snapshotter.snapshot_once(Instance.default(), run_id,
           journal: Postgres,
           lease_token: lease_token(run_id)
         )
 
-      row = Repo.one!(Snapshot)
-      snapshot = Continuum.Snapshot.decode(row.payload)
-
-      assert row.through_seq == 1
-      assert snapshot.through_seq == 1
+      assert Repo.aggregate(from(s in Snapshot, where: s.run_id == ^run_id), :count) >= 1
     end)
   end
 

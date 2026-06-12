@@ -47,7 +47,11 @@ defmodule Continuum.Runtime.Snapshotter do
     # with `journal: Postgres`).
     config = if journal, do: %{state.config | journal: journal}, else: state.config
 
-    if config.threshold != :infinity do
+    # The instance-level threshold alone cannot gate the cast: per-workflow
+    # `snapshot_threshold:` only resolves inside take_snapshot, after the run
+    # row is loaded. The registry hint keeps the default configuration
+    # (:infinity, no per-workflow opt-ins) free of a per-event run lookup.
+    if config.threshold != :infinity or Continuum.VersionRegistry.any_snapshot_threshold?() do
       take_snapshot(state.instance, run_id, lease_token, config)
     end
 
@@ -117,6 +121,20 @@ defmodule Continuum.Runtime.Snapshotter do
         instance: instance.name,
         run_id: run_id,
         reason: error
+      })
+
+      :ok
+  catch
+    # Snapshots are best-effort: a pool/connection exit must not take the
+    # Snapshotter down with it (events are never pruned, so a skipped
+    # snapshot only defers compaction).
+    :exit, reason ->
+      Logger.warning("Continuum snapshot skipped for #{run_id}: #{inspect(reason)}")
+
+      Telemetry.execute([:continuum, :snapshot, :skipped], %{}, %{
+        instance: instance.name,
+        run_id: run_id,
+        reason: reason
       })
 
       :ok
