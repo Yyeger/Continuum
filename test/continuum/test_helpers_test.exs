@@ -91,6 +91,17 @@ defmodule Continuum.TestHelpersTest do
              )
   end
 
+  test "in-memory signal delivery rejects terminal and missing runs like Postgres" do
+    Continuum.Test.reset_in_memory!()
+
+    {:ok, run_id} = Continuum.Test.start_synchronous(SignalFlow, %{})
+    assert :ok = Continuum.signal(run_id, :decision, :go)
+    assert {:ok, %{state: :completed}} = Continuum.await(run_id, 1_000)
+
+    assert {:error, :run_terminal} = Continuum.signal(run_id, :decision, :again)
+    assert {:error, :not_found} = Continuum.signal(Ecto.UUID.generate(), :decision, :go)
+  end
+
   test "injects in-memory signals without using an engine signal cast" do
     Continuum.Test.reset_in_memory!()
 

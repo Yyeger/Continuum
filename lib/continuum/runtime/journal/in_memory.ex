@@ -198,6 +198,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
       nil ->
         {:reply, {:error, :not_found}, state}
 
+      # Parity with the Postgres adapter: buffering a signal no run can ever
+      # consume is silent signal loss, so a terminal run rejects delivery.
+      %{state: run_state} when run_state not in [:running, :suspended] ->
+        {:reply, {:error, :run_terminal}, state}
+
       _run ->
         state =
           update_run(state, instance_name, run_id, fn run ->
