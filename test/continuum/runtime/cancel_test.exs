@@ -29,6 +29,73 @@ defmodule Continuum.Runtime.CancelTest do
     end
   end
 
+  # Stands in for an engine that dies between the caller's whereis and the
+  # :cancel call: it stops without replying, so the caller's call exits.
+  defmodule VanishingEngine do
+    use GenServer
+
+    def start_link(run_id) do
+      GenServer.start_link(__MODULE__, nil,
+        name: {:via, Registry, {Continuum.Runtime.Registry, run_id}}
+      )
+    end
+
+    @impl true
+    def init(nil), do: {:ok, nil}
+
+    @impl true
+    def handle_call(:cancel, _from, state), do: {:stop, :normal, state}
+  end
+
+  test "cancel falls back to the durable path when the local engine dies mid-call" do
+    run_id = Ecto.UUID.generate()
+
+    :ok =
+      Postgres.start_run(
+        Continuum.Runtime.Instance.default(),
+        run_id,
+        TimerFlow,
+        %{ms: 60_000}
+      )
+
+    {:ok, _pid} = VanishingEngine.start_link(run_id)
+
+    # The local call exits without a reply; the caller must get a real result
+    # from the durable fallback instead of exiting.
+    assert :ok = Continuum.cancel(run_id, journal: Postgres)
+
+    assert Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "cancelled"
+  end
+
+  test "cancel of a local engine whose lease was rotated returns an error tuple" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+    end)
+
+    # Simulate another node stealing the lease while the parked engine has
+    # not yet seen :continuum_lease_lost.
+    future = DateTime.utc_now() |> DateTime.add(60, :second) |> DateTime.truncate(:microsecond)
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^run_id),
+      set: [
+        lease_owner: "othernode@nohost/Elixir.Continuum/1",
+        lease_token: 999_999_999,
+        lease_expires_at: future
+      ]
+    )
+
+    # The stale engine's cancel raises a JournalError internally; the caller
+    # must see an error tuple, not an exit.
+    assert {:error, _reason} = Continuum.cancel(run_id, journal: Postgres)
+
+    # The run was not cancelled — the live lease owner keeps authority.
+    assert Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+  end
+
   test "cancel discards pending activity tasks" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(ActivityFlow, %{value: 10}, journal: Postgres)

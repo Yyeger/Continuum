@@ -91,8 +91,18 @@ defmodule Continuum.Runtime.Engine do
     run_id = resolve_chain_tip(instance, run_id, opts)
 
     case GenServer.whereis(via(instance, run_id)) do
-      nil -> cancel_without_local_engine(instance, run_id, opts)
-      pid -> GenServer.call(pid, :cancel)
+      nil ->
+        cancel_without_local_engine(instance, run_id, opts)
+
+      pid ->
+        try do
+          GenServer.call(pid, :cancel)
+        catch
+          # The engine stopped between whereis and the call (run just went
+          # terminal) or died mid-cancel. Fall through to the durable path —
+          # mirroring cancel_remote/2 — instead of exiting the caller.
+          :exit, _ -> cancel_without_local_engine(instance, run_id, opts)
+        end
     end
   end
 
@@ -468,6 +478,13 @@ defmodule Continuum.Runtime.Engine do
 
     untrack_lease(state)
     {:stop, :normal, :ok, state}
+  rescue
+    error in Continuum.Runtime.JournalError ->
+      # Lease rotated under this engine or the run already went terminal —
+      # reply with the structured reason (mirroring the heartbeat-driven
+      # cancel handler) instead of crashing and exiting the caller.
+      untrack_lease(state)
+      {:stop, :normal, {:error, error.reason}, state}
   end
 
   @impl true
