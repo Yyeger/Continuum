@@ -145,6 +145,26 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule ScriptedLeaseRepo do
+    def start_link(responses) do
+      Agent.start_link(fn -> %{calls: 0, responses: responses} end, name: __MODULE__)
+    end
+
+    def calls, do: Agent.get(__MODULE__, & &1.calls)
+
+    def query(_sql, _params) do
+      Agent.get_and_update(__MODULE__, fn state ->
+        {response, rest} =
+          case state.responses do
+            [r | rest] -> {r, rest}
+            [] -> {{:ok, %{num_rows: 1}}, []}
+          end
+
+        {response, %{state | calls: state.calls + 1, responses: rest}}
+      end)
+    end
+  end
+
   setup do
     start_supervised!(%{
       id: FlakyActivity,
@@ -792,6 +812,45 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     task = Repo.one!(ActivityTask)
     assert task.state == "leased"
     assert task.lease_owner == "usurper-worker"
+  end
+
+  test "task lease heartbeat retries after a transient renewal error" do
+    {:ok, _agent} = ScriptedLeaseRepo.start_link([{:error, :closed}])
+    previous = Application.get_env(:continuum, :task_lease_renew_ms)
+    Application.put_env(:continuum, :task_lease_renew_ms, 50)
+    on_exit(fn -> restore_env(:task_lease_renew_ms, previous) end)
+
+    task = %{
+      id: Ecto.UUID.generate(),
+      lease_owner: "heartbeat-retry",
+      instance: %{repo: ScriptedLeaseRepo}
+    }
+
+    log =
+      capture_log(fn ->
+        pid = Continuum.Runtime.ActivityWorker.start_task_lease_heartbeat(task)
+        assert_eventually(fn -> ScriptedLeaseRepo.calls() >= 3 end, 100)
+        send(pid, :stop)
+      end)
+
+    assert log =~ "will retry"
+  end
+
+  test "task lease heartbeat stops once renewal reports the lease lost" do
+    {:ok, _agent} = ScriptedLeaseRepo.start_link([{:ok, %{num_rows: 0}}])
+    previous = Application.get_env(:continuum, :task_lease_renew_ms)
+    Application.put_env(:continuum, :task_lease_renew_ms, 50)
+    on_exit(fn -> restore_env(:task_lease_renew_ms, previous) end)
+
+    task = %{
+      id: Ecto.UUID.generate(),
+      lease_owner: "heartbeat-lost",
+      instance: %{repo: ScriptedLeaseRepo}
+    }
+
+    pid = Continuum.Runtime.ActivityWorker.start_task_lease_heartbeat(task)
+    assert_eventually(fn -> not Process.alive?(pid) end, 100)
+    assert ScriptedLeaseRepo.calls() == 1
   end
 
   defp assert_eventually(fun, attempts \\ 20)

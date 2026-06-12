@@ -78,7 +78,10 @@ defmodule Continuum.Runtime.ActivityWorker do
     end
   end
 
-  defp start_task_lease_heartbeat(task) do
+  # Public for tests only: the transient-vs-lost renewal classification is
+  # exercised with a scripted repo, without a full claim/execute cycle.
+  @doc false
+  def start_task_lease_heartbeat(task) do
     worker = self()
 
     # Unlinked on purpose: a renewal hiccup must not kill the executing
@@ -86,7 +89,7 @@ defmodule Continuum.Runtime.ActivityWorker do
     # lease then expires within one TTL and the sweep rescues the task.
     spawn(fn ->
       ref = Process.monitor(worker)
-      task_lease_heartbeat_loop(task, ref)
+      task_lease_heartbeat_loop(task, ref, task_lease_renew_ms())
     end)
   end
 
@@ -95,14 +98,15 @@ defmodule Continuum.Runtime.ActivityWorker do
     :ok
   end
 
-  defp task_lease_heartbeat_loop(task, ref) do
+  defp task_lease_heartbeat_loop(task, ref, delay_ms) do
     receive do
       :stop -> :ok
       {:DOWN, ^ref, :process, _pid, _reason} -> :ok
     after
-      task_lease_renew_ms() ->
+      delay_ms ->
         case safe_renew_task_lease(task) do
-          :ok -> task_lease_heartbeat_loop(task, ref)
+          :ok -> task_lease_heartbeat_loop(task, ref, task_lease_renew_ms())
+          :retry -> task_lease_heartbeat_loop(task, ref, task_lease_retry_ms())
           :lost -> :ok
         end
     end
@@ -112,14 +116,18 @@ defmodule Continuum.Runtime.ActivityWorker do
     renew_task_lease(task)
   rescue
     error ->
-      # Transient DB trouble: stop heartbeating rather than crash-loop; the
-      # completion write still validates the lease, and the current horizon
-      # buys enough time for short activities.
+      # Only a renewal CAS miss (`:lost`) is authoritative — the lease is gone
+      # and renewing again can never succeed. A raised DB error is transient:
+      # stopping the heartbeat on one blip would expire a healthy long
+      # activity's lease, and the sweep would then consume an attempt for an
+      # execution that is still running. Retry on a shorter horizon instead;
+      # the TTL leaves several renewal periods of slack to ride it out.
       Logger.warning(
-        "Continuum task lease heartbeat for #{task.id} stopped: #{Exception.message(error)}"
+        "Continuum task lease heartbeat for #{task.id} renewal failed (will retry): " <>
+          Exception.message(error)
       )
 
-      :lost
+      :retry
   end
 
   defp task_lease_ttl_seconds do
@@ -128,6 +136,10 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   defp task_lease_renew_ms do
     Application.get_env(:continuum, :task_lease_renew_ms, 10_000)
+  end
+
+  defp task_lease_retry_ms do
+    max(div(task_lease_renew_ms(), 4), 250)
   end
 
   # Fencing rejections (run lease rotated, task lease expired or taken over,
