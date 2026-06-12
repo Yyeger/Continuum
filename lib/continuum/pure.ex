@@ -43,6 +43,13 @@ defmodule Continuum.Pure do
     # workflow module would (the runtime SuspendLeakError stays the backstop,
     # but warn at compile time too).
     Continuum.AstCheck.check_catch_warnings(body, env, name, length(args || []))
+
+    # A Pure module is wholly trusted from workflow code, so trust must be
+    # transitive: calls into unmarked modules and dynamic receivers get the
+    # same diagnostics as workflow clauses — otherwise `use Continuum.Pure`
+    # launders unscanned calls past the untrusted_call_severity policy.
+    Continuum.AstCheck.check_helper_calls(body, env, name, length(args || []))
+    Continuum.AstCheck.check_dynamic_call_warnings(body, env, name, length(args || []))
   end
 
   def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok

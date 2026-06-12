@@ -438,6 +438,78 @@ defmodule Continuum.WorkflowCompileTest do
       end)
     end
 
+    test "warns when a Continuum.Pure helper calls an unmarked module" do
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            defmodule UnmarkedFromPure do
+              def fetch(x), do: x
+            end
+
+            defmodule LaunderingPureHelper do
+              use Continuum.Pure
+
+              def lookup(x), do: UnmarkedFromPure.fetch(x)
+            end
+          end)
+
+        assert output =~ "cannot determine whether"
+        assert output =~ "UnmarkedFromPure"
+      end)
+    end
+
+    test "raises when a Continuum.Pure helper calls an unmarked module under :error severity" do
+      with_continuum_env([untrusted_call_severity: :error, trusted_modules: []], fn ->
+        assert_raise CompileError, ~r/cannot determine whether/, fn ->
+          defmodule UnmarkedFromPureError do
+            def fetch(x), do: x
+          end
+
+          defmodule LaunderingPureHelperError do
+            use Continuum.Pure
+
+            def lookup(x), do: UnmarkedFromPureError.fetch(x)
+          end
+        end
+      end)
+    end
+
+    test "a dynamic-receiver call in a Continuum.Pure helper warns" do
+      output =
+        capture_io(:standard_error, fn ->
+          defmodule DynamicPureHelper do
+            use Continuum.Pure
+
+            def dispatch(m, x), do: m.handle(x)
+          end
+        end)
+
+      assert output =~ "dynamic-receiver call"
+      assert output =~ "m.handle/1"
+    end
+
+    test "a Continuum.Pure helper calling stdlib and other Pure modules stays silent" do
+      with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
+        output =
+          capture_io(:standard_error, fn ->
+            defmodule QuietPureDep do
+              use Continuum.Pure
+
+              def double(x), do: x * 2
+            end
+
+            defmodule QuietPureHelper do
+              use Continuum.Pure
+
+              def total(items), do: items |> Enum.map(&QuietPureDep.double/1) |> Enum.sum()
+            end
+          end)
+
+        refute output =~ "cannot determine whether"
+        refute output =~ "dynamic-receiver"
+      end)
+    end
+
     test "does not warn for trusted stdlib modules" do
       with_continuum_env([untrusted_call_severity: :warn, trusted_modules: []], fn ->
         output =
