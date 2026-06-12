@@ -2034,6 +2034,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
     :ok
   end
 
+  @unknown_version_backoff_ms 5_000
+
   @doc """
   Release a run whose version is not loaded on this node.
 
@@ -2041,15 +2043,25 @@ defmodule Continuum.Runtime.Journal.Postgres do
   the version loaded can claim it — an unknown version is a per-node fact,
   not a global one. Runs are no longer marked `stuck_unknown_version`;
   `Continuum.VersionRegistry.upsert_instance/2` recovers legacy stuck rows.
+
+  The release also pushes `next_wakeup_at` a few seconds out: without the
+  backoff the same incapable node re-claims the run on its next poll (and
+  `NULLS FIRST` puts it at the head of every claim batch, starving runnable
+  work). Signals, timers, and parent wakes overwrite the backoff, and any
+  node — including a newly capable one — claims the run once it lapses.
   """
   def release_unknown_version!(%Instance{} = instance, run_id, lease_token) do
+    backoff_until =
+      DateTime.add(DateTime.utc_now(), @unknown_version_backoff_ms, :millisecond)
+
     with_repo(instance, fn ->
       :ok =
         cas_update_active_run(run_id, lease_token, %{
           state: "suspended",
           lease_owner: nil,
           lease_token: nil,
-          lease_expires_at: nil
+          lease_expires_at: nil,
+          next_wakeup_at: backoff_until
         })
     end)
   end

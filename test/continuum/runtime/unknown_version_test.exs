@@ -51,7 +51,17 @@ defmodule Continuum.Runtime.UnknownVersionTest do
       run.state == "suspended" and is_nil(run.lease_owner) and is_nil(run.lease_token)
     end)
 
-    # Still claimable — another (capable) node would pick it up.
+    # The release backs the run off the runnable set, so this (incapable)
+    # node does not hot-loop on it at the poll rate.
+    run = Repo.get!(Run, run_id)
+    assert DateTime.compare(run.next_wakeup_at, DateTime.utc_now()) == :gt
+    assert {:ok, 0} = Dispatcher.dispatch_once(owner: "unknown-version-retry", batch_size: 1)
+
+    # Once the backoff lapses it is claimable again — a capable node would
+    # pick it up and resume it.
+    past = DateTime.utc_now() |> DateTime.add(-1, :second) |> DateTime.truncate(:microsecond)
+    Repo.update_all(from(r in Run, where: r.id == ^run_id), set: [next_wakeup_at: past])
+
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "unknown-version-retry", batch_size: 1)
   end
 
