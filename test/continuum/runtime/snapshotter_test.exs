@@ -1,6 +1,8 @@
 defmodule Continuum.Runtime.SnapshotterTest do
   use Continuum.Test.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias Continuum.Runtime.{ActivityWorker.Dispatcher, Instance, Journal.Postgres, Snapshotter}
   alias Continuum.Schema.{ActivityTask, Run, Snapshot}
 
@@ -120,6 +122,52 @@ defmodule Continuum.Runtime.SnapshotterTest do
       assert row.through_seq >= 1
       assert snapshot.through_seq == row.through_seq
     end)
+  end
+
+  test "a future-format snapshot is skipped in favor of event replay" do
+    steps = [1, 2, 3]
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(SnapshotFlow, %{steps: steps}, journal: Postgres)
+
+    assert {:ok, %{state: :completed, result: {:ok, 6}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    future = Continuum.Snapshot.format_version() + 1
+
+    Repo.insert!(%Snapshot{
+      run_id: run_id,
+      through_seq: 99,
+      version_hash: <<0::256>>,
+      format_version: future,
+      payload: :erlang.term_to_binary({:continuum_snapshot, future, :unreadable}),
+      taken_at: DateTime.utc_now()
+    })
+
+    # The future snapshot is never selected; full history replays instead of
+    # the decode raise crash-looping the engine on this node.
+    assert {nil, events} =
+             Postgres.load_with_snapshot(Instance.default(), run_id, lease_token(run_id))
+
+    assert length(events) == 3
+
+    assert {:ok, {:ok, 6}} =
+             Continuum.Test.replay(SnapshotFlow, %{steps: steps}, events, journal: Postgres)
+
+    # An undecodable row within a supported format also degrades to events.
+    Repo.update_all(from(s in Snapshot, where: s.run_id == ^run_id),
+      set: [format_version: Continuum.Snapshot.format_version(), payload: <<1, 2, 3>>]
+    )
+
+    log =
+      capture_log(fn ->
+        assert {nil, events} =
+                 Postgres.load_with_snapshot(Instance.default(), run_id, lease_token(run_id))
+
+        assert length(events) == 3
+      end)
+
+    assert log =~ "undecodable"
   end
 
   test "snapshot_once resolves the per-workflow threshold without app config" do

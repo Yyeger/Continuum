@@ -1877,17 +1877,35 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp latest_snapshot(run_id) do
+    # Newest *decodable* snapshot, not newest overall: in a mixed-version
+    # rolling deploy a newer node may have written a format this release
+    # cannot decode. Skipping it degrades to an older snapshot or full event
+    # replay (events are never pruned) instead of a crash/reclaim loop.
     repo().one(
       from(s in Snapshot,
-        where: s.run_id == ^run_id,
+        where:
+          s.run_id == ^run_id and
+            s.format_version <= ^Continuum.Snapshot.format_version(),
         order_by: [desc: s.through_seq],
         limit: 1
       )
     )
     |> case do
       nil -> nil
-      snapshot -> decode_snapshot(snapshot)
+      snapshot -> decode_snapshot_or_skip(snapshot)
     end
+  end
+
+  defp decode_snapshot_or_skip(%Snapshot{} = snapshot) do
+    decode_snapshot(snapshot)
+  rescue
+    error ->
+      Logger.warning(
+        "Continuum snapshot #{snapshot.id} for run #{snapshot.run_id} is undecodable, " <>
+          "falling back to event replay: #{Exception.message(error)}"
+      )
+
+      nil
   end
 
   defp insert_event!(run_id, event) do
