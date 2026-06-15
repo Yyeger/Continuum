@@ -327,6 +327,53 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
              Continuum.await(root, 2_000, journal: Postgres)
   end
 
+  test "signal delivery follows completed predecessors to the active chain tip" do
+    root = Ecto.UUID.generate()
+    middle = Ecto.UUID.generate()
+    tip = Ecto.UUID.generate()
+    workflow = inspect(SignalCycleFlow)
+    version_hash = SignalCycleFlow.__continuum_workflow__().version_hash
+
+    insert_run!(root, %{
+      workflow: workflow,
+      version_hash: version_hash,
+      state: "completed",
+      input: :erlang.term_to_binary(%{phase: 1}),
+      result: :erlang.term_to_binary({:continued, middle}),
+      correlation_id: root
+    })
+
+    insert_run!(middle, %{
+      workflow: workflow,
+      version_hash: version_hash,
+      state: "completed",
+      input: :erlang.term_to_binary(%{phase: 2}),
+      result: :erlang.term_to_binary({:continued, tip}),
+      correlation_id: root,
+      continued_from_run_id: root
+    })
+
+    insert_run!(tip, %{
+      workflow: workflow,
+      version_hash: version_hash,
+      state: "suspended",
+      input: :erlang.term_to_binary(%{phase: 2}),
+      correlation_id: root,
+      continued_from_run_id: middle
+    })
+
+    assert {:ok, ^tip} =
+             Postgres.deliver_signal!(
+               Continuum.Runtime.Instance.default(),
+               root,
+               :go,
+               :payload
+             )
+
+    assert [{^tip, "go", false}] =
+             Repo.all(from(s in Signal, select: {s.run_id, s.name, s.delivered}))
+  end
+
   test "cancelling the chain root cancels the live tip" do
     {:ok, root} = Continuum.start(SignalCycleFlow, %{phase: 1}, journal: Postgres)
 
@@ -439,6 +486,12 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
   end
 
   defp run_state(run_id), do: Repo.one(from(r in Run, where: r.id == ^run_id, select: r.state))
+
+  defp insert_run!(id, attrs) do
+    %Run{}
+    |> Ecto.Changeset.change(Map.put(attrs, :id, id))
+    |> Repo.insert!()
+  end
 
   defp continued?(nil), do: false
   defp continued?(binary), do: match?({:continued, _}, :erlang.binary_to_term(binary))

@@ -1326,25 +1326,18 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     result =
       repo().transaction(fn ->
-        # Callers of a continued run hold the chain-root id; deliver into the
-        # live tip's mailbox so the signal is not lost in the dead root's.
-        run_id = follow_continued_chain(run_id)
-
-        # Validate the target inside the transaction: a signal accepted for a
-        # nonexistent or terminal run is silent signal loss (`:ok` with no
-        # consumer), and the in-memory adapter already rejects it.
-        case repo().one(from(r in Run, where: r.id == ^run_id, select: r.state)) do
-          nil ->
-            repo().rollback(:not_found)
-
-          state when state not in ["running", "suspended"] ->
+        # Lock while walking the chain. If a concurrent continue_as_new wins,
+        # this waits, sees the completed predecessor, and re-locks the
+        # successor; if delivery wins, the later continue migrates the signal.
+        case lock_signal_delivery_tip(run_id) do
+          %Run{state: state} when state not in ["running", "suspended"] ->
             repo().rollback(:run_terminal)
 
-          _active ->
+          %Run{id: delivered_run_id} ->
             changeset =
               %Signal{}
               |> Ecto.Changeset.change(%{
-                run_id: run_id,
+                run_id: delivered_run_id,
                 name: signal_name,
                 payload: encode_term(payload),
                 delivered: false,
@@ -1354,11 +1347,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
             with {:ok, _signal} <- repo().insert(changeset),
                  {_count, _} <-
                    repo().update_all(
-                     from(r in Run, where: r.id == ^run_id),
+                     from(r in Run, where: r.id == ^delivered_run_id),
                      set: [next_wakeup_at: now]
                    ),
-                 {:ok, _} <- repo().query("SELECT pg_notify('continuum_signal', $1)", [run_id]) do
-              run_id
+                 {:ok, _} <-
+                   repo().query("SELECT pg_notify('continuum_signal', $1)", [delivered_run_id]) do
+              delivered_run_id
             else
               {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
             end
@@ -1383,6 +1377,22 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       {:error, reason} ->
         raise JournalError, op: :deliver_signal!, reason: reason
+    end
+  end
+
+  defp lock_signal_delivery_tip(run_id) do
+    case repo().one(from(r in Run, where: r.id == ^run_id, lock: "FOR UPDATE")) do
+      nil ->
+        repo().rollback(:not_found)
+
+      %Run{state: "completed", result: result} = run ->
+        case decode_term(result) do
+          {:continued, next_run_id} -> lock_signal_delivery_tip(next_run_id)
+          _other -> run
+        end
+
+      %Run{} = run ->
+        run
     end
   end
 
