@@ -107,12 +107,36 @@ defmodule Continuum.Runtime.DispatcherTest do
         [run_id]
       )
 
-    Continuum.Runtime.Engine.adopt_lease(engine_pid, run_id, "racing-dispatcher", new_token)
+    assert :ok =
+             Continuum.Runtime.Engine.adopt_lease(
+               engine_pid,
+               run_id,
+               "racing-dispatcher",
+               new_token
+             )
 
     :ok = Continuum.signal(run_id, :continue, :go, journal: Postgres)
 
     assert {:ok, %{state: :completed, result: :go}} =
              Continuum.await(run_id, 2_000, journal: Postgres)
+  end
+
+  test "adopt_lease reports a dead engine so the dispatcher can resume instead" do
+    run_id = Ecto.UUID.generate()
+
+    pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    ref = Process.monitor(pid)
+    send(pid, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+
+    assert {:error, :noproc} =
+             Continuum.Runtime.Engine.adopt_lease(pid, run_id, "racing-dispatcher", 1)
   end
 
   test "dispatch_once leases an unowned run and starts an engine" do

@@ -179,11 +179,41 @@ defmodule Continuum.Runtime.Dispatcher do
         # An engine registered between our local-registry snapshot and the
         # claim. We rotated the token, so hand it to the live engine rather
         # than fencing it out for a full lease TTL.
-        Engine.adopt_lease(pid, claim.run_id, claim.lease_owner, claim.lease_token)
-        :ok
+        case Engine.adopt_lease(pid, claim.run_id, claim.lease_owner, claim.lease_token,
+               cancel_requested_at: claim.cancel_requested_at
+             ) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.debug(
+              "Continuum dispatcher lease adoption failed for #{claim.run_id}: " <>
+                inspect(reason)
+            )
+
+            resume_after_failed_adoption(claim, opts)
+        end
 
       {:error, reason} ->
         Logger.error("Continuum dispatcher failed to start #{claim.run_id}: #{inspect(reason)}")
+        :error
+    end
+  end
+
+  defp resume_after_failed_adoption(claim, opts) do
+    case Engine.resume_run(claim.workflow_module, claim.input, claim.run_id, opts) do
+      {:ok, _run_id} ->
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "Continuum dispatcher failed to resume #{claim.run_id} after lease adoption failed: " <>
+            inspect(reason)
+        )
+
         :error
     end
   end

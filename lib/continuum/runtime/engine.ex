@@ -477,17 +477,25 @@ defmodule Continuum.Runtime.Engine do
   # (fresh-start race): hand the rotated token to the existing engine instead
   # of dropping it, which would fence the engine out until the orphaned lease
   # expired — a full TTL stall with no engine holding authority.
-  def handle_cast({:adopt_lease, run_id, owner, token}, %{run_id: run_id} = state) do
+  def handle_call(
+        {:adopt_lease, run_id, owner, token, cancel_requested_at},
+        _from,
+        %{run_id: run_id} = state
+      ) do
     track_lease(state.instance, %Lease{run_id: run_id, owner: owner, token: token})
-    state = %{state | lease_owner: owner, lease_token: token}
-    {:noreply, state, {:continue, :run}}
+
+    state = %{
+      state
+      | lease_owner: owner,
+        lease_token: token,
+        cancel_requested_at: cancel_requested_at
+    }
+
+    {:reply, :ok, state, {:continue, :run}}
   end
 
-  def handle_cast({:adopt_lease, _run_id, _owner, _token}, state), do: {:noreply, state}
-
-  @doc false
-  def adopt_lease(pid, run_id, owner, token) do
-    GenServer.cast(pid, {:adopt_lease, run_id, owner, token})
+  def handle_call({:adopt_lease, _run_id, _owner, _token, _cancel_requested_at}, _from, state) do
+    {:reply, {:error, :run_mismatch}, state}
   end
 
   @impl true
@@ -509,6 +517,18 @@ defmodule Continuum.Runtime.Engine do
       # cancel handler) instead of crashing and exiting the caller.
       untrack_lease(state)
       {:stop, :normal, {:error, error.reason}, state}
+  end
+
+  @doc false
+  def adopt_lease(pid, run_id, owner, token, opts \\ []) do
+    cancel_requested_at = Keyword.get(opts, :cancel_requested_at)
+    timeout = Keyword.get(opts, :timeout, 1_000)
+
+    GenServer.call(pid, {:adopt_lease, run_id, owner, token, cancel_requested_at}, timeout)
+  catch
+    :exit, {:noproc, _} -> {:error, :noproc}
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, reason -> {:error, reason}
   end
 
   @impl true
