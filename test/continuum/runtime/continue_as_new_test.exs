@@ -392,7 +392,7 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     assert run_state(root) == "completed"
   end
 
-  test "a pending durable cancel request survives continue_as_new and is honored" do
+  test "a pending durable cancel request is honored before a claimed run continues" do
     run_id = Ecto.UUID.generate()
 
     :ok =
@@ -403,22 +403,14 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
         %{phase: 1}
       )
 
-    # A cancel addressed to an unreachable-but-leased owner records the
-    # request durably; the run then continues before any heartbeat sees it.
+    # A cancel addressed to an unreachable owner records the request durably.
+    # When a new owner claims the row, it must honor that request before
+    # executing workflow code that could continue the chain.
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
     Repo.update_all(from(r in Run, where: r.id == ^run_id), set: [cancel_requested_at: now])
 
-    pump_until(fn -> successor_of(run_id) != nil end)
-    tip = successor_of(run_id)
-
-    # The request followed the chain into the successor row.
-    assert Repo.one(from(r in Run, where: r.id == ^tip, select: r.cancel_requested_at)) != nil
-
-    pump_until(fn -> run_state(tip) == "suspended" end)
-
-    :ok = Continuum.Runtime.Lease.Heartbeater.renew_once(Continuum.Runtime.Instance.default())
-
-    assert_eventually(fn -> run_state(tip) == "cancelled" end)
+    pump_until(fn -> run_state(run_id) == "cancelled" end)
+    assert successor_of(run_id) == nil
     assert {:error, %{state: :cancelled}} = Continuum.await(run_id, 500, journal: Postgres)
   end
 
