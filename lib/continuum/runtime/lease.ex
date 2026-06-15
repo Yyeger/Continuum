@@ -8,7 +8,7 @@ defmodule Continuum.Runtime.Lease do
   fresh monotonic token from `continuum_lease_token_seq`.
   """
 
-  defstruct [:run_id, :owner, :token]
+  defstruct [:run_id, :owner, :token, :cancel_requested_at]
 
   alias Continuum.Telemetry
 
@@ -17,7 +17,8 @@ defmodule Continuum.Runtime.Lease do
   @type t :: %__MODULE__{
           run_id: binary(),
           owner: binary(),
-          token: integer()
+          token: integer(),
+          cancel_requested_at: DateTime.t() | NaiveDateTime.t() | nil
         }
 
   @doc """
@@ -50,18 +51,24 @@ defmodule Continuum.Runtime.Lease do
     WHERE id = $3::text::uuid
       AND state IN ('running', 'suspended')
       AND (lease_owner IS NULL OR lease_expires_at < now())
-    RETURNING lease_token
+    RETURNING lease_token, cancel_requested_at
     """
 
     case repo(opts).query(sql, [owner, ttl_seconds, run_id]) do
-      {:ok, %{rows: [[token]]}} ->
+      {:ok, %{rows: [[token, cancel_requested_at]]}} ->
         Telemetry.execute([:continuum, :lease, :acquired], %{}, %{
           run_id: run_id,
           owner: owner,
           lease_token: token
         })
 
-        {:ok, %__MODULE__{run_id: run_id, owner: owner, token: token}}
+        {:ok,
+         %__MODULE__{
+           run_id: run_id,
+           owner: owner,
+           token: token,
+           cancel_requested_at: cancel_requested_at
+         }}
 
       {:ok, %{rows: []}} ->
         {:error, :not_acquired}

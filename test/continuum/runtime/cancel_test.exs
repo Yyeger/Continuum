@@ -248,6 +248,36 @@ defmodule Continuum.Runtime.CancelTest do
     assert Registry.lookup(Continuum.Runtime.Registry, run_id) == []
   end
 
+  test "a pending cancel request is honored immediately when a run is claimed" do
+    run_id = Ecto.UUID.generate()
+
+    :ok =
+      Postgres.start_run(
+        Continuum.Runtime.Instance.default(),
+        run_id,
+        TimerFlow,
+        %{ms: 60_000}
+      )
+
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    Repo.update_all(from(r in Run, where: r.id == ^run_id), set: [cancel_requested_at: now])
+
+    assert {:ok, 1} =
+             Continuum.Runtime.Dispatcher.dispatch_once(
+               owner: "cancel-request-claim",
+               batch_size: 1
+             )
+
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "cancelled"
+    end)
+
+    assert Repo.aggregate(from(e in Event, where: e.run_id == ^run_id), :count) == 0
+
+    assert {:error, %{state: :cancelled, error: :cancelled}} =
+             Continuum.await(run_id, 500, journal: Postgres)
+  end
+
   test "cancel of a terminal durable run reports run_not_active" do
     run_id = Ecto.UUID.generate()
 

@@ -23,6 +23,7 @@ defmodule Continuum.Runtime.Engine do
     :journal,
     :lease_owner,
     :lease_token,
+    :cancel_requested_at,
     :trace_context,
     :resume?,
     :workflow,
@@ -122,8 +123,10 @@ defmodule Continuum.Runtime.Engine do
             # reachable (partition, overload). Record the request with a plain
             # UPDATE — no lease needed — and the owning engine honors it on
             # its next lease heartbeat.
-            request_cancel(instance, run_id)
-            error
+            case request_cancel(instance, run_id) do
+              :ok -> error
+              {:error, reason} -> {:error, reason}
+            end
 
           other ->
             other
@@ -134,17 +137,30 @@ defmodule Continuum.Runtime.Engine do
   defp request_cancel(%Instance{repo: nil}, _run_id), do: :ok
 
   defp request_cancel(instance, run_id) do
-    instance.repo.query(
-      """
-      UPDATE continuum_runs
-      SET cancel_requested_at = clock_timestamp()
-      WHERE id = $1::text::uuid
-        AND state IN ('running', 'suspended')
-      """,
-      [run_id]
-    )
+    result =
+      instance.repo.query(
+        """
+        UPDATE continuum_runs
+        SET cancel_requested_at = clock_timestamp()
+        WHERE id = $1::text::uuid
+          AND state IN ('running', 'suspended')
+        """,
+        [run_id]
+      )
 
-    :ok
+    case result do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, %{num_rows: 0}} -> classify_uncancelled_run(instance, run_id)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp classify_uncancelled_run(instance, run_id) do
+    case Continuum.Runtime.Journal.Postgres.get_run(instance, run_id) do
+      nil -> {:error, :not_found}
+      %{state: state} when state in [:running, :suspended] -> {:error, :owned_elsewhere}
+      %{state: state} -> {:error, {:run_not_active, state}}
+    end
   end
 
   defp cancel_remote(instance, run_id) do
@@ -404,7 +420,9 @@ defmodule Continuum.Runtime.Engine do
         end
       end
 
-    {lease_owner, lease_token} = acquire_lease(instance, journal, run_id, opts, start_lease)
+    {lease_owner, lease_token, cancel_requested_at} =
+      acquire_lease(instance, journal, run_id, opts, start_lease)
+
     trace_context = resume_trace_context(journal, instance, run_id, trace_context, opts)
     join_pg(instance, run_id)
 
@@ -416,6 +434,7 @@ defmodule Continuum.Runtime.Engine do
       journal: journal,
       lease_owner: lease_owner,
       lease_token: lease_token,
+      cancel_requested_at: cancel_requested_at,
       trace_context: trace_context,
       resume?: Keyword.get(opts, :resume, false),
       workflow: Keyword.get(opts, :workflow),
@@ -440,6 +459,11 @@ defmodule Continuum.Runtime.Engine do
   end
 
   @impl true
+  def handle_continue(:run, %{cancel_requested_at: cancel_requested_at} = state)
+      when not is_nil(cancel_requested_at) do
+    honor_cancel_request(state)
+  end
+
   def handle_continue(:run, state) do
     state |> attempt_run() |> finalize()
   end
@@ -501,6 +525,12 @@ defmodule Continuum.Runtime.Engine do
   # A durable cancel request recorded while this engine was unreachable
   # (see cancel_without_local_engine/3), surfaced by the lease heartbeat.
   def handle_info({:continuum_cancel_requested, run_id}, %{run_id: run_id} = state) do
+    honor_cancel_request(state)
+  end
+
+  def handle_info({:continuum_cancel_requested, _run_id}, state), do: {:noreply, state}
+
+  defp honor_cancel_request(state) do
     try do
       :ok = cancel_run(state)
       state = %{state | status: :cancelled, error: :cancelled}
@@ -520,8 +550,6 @@ defmodule Continuum.Runtime.Engine do
         {:stop, :normal, state}
     end
   end
-
-  def handle_info({:continuum_cancel_requested, _run_id}, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do
@@ -864,14 +892,15 @@ defmodule Continuum.Runtime.Engine do
   # concurrent dispatcher to steal.
   defp acquire_lease(instance, _journal, _run_id, _opts, %Lease{} = lease) do
     track_lease(instance, lease)
-    {lease.owner, lease.token}
+    {lease.owner, lease.token, lease.cancel_requested_at}
   end
 
   defp acquire_lease(instance, Continuum.Runtime.Journal.Postgres, run_id, opts, nil) do
     case {Keyword.get(opts, :lease_owner), Keyword.get(opts, :lease_token)} do
       {owner, token} when is_binary(owner) and is_integer(token) ->
+        cancel_requested_at = Keyword.get(opts, :cancel_requested_at)
         track_lease(instance, %Lease{run_id: run_id, owner: owner, token: token})
-        {owner, token}
+        {owner, token, cancel_requested_at}
 
       _ ->
         lease =
@@ -882,11 +911,11 @@ defmodule Continuum.Runtime.Engine do
           )
 
         track_lease(instance, lease)
-        {lease.owner, lease.token}
+        {lease.owner, lease.token, lease.cancel_requested_at}
     end
   end
 
-  defp acquire_lease(_instance, _journal, _run_id, _opts, nil), do: {nil, nil}
+  defp acquire_lease(_instance, _journal, _run_id, _opts, nil), do: {nil, nil, nil}
 
   defp track_lease(instance, %Lease{} = lease) do
     if Process.whereis(instance.heartbeater) do

@@ -57,6 +57,19 @@ defmodule Continuum.Runtime.LeaseTest do
       assert run.lease_expires_at != nil
     end
 
+    test "returns a pending cancel request when claiming a run" do
+      run_id = Ecto.UUID.generate()
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
+
+      now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+      Repo.update_all(from(r in Run, where: r.id == ^run_id), set: [cancel_requested_at: now])
+
+      assert {:ok, %Lease{cancel_requested_at: cancel_requested_at}} =
+               Lease.acquire(run_id, owner: "node-a")
+
+      assert cancel_requested_at == DateTime.to_naive(now)
+    end
+
     test "does not claim a run with an active lease" do
       run_id = Ecto.UUID.generate()
       :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
