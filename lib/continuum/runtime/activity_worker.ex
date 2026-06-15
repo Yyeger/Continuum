@@ -169,6 +169,7 @@ defmodule Continuum.Runtime.ActivityWorker do
       {:lease_mismatch, _} -> :requeue
       # Task no longer ours: another claimer owns it, leave it alone.
       {:activity_task_lease_mismatch, _} -> :drop
+      {:activity_task_attempt_mismatch, _} -> :drop
       {:activity_task_not_leased, _} -> :drop
       {:activity_task_not_found, _} -> :drop
       {:activity_task_run_mismatch, _} -> :drop

@@ -750,7 +750,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  from(t in ActivityTask,
                    where:
                      t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
-                       t.lease_owner == ^task.lease_owner
+                       t.lease_owner == ^task.lease_owner and t.attempt == ^task.attempt
                  ),
                  set: [state: "completed", result: encode_term(committed_result)]
                ) do
@@ -916,7 +916,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
           from(t in ActivityTask,
             where:
               t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
-                t.lease_owner == ^task.lease_owner,
+                t.lease_owner == ^task.lease_owner and t.attempt == ^task.attempt,
             update: [
               set: [
                 state: "available",
@@ -1528,7 +1528,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  from(t in ActivityTask,
                    where:
                      t.id == ^task.id and t.run_id == ^task.run_id and t.state == "leased" and
-                       t.lease_owner == ^task.lease_owner
+                       t.lease_owner == ^task.lease_owner and t.attempt == ^task.attempt
                  ),
                  set: task_updates
                ) do
@@ -1645,6 +1645,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
             repo().rollback(
               {:activity_task_lease_mismatch,
                expected: task.lease_owner, actual: db_task.lease_owner}
+            )
+
+          db_task.attempt != task.attempt ->
+            repo().rollback(
+              {:activity_task_attempt_mismatch, expected: task.attempt, actual: db_task.attempt}
             )
 
           is_nil(db_task.lease_expires_at) ->
