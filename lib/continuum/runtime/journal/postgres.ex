@@ -1091,46 +1091,65 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  # Collect the run ids the cascade will cancel, locking each generation with
+  # FOR UPDATE before reading the next. The previous implementation snapshotted
+  # the whole subtree with an unlocked recursive CTE under only the root's
+  # lock; a concurrent continue_as_new!/start_child! could then commit a new
+  # descendant after the snapshot and before the final update_all, and that run
+  # escaped cancellation entirely (audit F3). Locking generation-by-generation
+  # forces any in-flight creator to serialize on its parent row: it either
+  # blocks until we cancel its parent (then fails its own lease/state
+  # validation) or has already committed and is seen by the next generation's
+  # locking read. Lock order is strictly parent-before-child, matching the rest
+  # of the cancel/completion paths, so no AB-BA deadlock is introduced.
   defp descendant_run_ids(run_id) do
-    max_depth = max_child_depth()
+    collect_locked_descendants(run_id, [run_id], 1, max_child_depth(), [])
+  end
 
-    # Walk one level past the bound: rows at max_depth + 1 mean the cascade is
-    # about to truncate (legacy data or a lowered :max_child_depth) — that must
-    # be loud, not a silent partial cancel.
-    sql = """
-    WITH RECURSIVE descendants AS (
-      SELECT id, 1 AS depth FROM continuum_runs WHERE parent_run_id = $1
-      UNION ALL
-      SELECT c.id, d.depth + 1
-      FROM continuum_runs c
-      JOIN descendants d ON c.parent_run_id = d.id
-      WHERE d.depth < $2 + 1
-    )
-    SELECT id::text, depth FROM descendants
-    """
+  defp collect_locked_descendants(root_run_id, parent_ids, depth, max_depth, acc) do
+    case lock_child_run_ids(parent_ids) do
+      [] ->
+        acc
 
-    case repo().query(sql, [Ecto.UUID.dump!(run_id), max_depth]) do
-      {:ok, %{rows: rows}} ->
-        {within, beyond} = Enum.split_with(rows, fn [_id, depth] -> depth <= max_depth end)
+      # One generation past the bound (legacy data or a lowered
+      # :max_child_depth): these rows are NOT cancelled. Surface the
+      # truncation loudly instead of a silent partial cancel.
+      children when depth > max_depth ->
+        Logger.error(
+          "Continuum cancel cascade for run #{root_run_id} truncated at depth " <>
+            "#{max_depth}: #{length(children)}+ deeper descendant(s) keep running"
+        )
 
-        unless beyond == [] do
-          Logger.error(
-            "Continuum cancel cascade for run #{run_id} truncated at depth " <>
-              "#{max_depth}: #{length(beyond)}+ deeper descendant(s) keep running"
-          )
+        Telemetry.execute(
+          [:continuum, :run, :cancel_cascade_truncated],
+          %{count: length(children)},
+          %{run_id: root_run_id, max_child_depth: max_depth}
+        )
 
-          Telemetry.execute(
-            [:continuum, :run, :cancel_cascade_truncated],
-            %{count: length(beyond)},
-            %{run_id: run_id, max_child_depth: max_depth}
-          )
-        end
+        acc
 
-        Enum.map(within, fn [id, _depth] -> id end)
-
-      _ ->
-        []
+      children ->
+        collect_locked_descendants(
+          root_run_id,
+          children,
+          depth + 1,
+          max_depth,
+          acc ++ children
+        )
     end
+  end
+
+  defp lock_child_run_ids([]), do: []
+
+  defp lock_child_run_ids(parent_ids) do
+    repo().all(
+      from(r in Run,
+        where: r.parent_run_id in ^parent_ids,
+        order_by: r.id,
+        lock: "FOR UPDATE",
+        select: r.id
+      )
+    )
   end
 
   defp maybe_wake_parent(run_id) do
