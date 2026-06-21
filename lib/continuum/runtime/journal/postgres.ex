@@ -556,6 +556,15 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     result =
       repo().transaction(fn ->
+        # Lock our parent before our own row, the same parent-before-child
+        # order the cancel cascade takes (see lock_parent_first/1). A
+        # concurrent Continuum.cancel of an ancestor then serializes against
+        # us on the shared parent lock: it either clears our lease before we
+        # validate it (we roll back here) or observes the successor as a
+        # freshly-locked descendant of the parent. Without this the successor
+        # is parented to a row the cascade locked under only the root's lock
+        # and escapes cancellation (audit F3).
+        lock_parent_first(run_id)
         run = repo().one(from(r in Run, where: r.id == ^run_id, lock: "FOR UPDATE"))
 
         case run do
