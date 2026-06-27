@@ -336,6 +336,19 @@ defmodule Continuum.AstCheck do
             true -> {node, [dynamic_call(receiver, fun, length(args), meta) | acc]}
           end
 
+        # Anonymous-function invocation: f.(), input.handler.(),
+        # Function.capture(...).().  A one-element dot list ([callee]) means
+        # "invoke this function value"; the two-element arms above ([receiver,
+        # fun]) never match it, so the strictly more dynamic closure call slipped
+        # past the scanner (audit F11). A field-access or call-result callee is a
+        # runtime value and warns; analyzable callees stay quiet.
+        {{:., _, [callee]}, meta, args} = node, acc when is_list(args) ->
+          if analyzable_callee?(callee) do
+            {node, acc}
+          else
+            {node, [dynamic_call(callee, nil, length(args), meta) | acc]}
+          end
+
         node, acc ->
           {node, acc}
       end)
@@ -360,6 +373,18 @@ defmodule Continuum.AstCheck do
     end
   end
 
+  # Callees the scanner can vouch for in a `.()` invocation: an inline `fn`
+  # (its body is walked here in place), a capture (its target is checked at the
+  # capture site or already denylisted, e.g. Function.capture), and a bare local
+  # variable (a local closure whose definition was scanned in place — warning on
+  # every `validate.()` would drown real findings, and the scanner already
+  # treats bound-variable receivers leniently). A field-access or call-result
+  # callee is a runtime value the denylist cannot be checked against.
+  defp analyzable_callee?({:fn, _, _}), do: true
+  defp analyzable_callee?({:&, _, _}), do: true
+  defp analyzable_callee?({name, _, ctx}) when is_atom(name) and is_atom(ctx), do: true
+  defp analyzable_callee?(_), do: false
+
   defp dynamic_call(receiver, fun, arity, meta) do
     %{
       receiver: Macro.to_string(receiver),
@@ -367,6 +392,24 @@ defmodule Continuum.AstCheck do
       arity: arity,
       line: Keyword.get(meta, :line)
     }
+  end
+
+  defp warn_dynamic_call(%{function: nil} = call, env, caller_fun, caller_arity) do
+    IO.warn(
+      """
+      Continuum cannot analyze a dynamic function invocation in workflow code:
+
+          #{call.receiver}.() (#{call.arity} argument(s))
+
+      The function value is computed at runtime, so the determinism scanner
+      cannot check what it ultimately calls. Invoke a named function or an
+      inline `fn`, or move the dynamic dispatch into an activity.
+      """,
+      [
+        {env.module, caller_fun, caller_arity,
+         [file: to_charlist(env.file || "nofile"), line: call.line || env.line || 0]}
+      ]
+    )
   end
 
   defp warn_dynamic_call(call, env, caller_fun, caller_arity) do

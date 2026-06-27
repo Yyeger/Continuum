@@ -330,6 +330,55 @@ defmodule Continuum.WorkflowCompileTest do
       refute warning =~ "dynamic-receiver call"
     end
 
+    test "a dynamic function invocation (input.handler.()) warns" do
+      warning =
+        capture_io(:standard_error, fn ->
+          defmodule DynamicInvokeFlow do
+            use Continuum.Workflow, version: 1
+
+            def run(input) do
+              input.handler.()
+              {:ok, input.seed}
+            end
+          end
+        end)
+
+      assert warning =~ "dynamic function invocation"
+      assert warning =~ "input.handler.()"
+    end
+
+    test "an inline fn invocation ((fn -> end).()) does not warn" do
+      warning =
+        capture_io(:standard_error, fn ->
+          defmodule InlineFnInvokeFlow do
+            use Continuum.Workflow, version: 1
+
+            def run(input) do
+              double = (fn x -> x * 2 end).(input.seed)
+              {:ok, double}
+            end
+          end
+        end)
+
+      refute warning =~ "dynamic function invocation"
+    end
+
+    test "a bare local closure invocation (validate.()) does not warn" do
+      warning =
+        capture_io(:standard_error, fn ->
+          defmodule LocalClosureFlow do
+            use Continuum.Workflow, version: 1
+
+            def run(input) do
+              validate = fn x -> x > 0 end
+              {:ok, validate.(input.seed)}
+            end
+          end
+        end)
+
+      refute warning =~ "dynamic function invocation"
+    end
+
     test "await child shorthand requires Mod.run(input)" do
       assert_raise ArgumentError, ~r/await child Mod\.run\(input\)/, fn ->
         compile_workflow("BadAwaitChildFun", """
