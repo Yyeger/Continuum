@@ -249,6 +249,16 @@ defmodule Continuum.AstCheckTest do
       assert {:os, :timestamp} in mfas
     end
 
+    test "rejects :erlang.apply/3 (parity with Kernel.apply)" do
+      ast =
+        quote do
+          :erlang.apply(DateTime, :utc_now, [])
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert {:erlang, :apply} in Enum.map(violations, & &1.mfa)
+    end
+
     test "resolves in-body alias ... as: before the denylist lookup" do
       ast =
         quote do

@@ -102,6 +102,7 @@ defmodule Continuum.AstCheck do
       "Function.capture/3 builds dynamic dispatch the scanner cannot follow; call the function directly",
     {Code, :eval_string} => "code evaluation is non-deterministic",
     {Code, :eval_quoted} => "code evaluation is non-deterministic",
+    {:erlang, :apply} => "dynamic dispatch forbidden in workflows",
     {:erlang, :now} => "use Continuum.now/0 (and :erlang.now is deprecated)",
     {:erlang, :spawn} => "spawn forbidden in workflows",
     {:erlang, :spawn_link} => "spawn forbidden in workflows",
