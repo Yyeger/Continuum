@@ -48,6 +48,16 @@ defmodule Continuum.AstCheckTest do
       assert violation.mfa == {:ets, :lookup}
     end
 
+    test "rejects Function.capture/3 (dynamic dispatch laundering)" do
+      ast =
+        quote do
+          Function.capture(DateTime, :utc_now, 0)
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {Function, :capture}
+    end
+
     test "rejects raw Process.send_after (and the self() inside it)" do
       ast =
         quote do

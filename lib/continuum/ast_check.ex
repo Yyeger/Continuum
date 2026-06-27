@@ -98,6 +98,8 @@ defmodule Continuum.AstCheck do
     {Kernel, :self} => "pid identity is non-deterministic on replay; wrap in an activity",
     {Kernel, :make_ref} => "use Continuum.uuid4/0",
     {Kernel, :node} => "cluster topology is non-deterministic; wrap in an activity",
+    {Function, :capture} =>
+      "Function.capture/3 builds dynamic dispatch the scanner cannot follow; call the function directly",
     {Code, :eval_string} => "code evaluation is non-deterministic",
     {Code, :eval_quoted} => "code evaluation is non-deterministic",
     {:erlang, :now} => "use Continuum.now/0 (and :erlang.now is deprecated)",
