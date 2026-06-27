@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.6.1 — 2026-06-27 — "Audit follow-up"
+
+A second logic audit after the v0.6.0 hardening release surfaced a follow-up
+round of findings, in two recurring themes: error paths the v0.6.0 fixes added
+whose callers were never updated to consume them, and durable backstop state
+that was written but never read by any poller — plus a few concurrency windows
+in the cancel/continue/claim paths. All are fixed.
+
+### Fixes
+
+- `Continuum.signal/4` (and `Continuum.Test.inject_signal/4`) on Postgres now
+  returns `{:error, :not_found | :run_terminal}` instead of crashing the
+  caller with a `MatchError` when the target run is missing or already
+  terminal. The durable path now matches the in-memory adapter and the
+  documented `:ok | {:error, term()}` contract.
+- Signal delivery locks and follows the `continue_as_new` chain tip inside its
+  transaction, so a signal can no longer be stranded in a terminal run's
+  mailbox when a continuation commits concurrently — it lands before the
+  successor's signal migration or follows through to the live tip.
+- The cancel cascade locks descendant runs generation-by-generation
+  (`FOR UPDATE` at each level) instead of snapshotting the whole subtree under
+  only the root's lock, and `continue_as_new!` now takes its parent's row lock
+  first (matching the cascade's parent-before-child order). A run created by a
+  concurrent `start_child!`/`continue_as_new!` can no longer escape a cancel of
+  its ancestor, and the lock ordering removes an AB-BA deadlock window.
+- A pending durable cancel request (`cancel_requested_at`, recorded for an
+  unreachable-but-leased owner) now survives `continue_as_new` — the successor
+  inherits it — and is honored at claim/resume time, not only on the owner's
+  next lease heartbeat. `Continuum.cancel/2`'s local path no longer exits the
+  caller if the engine stops mid-call, and `handle_call(:cancel)` rescues a
+  `JournalError` (lease rotated under it, run already cancelled durably)
+  instead of crashing the engine.
+- Builtin activity task-lease fencing now includes `attempt` in its CAS
+  (`lock_and_validate_activity_task!` and both completion/retry update_all
+  clauses). A zombie worker from a previous attempt can no longer commit or
+  requeue over a live re-claim of the same task and corrupt attempt accounting.
+- The activity task-lease heartbeat retries transient DB errors with backoff
+  instead of stopping permanently on the first one; only a genuine CAS miss is
+  terminal. A DB blip mid-activity no longer expires the lease and fails an
+  otherwise-healthy long-running activity.
+- Unknown-version runs are backed off via `next_wakeup_at` when their lease is
+  released, so an incapable node no longer hot-loops claiming and releasing
+  them at the dispatcher poll rate (which could starve real runnable work, and
+  was unbounded on single-node deployments).
+- The `adopt_lease` handoff is confirmed before the dispatcher returns,
+  falling back to a full resume when the live engine is already gone — closing
+  the window where a freshly rotated lease was owned by nobody and the run
+  stalled a full TTL.
+- Per-workflow `snapshot_threshold:` now actually triggers automatic snapshots
+  through `Snapshotter.maybe_snapshot` (the instance/app-level gate no longer
+  short-circuits the per-workflow resolution before it is read). A workflow
+  that opts in per the documented resolution order now snapshots even when the
+  app-level threshold is `:infinity`.
+- An undecodable (future-format) snapshot falls back to full event replay
+  instead of crash-looping the engine. `latest_snapshot` filters on
+  `format_version`, so a mixed-version rolling deploy where a newer node wrote
+  a newer snapshot format degrades gracefully on older nodes.
+- The in-memory adapter rejects signals to terminal runs with
+  `{:error, :run_terminal}`, matching Postgres (previously it buffered the
+  payload and reported `:ok`).
+- The determinism scanner runs the helper-call and dynamic-receiver checks on
+  `use Continuum.Pure` modules too, so a Pure helper can no longer launder an
+  untrusted or dynamic call into the trusted set. `Function.capture/3` and
+  `:erlang.apply` join the denylist, and anonymous-function invocations whose
+  callee is a runtime value (`input.handler.()`, `Function.capture(...).()`)
+  now warn — the closure-invocation forms that previously slipped past the
+  `m.f(...)` dynamic-receiver check (inline `fn`, captures, and bare local
+  closures stay quiet).
+
 ## v0.6.0 — 2026-06-11 — "Audit hardening"
 
 A full-library logic audit (activity liveness, replay-path agreement, the
