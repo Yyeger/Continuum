@@ -18,6 +18,9 @@ Inside a workflow, `patched?/1` is journaled. The first live execution at that
 source location writes a `patched` event with `value: true`; later replays use
 the journaled value. Histories recorded before the patch line existed return
 `false` without consuming the next old event, so they stay on the old branch.
+The first decision for a patch name is also memoized per run: every use of the
+same name returns that decision, including calls in loops or at sites that cross
+from replayed history into the live tail.
 
 Outside a workflow process, `patched?/1` returns `false`.
 
@@ -43,6 +46,15 @@ histories have completed or been cancelled.
 Content-addressed workflow versioning protects runs from being dispatched into
 the wrong entrypoint, but it does not remove the need to keep code for old patch
 branches while old histories reference them.
+
+### Compatibility note
+
+Older Continuum releases decided patches per call site. A run could therefore
+record a later `true` marker after first taking a pre-patch `false` branch.
+Those histories remain decodable, but after upgrading the first decision wins
+for every later use of the same patch name. Audit active histories for repeated
+patch names before deployment if code previously called one patch on both sides
+of a suspension point.
 
 ## Telemetry
 

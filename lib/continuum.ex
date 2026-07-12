@@ -337,11 +337,11 @@ defmodule Continuum do
         end
       end
 
-  Inside a workflow the first call to `patched?(name)` at a given source line
-  journals a `patched` event with `value: true` and returns `true`; the value
-  is then replayed on resume so the run never changes branch mid-flight. A run
-  that is replaying history recorded *before* the patch line existed returns
-  `false` without consuming any event, keeping in-flight runs on the old path.
+  Inside a workflow the first decision for `patched?(name)` is memoized for
+  the run. A live decision journals a `patched` event with `value: true`;
+  histories recorded *before* the patch line existed decide `false` without
+  consuming an event. Every later call with the same name returns that first
+  decision, including calls at another source line or after a suspension.
 
   Outside a workflow process (test setup, ordinary code) it returns `false`.
 

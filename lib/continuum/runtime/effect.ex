@@ -332,7 +332,9 @@ defmodule Continuum.Runtime.Effect do
   # is conditioned on `command_id` lookahead, not just type lookahead, so two
   # `patched?/1` calls at distinct command_ids each independently take this
   # branch on the same old history without consuming a downstream event of
-  # another shape. A fresh (live-tail) call journals `value: true` and advances.
+  # another shape. The first decision for each patch name is memoized for the
+  # whole run attempt; a later live-tail call journals that decision and
+  # advances, so one run cannot mix pre- and post-patch branches.
   defp advance({:patched, patch_name} = effect, _live_compute, command_base_fun) do
     ctx = fetch_context!(effect)
     {ctx, command_id} = assign_command_id(ctx, command_base_fun.(ctx))
@@ -1286,10 +1288,12 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp journal_patched!(ctx, patch_name, command_id) do
+    {ctx, value} = remember_patch_decision(ctx, patch_name, true)
+
     event = %{
       type: :patched,
       patch_name: patch_name,
-      value: true,
+      value: value,
       command_id: command_id,
       seq: ctx.cursor
     }
@@ -1302,15 +1306,19 @@ defmodule Continuum.Runtime.Effect do
       |> Map.put(:cursor, ctx.cursor + 1)
     )
 
-    emit_patched(ctx, patch_name, true)
-    true
+    emit_patched(ctx, patch_name, value)
+    value
   end
 
   defp replay_patched_event!(ctx, %{type: :patched} = event, patch_name, command_id) do
     cond do
       command_matches?(event, command_id) and Map.get(event, :patch_name) == patch_name ->
-        value = Map.get(event, :value)
-        Context.put(%{ctx | cursor: ctx.cursor + 1})
+        {ctx, value} =
+          ctx
+          |> Map.put(:cursor, ctx.cursor + 1)
+          |> remember_patch_decision(patch_name, Map.get(event, :value))
+
+        Context.put(ctx)
         emit_patched(ctx, patch_name, value)
         value
 
@@ -1332,8 +1340,12 @@ defmodule Continuum.Runtime.Effect do
   defp replay_patched_step(ctx, %{effect_type: :patched} = step, patch_name, command_id) do
     cond do
       command_matches?(step, command_id) and Map.get(step, :shape) == patch_name ->
-        Context.put(%{ctx | cursor: ctx.cursor + Map.fetch!(step, :advance_by)})
-        value = Map.get(step, :result)
+        {ctx, value} =
+          ctx
+          |> Map.put(:cursor, ctx.cursor + Map.fetch!(step, :advance_by))
+          |> remember_patch_decision(patch_name, Map.get(step, :result))
+
+        Context.put(ctx)
         emit_patched(ctx, patch_name, value)
         value
 
@@ -1357,8 +1369,21 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp patched_miss(ctx, patch_name) do
-    emit_patched(ctx, patch_name, false)
-    false
+    {ctx, value} = remember_patch_decision(ctx, patch_name, false)
+    Context.put(ctx)
+    emit_patched(ctx, patch_name, value)
+    value
+  end
+
+  defp remember_patch_decision(ctx, patch_name, observed_value) do
+    case Map.fetch(ctx.patch_decisions, patch_name) do
+      {:ok, value} ->
+        {ctx, value}
+
+      :error ->
+        {%{ctx | patch_decisions: Map.put(ctx.patch_decisions, patch_name, observed_value)},
+         observed_value}
+    end
   end
 
   defp emit_patched(ctx, patch_name, value) do

@@ -189,6 +189,104 @@ defmodule Continuum.PatchedTest do
              InMemory.load(Instance.default(), "patched-live")
   end
 
+  test "a pre-patch miss pins later live-tail calls to false" do
+    events = [
+      %{
+        type: :side_effect,
+        kind: :user,
+        payload: :old,
+        command_id: {:side_effect, :user, {:old_site}, "hash", 0},
+        seq: 0
+      }
+    ]
+
+    Context.put(forge_ctx("patched-memoized-miss", events))
+
+    try do
+      first_patch = {:patched, __MODULE__, {:run, 1}, 10, "first-patch"}
+      assert false == Effect.run({:patched, :feature}, {:command, first_patch})
+
+      assert :old ==
+               Effect.run(
+                 {:side_effect, :user},
+                 {:command, {:side_effect, :user, {:old_site}, "hash"}, fn -> :new end}
+               )
+
+      later_patch = {:patched, __MODULE__, {:run, 1}, 20, "later-patch"}
+      assert false == Effect.run({:patched, :feature}, {:command, later_patch})
+      assert Context.get().patch_decisions == %{feature: false}
+    after
+      Context.clear()
+    end
+
+    assert [%{type: :patched, patch_name: :feature, value: false}] =
+             InMemory.load(Instance.default(), "patched-memoized-miss")
+  end
+
+  test "the first patch decision wins while later recorded markers are consumed" do
+    later_base = {:patched, __MODULE__, {:run, 1}, 20, "later-patch"}
+
+    events = [
+      %{
+        type: :patched,
+        patch_name: :feature,
+        value: true,
+        command_id: {:patched, __MODULE__, {:run, 1}, 20, "later-patch", 0},
+        seq: 0
+      }
+    ]
+
+    Context.put(forge_ctx("patched-mixed-history", events))
+
+    try do
+      first_patch = {:patched, __MODULE__, {:run, 1}, 10, "first-patch"}
+      assert false == Effect.run({:patched, :feature}, {:command, first_patch})
+      assert false == Effect.run({:patched, :feature}, {:command, later_base})
+      assert Context.get().cursor == 1
+      assert Context.get().patch_decisions == %{feature: false}
+    after
+      Context.clear()
+    end
+  end
+
+  test "a snapshotted patch decision pins a later live-tail call" do
+    first_command = {:patched, __MODULE__, {:run, 1}, 10, "first-patch", 0}
+
+    ctx =
+      forge_ctx("patched-snapshot-memo", [])
+      |> Map.put(:history_offset, 1)
+      |> Map.put(:snapshot_steps, %{
+        0 => %{
+          effect_type: :patched,
+          command_id: first_command,
+          shape: :feature,
+          result: false,
+          advance_by: 1
+        }
+      })
+
+    Context.put(ctx)
+
+    try do
+      assert false ==
+               Effect.run(
+                 {:patched, :feature},
+                 {:command, {:patched, __MODULE__, {:run, 1}, 10, "first-patch"}}
+               )
+
+      assert false ==
+               Effect.run(
+                 {:patched, :feature},
+                 {:command, {:patched, __MODULE__, {:run, 1}, 20, "later-patch"}}
+               )
+    after
+      Context.clear()
+    end
+
+    assert [%{type: :patched, patch_name: :feature, value: false}] =
+             InMemory.load(Instance.default(), "patched-snapshot-memo")
+  end
+
   test "tampering with a journaled patched event surfaces as replay drift" do
     {:ok, run_id} = Continuum.Test.start_synchronous(PatchedTailFlow, %{})
 
