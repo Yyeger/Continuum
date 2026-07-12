@@ -311,6 +311,10 @@ defmodule Continuum.PatchedTest do
   end
 
   defp forge_ctx(run_id, history) do
+    if is_nil(InMemory.get_run(Instance.default(), run_id)) do
+      :ok = InMemory.start_run(Instance.default(), run_id, __MODULE__, %{})
+    end
+
     %Context{
       run_id: run_id,
       history: history,
