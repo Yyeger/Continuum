@@ -104,6 +104,8 @@ defmodule Continuum.ReplayTest do
       # Journal through the v1 producer (no preceding fns in the module).
       compile_probe.("")
       run_id = "fingerprint-stability-#{System.unique_integer([:positive])}"
+      instance = Continuum.Runtime.Instance.default()
+      :ok = InMemory.start_run(instance, run_id, TwoStepFlow, %{})
 
       ctx = %Continuum.Runtime.Context{
         run_id: run_id,
@@ -111,7 +113,7 @@ defmodule Continuum.ReplayTest do
         cursor: 0,
         workflow_module: TwoStepFlow,
         lease_token: nil,
-        instance: Continuum.Runtime.Instance.default(),
+        instance: instance,
         journal: InMemory
       }
 
@@ -124,7 +126,7 @@ defmodule Continuum.ReplayTest do
         Continuum.Runtime.Context.clear()
       end
 
-      history = InMemory.load(Continuum.Runtime.Instance.default(), run_id)
+      history = InMemory.load(instance, run_id)
       assert [%{type: :side_effect, payload: 42}] = history
 
       # An unrelated fn added *before* the producer shifts the anonymous fn's
