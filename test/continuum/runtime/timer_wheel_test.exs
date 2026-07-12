@@ -137,6 +137,45 @@ defmodule Continuum.Runtime.TimerWheelTest do
     assert Repo.one!(Timer).fired == false
   end
 
+  test "cached due timers back off when their run cannot be claimed" do
+    pid = ensure_timer_wheel!()
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(Timer, :count) == 1 end)
+    timer = Repo.one!(Timer)
+
+    [{engine_pid, _}] = Registry.lookup(Continuum.Runtime.Registry, run_id)
+    ref = Process.monitor(engine_pid)
+    Process.exit(engine_pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^engine_pid, :killed}
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^run_id),
+      set: [lease_owner: nil, lease_token: nil, lease_expires_at: nil]
+    )
+
+    force_due(timer.id)
+    send(pid, :refresh)
+
+    assert_eventually(fn ->
+      state = :sys.get_state(pid)
+
+      case :ets.lookup(state.table, timer.id) do
+        [{_timer_id, _run_id, retry_at_ms}] ->
+          retry_at_ms > System.system_time(:millisecond) + 20_000
+
+        [] ->
+          false
+      end
+    end)
+
+    state = :sys.get_state(pid)
+    assert Process.read_timer(state.tick_ref) > 20_000
+    assert Repo.one!(from(t in Timer, where: t.id == ^timer.id)).fired == false
+  end
+
   defp force_due(timer_id) do
     due_at =
       DateTime.utc_now()

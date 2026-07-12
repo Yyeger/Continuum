@@ -200,7 +200,8 @@ defmodule Continuum.Runtime.TimerWheel do
           fire_timer(state.instance, timer)
         end)
 
-        purge_resolved_cached_timers(state, due_ids)
+        pending_ids = purge_resolved_cached_timers(state, due_ids)
+        backoff_unclaimable_cached_timers(state, due_ids, timers, pending_ids)
 
       {:error, reason} ->
         Logger.error("TimerWheel tick failed: #{inspect(reason)}")
@@ -299,7 +300,7 @@ defmodule Continuum.Runtime.TimerWheel do
     |> Enum.sort_by(fn {_timer_id, _run_id, fires_at_ms} -> fires_at_ms end)
   end
 
-  defp purge_resolved_cached_timers(_state, []), do: :ok
+  defp purge_resolved_cached_timers(_state, []), do: MapSet.new()
 
   defp purge_resolved_cached_timers(state, timer_ids) do
     pending =
@@ -314,6 +315,27 @@ defmodule Continuum.Runtime.TimerWheel do
     timer_ids
     |> Enum.reject(&MapSet.member?(pending, &1))
     |> Enum.each(&:ets.delete(state.table, &1))
+
+    pending
+  end
+
+  defp backoff_unclaimable_cached_timers(state, due_ids, timers, pending_ids) do
+    # A full batch may simply mean more claimable timers are waiting, so keep
+    # the short retry until the batch drains. Once there is spare capacity,
+    # every still-pending due id that was not returned is currently
+    # unclaimable (typically its run has no live lease). Delay those entries
+    # until the next refresh instead of querying them ten times per second.
+    if length(timers) < state.batch_size do
+      claimed_ids = timers |> Enum.map(& &1.id) |> MapSet.new()
+      retry_at_ms = System.system_time(:millisecond) + state.refresh_ms
+
+      due_ids
+      |> Enum.reject(&MapSet.member?(claimed_ids, &1))
+      |> Enum.filter(&MapSet.member?(pending_ids, &1))
+      |> Enum.each(&:ets.update_element(state.table, &1, {3, retry_at_ms}))
+    end
+
+    :ok
   end
 
   defp schedule_next_tick(state) do
