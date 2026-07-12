@@ -45,10 +45,10 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   @doc """
-  Scan `continuum_signals` for undelivered rows whose runs have a local engine
-  and wake them. The LISTEN path is best-effort (notifications can be dropped,
-  the listener can be down); this is the poll backstop the router runs
-  periodically while listening, exposed for tests and operators.
+  Scan for durable signal or wake evidence whose runs have a local engine and
+  wake them. The LISTEN path is best-effort (notifications can be dropped, the
+  listener can be down); this is the poll backstop the router runs periodically
+  while listening, exposed for tests and operators.
   """
   @spec catch_up_once(keyword()) :: :ok
   def catch_up_once(opts \\ []) do
@@ -186,11 +186,21 @@ defmodule Continuum.Runtime.SignalRouter do
 
   defp catch_up(instance) do
     sql = """
-    SELECT DISTINCT s.run_id::text
-    FROM continuum_signals AS s
-    JOIN continuum_runs AS r ON r.id = s.run_id
-    WHERE s.delivered = false
-      AND r.state IN ('running', 'suspended')
+    SELECT run_id
+    FROM (
+      SELECT s.run_id::text AS run_id
+      FROM continuum_signals AS s
+      JOIN continuum_runs AS r ON r.id = s.run_id
+      WHERE s.delivered = false
+        AND r.state IN ('running', 'suspended')
+
+      UNION
+
+      SELECT r.id::text AS run_id
+      FROM continuum_runs AS r
+      WHERE r.next_wakeup_at <= clock_timestamp()
+        AND r.state IN ('running', 'suspended')
+    ) AS wake_candidates
     """
 
     case instance.repo.query(sql, []) do

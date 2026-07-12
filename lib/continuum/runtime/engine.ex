@@ -14,6 +14,7 @@ defmodule Continuum.Runtime.Engine do
   require Logger
 
   alias Continuum.{Runtime.Context, Runtime.Instance, Runtime.Lease, Telemetry}
+  alias Continuum.Runtime.Journal.Postgres
 
   defstruct [
     :run_id,
@@ -470,6 +471,7 @@ defmodule Continuum.Runtime.Engine do
 
   @impl true
   def handle_cast(:wake, state) do
+    clear_durable_wake(state)
     {:noreply, state, {:continue, :run}}
   end
 
@@ -570,6 +572,12 @@ defmodule Continuum.Runtime.Engine do
         {:stop, :normal, state}
     end
   end
+
+  defp clear_durable_wake(%{journal: Postgres} = state) do
+    Postgres.clear_next_wakeup!(state.instance, state.run_id, state.lease_token)
+  end
+
+  defp clear_durable_wake(_state), do: :ok
 
   @impl true
   def terminate(_reason, state) do

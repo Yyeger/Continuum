@@ -113,6 +113,34 @@ defmodule Continuum.Runtime.SignalRouterTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
   end
 
+  test "catch_up_once wakes a local engine with durable wake evidence" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+    end)
+
+    [{engine_pid, _}] = Registry.lookup(Continuum.Runtime.Registry, run_id)
+    :erlang.trace(engine_pid, true, [:receive])
+
+    on_exit(fn ->
+      if Process.alive?(engine_pid), do: :erlang.trace(engine_pid, false, [:receive])
+    end)
+
+    past = DateTime.utc_now() |> DateTime.add(-1, :second) |> DateTime.truncate(:microsecond)
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^run_id),
+      set: [next_wakeup_at: past]
+    )
+
+    assert :ok = Continuum.Runtime.SignalRouter.catch_up_once()
+    assert_receive {:trace, ^engine_pid, :receive, {:"$gen_cast", :wake}}
+    assert %{run_id: ^run_id} = :sys.get_state(engine_pid)
+    assert Repo.one!(from(r in Run, where: r.id == ^run_id)).next_wakeup_at == nil
+  end
+
   test "already-pending signal journals signal_received without signal_awaited" do
     run_id = Ecto.UUID.generate()
     :ok = Postgres.start_run(Instance.default(), run_id, DurableSignalFlow, %{})
