@@ -60,13 +60,23 @@ defmodule Continuum.Runtime.ActivityWorker do
   defp renew_task_lease(task) do
     sql = """
     UPDATE continuum_activity_tasks
-    SET lease_expires_at = clock_timestamp() + make_interval(secs => $3)
+    SET lease_expires_at = clock_timestamp() + make_interval(secs => $5)
     WHERE id = $1::text::uuid
+      AND run_id = $2::text::uuid
       AND state = 'leased'
-      AND lease_owner = $2
+      AND lease_owner = $3
+      AND attempt = $4
     """
 
-    case task.instance.repo.query(sql, [task.id, task.lease_owner, task_lease_ttl_seconds()]) do
+    params = [
+      task.id,
+      task.run_id,
+      task.lease_owner,
+      task.attempt,
+      task_lease_ttl_seconds()
+    ]
+
+    case task.instance.repo.query(sql, params) do
       {:ok, %{num_rows: 1}} ->
         :ok
 
@@ -196,16 +206,24 @@ defmodule Continuum.Runtime.ActivityWorker do
   defp update_own_task(task, state, extra_set_sql) do
     sql = """
     UPDATE continuum_activity_tasks
-    SET state = $3,
+    SET state = $5,
         #{extra_set_sql}
         lease_owner = NULL,
         lease_expires_at = NULL
     WHERE id = $1::text::uuid
+      AND run_id = $2::text::uuid
       AND state = 'leased'
-      AND lease_owner = $2
+      AND lease_owner = $3
+      AND attempt = $4
     """
 
-    case task.instance.repo.query(sql, [task.id, task.lease_owner, state]) do
+    case task.instance.repo.query(sql, [
+           task.id,
+           task.run_id,
+           task.lease_owner,
+           task.attempt,
+           state
+         ]) do
       {:ok, _} -> :ok
       {:error, reason} -> raise "Continuum fenced task release failed: #{inspect(reason)}"
     end

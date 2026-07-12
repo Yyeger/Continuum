@@ -145,6 +145,26 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule LeaseRaceActivity do
+    use Continuum.Activity, retry: [max_attempts: 2]
+
+    def run(test_pid) do
+      send(test_pid, {:lease_race_activity_started, self()})
+
+      receive do
+        :finish_lease_race_activity -> {:ok, :finished}
+      end
+    end
+  end
+
+  defmodule LeaseRaceFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      activity(LeaseRaceActivity.run(input.test_pid))
+    end
+  end
+
   defmodule ScriptedLeaseRepo do
     def start_link(responses) do
       Agent.start_link(fn -> %{calls: 0, responses: responses} end, name: __MODULE__)
@@ -870,6 +890,8 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
     task = %{
       id: Ecto.UUID.generate(),
+      run_id: Ecto.UUID.generate(),
+      attempt: 1,
       lease_owner: "heartbeat-retry",
       instance: %{repo: ScriptedLeaseRepo}
     }
@@ -892,6 +914,8 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
 
     task = %{
       id: Ecto.UUID.generate(),
+      run_id: Ecto.UUID.generate(),
+      attempt: 1,
       lease_owner: "heartbeat-lost",
       instance: %{repo: ScriptedLeaseRepo}
     }
@@ -899,6 +923,46 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     pid = Continuum.Runtime.ActivityWorker.start_task_lease_heartbeat(task)
     assert_eventually(fn -> not Process.alive?(pid) end, 100)
     assert ScriptedLeaseRepo.calls() == 1
+  end
+
+  test "a stale worker cannot release a newer attempt owned by the same dispatcher" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(
+        LeaseRaceFlow,
+        %{test_pid: self()},
+        journal: Postgres
+      )
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "stable-dispatcher-owner",
+               30
+             )
+
+    worker = Task.async(fn -> Continuum.Runtime.ActivityWorker.execute(claimed) end)
+    assert_receive {:lease_race_activity_started, activity_pid}
+
+    Repo.update_all(
+      from(t in ActivityTask, where: t.id == ^task.id),
+      set: [attempt: task.attempt + 1]
+    )
+
+    Repo.update_all(from(r in Run, where: r.id == ^run_id), inc: [lease_token: 1])
+    send(activity_pid, :finish_lease_race_activity)
+
+    capture_log(fn -> assert :ok = Task.await(worker) end)
+
+    newer_claim = Repo.one!(ActivityTask)
+    assert newer_claim.state == "leased"
+    assert newer_claim.lease_owner == "stable-dispatcher-owner"
+    assert newer_claim.attempt == task.attempt + 1
+    assert event_types(run_id) == ["activity_scheduled"]
   end
 
   defp assert_eventually(fun, attempts \\ 20)
