@@ -1344,6 +1344,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  @impl true
   def deliver_signal!(%Instance{} = instance, run_id, name, payload) do
     with_repo(instance, fn -> deliver_signal_with_repo!(run_id, name, payload) end)
   end

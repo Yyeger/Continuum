@@ -43,6 +43,16 @@ defmodule Continuum.Runtime.SignalRouterTest do
     end
   end
 
+  defmodule CustomSignalJournal do
+    def deliver_signal!(_instance, run_id, name, %{test_pid: test_pid} = payload) do
+      send(test_pid, {:custom_signal_delivered, run_id, name, payload})
+      :ok
+    end
+  end
+
+  defmodule UnsupportedSignalJournal do
+  end
+
   test "delivers signals through the durable Postgres mailbox" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)
@@ -87,6 +97,28 @@ defmodule Continuum.Runtime.SignalRouterTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
 
     assert {:error, :run_terminal} = Continuum.signal(run_id, :decision, :go)
+  end
+
+  test "custom journals receive signals through their adapter callback" do
+    run_id = Ecto.UUID.generate()
+    payload = %{test_pid: self(), decision: :go}
+
+    assert :ok =
+             Continuum.Runtime.SignalRouter.deliver(run_id, :decision, payload,
+               journal: CustomSignalJournal
+             )
+
+    assert_receive {:custom_signal_delivered, ^run_id, :decision, ^payload}
+  end
+
+  test "custom journals without signal delivery report unsupported" do
+    assert {:error, :unsupported} =
+             Continuum.Runtime.SignalRouter.deliver(
+               Ecto.UUID.generate(),
+               :decision,
+               :go,
+               journal: UnsupportedSignalJournal
+             )
   end
 
   test "catch_up_once wakes a local engine with an undelivered mailbox row" do

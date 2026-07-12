@@ -62,11 +62,20 @@ defmodule Continuum.Runtime.Journal do
               lease_token :: integer() | nil
             ) :: :ok
 
+  @callback deliver_signal!(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              name :: atom(),
+              payload :: term()
+            ) :: :ok | {:ok, binary()} | {:error, term()}
+
   @doc """
   Look up the run record. Returns `nil` if no such run, or a map with at
   least `:state`, `:result`, `:error` keys (atoms / terms — already decoded).
   """
   @callback get_run(instance :: Continuum.Runtime.Instance.t(), run_id :: binary()) :: nil | map()
+
+  @optional_callbacks deliver_signal!: 4
 
   @doc "Returns the configured default journal adapter."
   def default do

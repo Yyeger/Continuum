@@ -1,7 +1,6 @@
 defmodule Continuum.Runtime.JournalError do
   @moduledoc """
-  Raised by the Postgres journal adapter when a transactional write is
-  rejected or fails.
+  Raised by a journal adapter when a write is rejected or fails.
 
   `reason` carries the structured rollback reason (for example
   `{:lease_mismatch, ...}` or `{:run_not_active, "completed"}`), so the
@@ -13,7 +12,7 @@ defmodule Continuum.Runtime.JournalError do
 
   @impl true
   def message(%{op: op, reason: reason}) do
-    "Continuum.Runtime.Journal.Postgres #{op} failed: #{inspect(reason)}"
+    "Continuum journal #{op} failed: #{inspect(reason)}"
   end
 
   @doc """

@@ -14,7 +14,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
   # Public API
   # ---------------------------------------------------------------------------
 
-  alias Continuum.Runtime.Instance
+  alias Continuum.Runtime.{Instance, JournalError}
 
   def start_link(_opts \\ []) do
     GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -27,7 +27,9 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def append!(%Instance{} = instance, run_id, event, _lease_token) do
-    GenServer.call(__MODULE__, {:append, instance, run_id, event})
+    __MODULE__
+    |> GenServer.call({:append, instance, run_id, event})
+    |> unwrap_write!(:append!)
   end
 
   @impl true
@@ -42,22 +44,30 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def take_snapshot!(%Instance{} = instance, %Continuum.Snapshot{} = snapshot) do
-    GenServer.call(__MODULE__, {:take_snapshot, instance.name, snapshot})
+    __MODULE__
+    |> GenServer.call({:take_snapshot, instance.name, snapshot})
+    |> unwrap_write!(:take_snapshot!)
   end
 
   @impl true
   def suspend!(%Instance{} = instance, run_id, _lease_token) do
-    GenServer.call(__MODULE__, {:suspend, instance, run_id})
+    __MODULE__
+    |> GenServer.call({:suspend, instance, run_id})
+    |> unwrap_write!(:suspend!)
   end
 
   @impl true
   def complete!(%Instance{} = instance, run_id, result, _lease_token) do
-    GenServer.call(__MODULE__, {:complete, instance, run_id, result})
+    __MODULE__
+    |> GenServer.call({:complete, instance, run_id, result})
+    |> unwrap_write!(:complete!)
   end
 
   @impl true
   def fail!(%Instance{} = instance, run_id, error, _lease_token) do
-    GenServer.call(__MODULE__, {:fail, instance, run_id, error})
+    __MODULE__
+    |> GenServer.call({:fail, instance, run_id, error})
+    |> unwrap_write!(:fail!)
   end
 
   @doc """
@@ -69,6 +79,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
   corrupting the journal tail. Returns `{:error, :not_found}` when the run
   does not exist.
   """
+  @impl true
   def deliver_signal!(%Instance{} = instance, run_id, name, payload) do
     GenServer.call(__MODULE__, {:deliver_signal, instance.name, run_id, name, payload})
   end
@@ -122,14 +133,14 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   def handle_call({:append, instance, run_id, event}, _from, state) do
-    state =
-      update_run(state, instance.name, run_id, fn run ->
+    result =
+      update_active_run(state, instance.name, run_id, fn run ->
         Map.update!(run, :events, fn events ->
           events ++ [normalize_event_seq(event, events)]
         end)
       end)
 
-    {:reply, :ok, state}
+    reply_update(result, state)
   end
 
   def handle_call({:load, instance_name, run_id}, _from, state) do
@@ -158,23 +169,30 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   def handle_call({:suspend, instance, run_id}, _from, state) do
-    state =
-      update_run(state, instance.name, run_id, fn run ->
+    result =
+      update_active_run(state, instance.name, run_id, fn run ->
         %{run | state: :suspended}
       end)
 
-    {:reply, :ok, state}
+    reply_update(result, state)
   end
 
   def handle_call({:complete, instance, run_id, result}, _from, state) do
-    state =
-      update_run(state, instance.name, run_id, fn run ->
+    update =
+      update_active_run(state, instance.name, run_id, fn run ->
         %{run | state: :completed, result: result}
       end)
 
-    :ok = Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
+    case update do
+      {:ok, state} ->
+        :ok =
+          Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
 
-    {:reply, :ok, state}
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:fail, instance, run_id, error}, _from, state) do
@@ -184,13 +202,19 @@ defmodule Continuum.Runtime.Journal.InMemory do
     # :cancelled is indistinguishable here — acceptable for the test journal.)
     terminal_state = if error == :cancelled, do: :cancelled, else: :failed
 
-    state =
-      update_run(state, instance.name, run_id, fn run ->
+    update =
+      update_active_run(state, instance.name, run_id, fn run ->
         %{run | state: terminal_state, error: error}
       end)
 
-    broadcast_failed(instance, run_id, error)
-    {:reply, :ok, state}
+    case update do
+      {:ok, state} ->
+        broadcast_failed(instance, run_id, error)
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call({:deliver_signal, instance_name, run_id, name, payload}, _from, state) do
@@ -240,8 +264,8 @@ defmodule Continuum.Runtime.Journal.InMemory do
   def handle_call(:reset, _from, _state), do: {:reply, :ok, %{}}
 
   def handle_call({:take_snapshot, instance_name, snapshot}, _from, state) do
-    state =
-      update_run(state, instance_name, snapshot.run_id, fn run ->
+    result =
+      update_existing_run(state, instance_name, snapshot.run_id, fn run ->
         snapshots =
           run
           |> Map.get(:snapshots, [])
@@ -252,26 +276,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
         Map.put(run, :snapshots, snapshots)
       end)
 
-    {:reply, :ok, state}
+    reply_update(result, state)
   end
 
   def handle_call({:get_run, instance_name, run_id}, _from, state),
     do: {:reply, get_run_state(state, instance_name, run_id), state}
-
-  defp init_run(run_id) do
-    %{
-      run_id: run_id,
-      workflow: nil,
-      version_hash: nil,
-      input: nil,
-      events: [],
-      snapshots: [],
-      signal_buffer: %{},
-      state: :running,
-      result: nil,
-      error: nil
-    }
-  end
 
   defp put_buffer(buffer, name, []), do: Map.delete(buffer, name)
   defp put_buffer(buffer, name, rest), do: Map.put(buffer, name, rest)
@@ -287,12 +296,37 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   defp update_run(state, instance_name, run_id, fun) do
-    # Map.update/4 inserts its default verbatim — fun must be applied to the
-    # fresh run on both branches or the first write to an unknown run (e.g.
-    # an append) is silently dropped.
-    Map.update(state, instance_name, %{run_id => fun.(init_run(run_id))}, fn runs ->
-      Map.update(runs, run_id, fun.(init_run(run_id)), fun)
-    end)
+    run = get_run_state(state, instance_name, run_id)
+    put_run(state, instance_name, run_id, fun.(run))
+  end
+
+  defp update_active_run(state, instance_name, run_id, fun) do
+    case get_run_state(state, instance_name, run_id) do
+      nil ->
+        {:error, {:run_not_found, run_id}}
+
+      %{state: run_state} = run when run_state in [:running, :suspended] ->
+        {:ok, put_run(state, instance_name, run_id, fun.(run))}
+
+      %{state: run_state} ->
+        {:error, {:run_not_active, run_state}}
+    end
+  end
+
+  defp update_existing_run(state, instance_name, run_id, fun) do
+    case get_run_state(state, instance_name, run_id) do
+      nil -> {:error, {:run_not_found, run_id}}
+      run -> {:ok, put_run(state, instance_name, run_id, fun.(run))}
+    end
+  end
+
+  defp reply_update({:ok, updated_state}, _state), do: {:reply, :ok, updated_state}
+  defp reply_update({:error, reason}, state), do: {:reply, {:error, reason}, state}
+
+  defp unwrap_write!(:ok, _op), do: :ok
+
+  defp unwrap_write!({:error, reason}, op) do
+    raise JournalError, op: op, reason: reason
   end
 
   defp broadcast_failed(_instance, _run_id, {_kind, _reason, stacktrace})

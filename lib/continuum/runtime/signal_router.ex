@@ -40,7 +40,8 @@ defmodule Continuum.Runtime.SignalRouter do
 
     case journal do
       Journal.Postgres -> deliver_durable(instance, run_id, name, payload)
-      _journal -> deliver_local(instance, run_id, name, payload)
+      Journal.InMemory -> deliver_local(instance, run_id, name, payload)
+      custom_journal -> deliver_custom(custom_journal, instance, run_id, name, payload)
     end
   end
 
@@ -134,6 +135,26 @@ defmodule Continuum.Runtime.SignalRouter do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp deliver_custom(journal, instance, run_id, name, payload) do
+    if Code.ensure_loaded?(journal) and function_exported?(journal, :deliver_signal!, 4) do
+      case apply(journal, :deliver_signal!, [instance, run_id, name, payload]) do
+        :ok ->
+          route(instance, run_id)
+
+        {:ok, delivered_run_id} ->
+          route(instance, delivered_run_id)
+
+        {:error, _reason} = error ->
+          error
+
+        other ->
+          {:error, {:invalid_signal_delivery_result, other}}
+      end
+    else
+      {:error, :unsupported}
     end
   end
 
