@@ -14,45 +14,24 @@ defmodule Continuum.Application do
       )
       |> Continuum.Runtime.Instance.register()
 
-    children =
-      [
-        pg_child(),
-        {Phoenix.PubSub, name: instance.pubsub},
-        {Registry, keys: :unique, name: instance.registry},
-        child(Continuum.VersionRegistry, instance),
-        Continuum.Runtime.Journal.InMemory,
-        child(Continuum.Runtime.RunSupervisor, instance)
-      ] ++ postgres_children(instance)
-
     opts = [strategy: :one_for_one, name: Continuum.Supervisor]
-    Supervisor.start_link(children, opts)
+    Supervisor.start_link(child_specs(instance), opts)
   end
 
-  defp postgres_children(%{repo: nil}), do: []
-
-  defp postgres_children(instance) do
+  @doc false
+  def child_specs(instance) do
     [
-      child(Continuum.Runtime.Lease.Heartbeater, instance),
-      activity_supervisor_child(instance),
-      child(Continuum.Runtime.Recovery, instance),
-      child(Continuum.Runtime.Snapshotter, instance),
-      child(Continuum.Runtime.Dispatcher, instance),
-      child(Continuum.Runtime.ActivityWorker.Dispatcher, instance),
-      child(Continuum.Runtime.TimerWheel, instance),
-      child(Continuum.Runtime.SignalRouter, instance)
+      pg_child(),
+      {Phoenix.PubSub, name: instance.pubsub},
+      {Registry, keys: :unique, name: instance.registry},
+      Continuum.Runtime.Journal.InMemory,
+      child(Continuum.Runtime.RunSupervisor, instance)
     ]
-    |> Enum.reject(&is_nil/1)
   end
 
   defp child(module, instance) do
     Supervisor.child_spec({module, instance: instance}, id: {module, instance.name})
   end
-
-  defp activity_supervisor_child(%{activity_executor: :builtin} = instance) do
-    child(Continuum.Runtime.ActivityWorker.Supervisor, instance)
-  end
-
-  defp activity_supervisor_child(_instance), do: nil
 
   defp pg_child do
     %{

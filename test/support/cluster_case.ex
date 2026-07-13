@@ -214,6 +214,7 @@ defmodule Continuum.Test.ClusterNode do
 
     {:ok, _} = Application.ensure_all_started(:continuum)
     start_repo_child()
+    start_runtime_child()
 
     Continuum.VersionRegistry.ensure_registered(Continuum.Test.ClusterFlows.SideEffectFlow)
     Continuum.VersionRegistry.ensure_registered(Continuum.Test.ClusterFlows.SignalFlow)
@@ -230,6 +231,24 @@ defmodule Continuum.Test.ClusterNode do
         {:ok, _pid} -> :ok
         {:error, {:already_started, _pid}} -> :ok
       end
+    end
+  end
+
+  defp start_runtime_child do
+    child_spec = %{
+      id: Continuum.Test.ClusterRuntimeSupervisor,
+      start:
+        {Supervisor, :start_link,
+         [
+           Continuum.children(),
+           [strategy: :one_for_one, name: Continuum.Test.ClusterRuntimeSupervisor]
+         ]},
+      type: :supervisor
+    }
+
+    case Supervisor.start_child(Continuum.Supervisor, child_spec) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
     end
   end
 end

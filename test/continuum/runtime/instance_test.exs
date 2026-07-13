@@ -15,9 +15,60 @@ defmodule Continuum.Runtime.InstanceTest do
     :ok
   end
 
-  test "children/1 returns no specs for the application-owned default instance" do
+  test "children/1 returns no specs for an in-memory default instance" do
+    original_repo = Application.get_env(:continuum, :repo)
+    original_instance = Instance.default()
+    Application.delete_env(:continuum, :repo)
+
+    on_exit(fn ->
+      Application.put_env(:continuum, :repo, original_repo)
+      Instance.register(original_instance)
+    end)
+
     assert Continuum.children() == []
-    assert Continuum.children(name: Continuum, repo: Continuum.Test.Repo) == []
+  end
+
+  test "default Postgres children are host-owned and exclude application-owned processes" do
+    original_instance = Instance.default()
+    on_exit(fn -> Instance.register(original_instance) end)
+
+    children = Continuum.children(name: Continuum, repo: Continuum.Test.Repo)
+
+    assert Enum.any?(children, &match?(%{id: {Continuum.Runtime.TimerWheel, Continuum}}, &1))
+    assert Enum.any?(children, &match?(%{id: {Continuum.VersionRegistry, Continuum}}, &1))
+
+    refute Enum.any?(children, &match?(%{id: {Phoenix.PubSub, Continuum}}, &1))
+    refute Enum.any?(children, &match?(%{id: {Registry, Continuum}}, &1))
+
+    refute Enum.any?(
+             children,
+             &match?(%{id: {Continuum.Runtime.RunSupervisor, Continuum}}, &1)
+           )
+  end
+
+  test "application-owned default children never include Repo-dependent workers" do
+    instance = Instance.new(name: Continuum, repo: Continuum.Test.Repo)
+    children = Continuum.Application.child_specs(instance)
+
+    assert Continuum.Runtime.Journal.InMemory in children
+
+    repo_dependent = [
+      Continuum.VersionRegistry,
+      Continuum.Runtime.Lease.Heartbeater,
+      Continuum.Runtime.Recovery,
+      Continuum.Runtime.Snapshotter,
+      Continuum.Runtime.Dispatcher,
+      Continuum.Runtime.ActivityWorker.Dispatcher,
+      Continuum.Runtime.ActivityWorker.Supervisor,
+      Continuum.Runtime.TimerWheel,
+      Continuum.Runtime.SignalRouter
+    ]
+
+    refute Enum.any?(children, fn
+             %{id: {module, Continuum}} -> module in repo_dependent
+             module when is_atom(module) -> module in repo_dependent
+             _child -> false
+           end)
   end
 
   test "children/1 registers named instances with isolated process names" do

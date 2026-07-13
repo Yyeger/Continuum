@@ -31,7 +31,18 @@ defmodule Continuum do
   @type input :: term()
 
   @doc """
-  Returns runtime child specs for a named, non-default Continuum instance.
+  Returns runtime child specs for a Continuum instance.
+
+  For the default instance, add these children to the host application's
+  supervision tree after its Ecto repo:
+
+      children =
+        [
+          MyApp.Repo
+        ] ++ Continuum.children()
+
+  Named instances additionally own their isolated PubSub, registry, and run
+  supervisor:
 
       children =
         [
@@ -39,8 +50,9 @@ defmodule Continuum do
           Continuum.children(name: :billing_continuum, repo: MyApp.Repo)
         ]
 
-  The default `Continuum` instance is owned by `Continuum.Application` and
-  `Continuum.children()` returns `[]` to avoid duplicate process names.
+  `Continuum.Application` owns the default instance's Repo-independent base
+  processes. `Continuum.children()` returns only its Repo-dependent runtime
+  children, so it does not duplicate those process names.
 
   A named instance given a `:repo` uses the Postgres journal for every run
   started, signalled, cancelled, or awaited through it; pass `:journal` to
@@ -56,51 +68,73 @@ defmodule Continuum do
   def children(opts \\ []) do
     name = Keyword.get(opts, :name, Continuum)
 
-    if name == Continuum do
-      []
-    else
-      instance =
-        Continuum.Runtime.Instance.new(
-          name: name,
-          repo: opts[:repo],
-          journal: opts[:journal],
-          activity_executor: Keyword.get(opts, :activity_executor, :builtin),
-          workflow_modules: opts[:workflow_modules]
+    activity_executor =
+      if name == Continuum do
+        Keyword.get(
+          opts,
+          :activity_executor,
+          Application.get_env(:continuum, :activity_executor, :builtin)
         )
-        |> Continuum.Runtime.Instance.register()
+      else
+        Keyword.get(opts, :activity_executor, :builtin)
+      end
 
-      [
-        Supervisor.child_spec({Phoenix.PubSub, name: instance.pubsub},
-          id: {Phoenix.PubSub, instance.name}
-        ),
-        Supervisor.child_spec({Registry, keys: :unique, name: instance.registry},
-          id: {Registry, instance.name}
-        ),
-        child(
-          Continuum.Runtime.Lease.Heartbeater,
-          Keyword.get(opts, :heartbeater, []),
-          instance
-        ),
-        child(
-          Continuum.Runtime.RunSupervisor,
-          Keyword.get(opts, :run_supervisor, []),
-          instance
-        ),
-        activity_supervisor_child(opts, instance),
-        child(Continuum.Runtime.Recovery, Keyword.get(opts, :recovery, []), instance),
-        child(Continuum.Runtime.Dispatcher, Keyword.get(opts, :dispatcher, []), instance),
-        child(
-          Continuum.Runtime.ActivityWorker.Dispatcher,
-          Keyword.get(opts, :activity_dispatcher, []),
-          instance
-        ),
-        child(Continuum.Runtime.Snapshotter, Keyword.get(opts, :snapshotter, []), instance),
-        child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, []), instance),
-        child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance),
-        child(Continuum.VersionRegistry, Keyword.get(opts, :version_registry, []), instance)
-      ]
-      |> Enum.reject(&is_nil/1)
-    end
+    instance =
+      Continuum.Runtime.Instance.new(
+        name: name,
+        repo: opts[:repo],
+        journal: opts[:journal],
+        activity_executor: activity_executor,
+        workflow_modules: opts[:workflow_modules]
+      )
+      |> Continuum.Runtime.Instance.register()
+
+    base_children =
+      if name == Continuum do
+        []
+      else
+        [
+          Supervisor.child_spec({Phoenix.PubSub, name: instance.pubsub},
+            id: {Phoenix.PubSub, instance.name}
+          ),
+          Supervisor.child_spec({Registry, keys: :unique, name: instance.registry},
+            id: {Registry, instance.name}
+          ),
+          child(
+            Continuum.Runtime.RunSupervisor,
+            Keyword.get(opts, :run_supervisor, []),
+            instance
+          )
+        ]
+      end
+
+    runtime_children =
+      if name == Continuum and is_nil(instance.repo) do
+        []
+      else
+        [
+          child(
+            Continuum.Runtime.Lease.Heartbeater,
+            Keyword.get(opts, :heartbeater, []),
+            instance
+          ),
+          activity_supervisor_child(opts, instance),
+          child(Continuum.Runtime.Recovery, Keyword.get(opts, :recovery, []), instance),
+          child(Continuum.Runtime.Dispatcher, Keyword.get(opts, :dispatcher, []), instance),
+          child(
+            Continuum.Runtime.ActivityWorker.Dispatcher,
+            Keyword.get(opts, :activity_dispatcher, []),
+            instance
+          ),
+          child(Continuum.Runtime.Snapshotter, Keyword.get(opts, :snapshotter, []), instance),
+          child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, []), instance),
+          child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance),
+          child(Continuum.VersionRegistry, Keyword.get(opts, :version_registry, []), instance)
+        ]
+      end
+
+    (base_children ++ runtime_children)
+    |> Enum.reject(&is_nil/1)
   end
 
   @doc """

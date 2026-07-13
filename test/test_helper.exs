@@ -23,6 +23,17 @@ case Continuum.Test.Repo.start_link() do
   {:error, {:already_started, _pid}} -> :ok
 end
 
+# Continuum is a dependency of this test host, so its application starts before
+# the host Repo. Mirror the documented integration by supervising the default
+# Postgres runtime only after the Repo is alive.
+case Supervisor.start_link(Continuum.children(),
+       strategy: :one_for_one,
+       name: Continuum.Test.RuntimeSupervisor
+     ) do
+  {:ok, _pid} -> :ok
+  {:error, {:already_started, _pid}} -> :ok
+end
+
 case Continuum.Test.ObserverEndpoint.start_link() do
   {:ok, _pid} -> :ok
   {:error, {:already_started, _pid}} -> :ok
