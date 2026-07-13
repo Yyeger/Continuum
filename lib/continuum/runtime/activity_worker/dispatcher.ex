@@ -17,6 +17,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   @default_interval_ms 1_000
   @default_batch_size 10
   @default_ttl_seconds 30
+  @default_backpressure_jitter_ms 250
 
   @doc false
   def start_link(opts \\ []) do
@@ -74,7 +75,11 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
     sql = """
     WITH candidate AS (
-      SELECT t.id, r.lease_token
+      SELECT t.id, r.lease_token,
+             GREATEST(
+               0,
+               FLOOR(EXTRACT(EPOCH FROM (clock_timestamp() - t.scheduled_at)) * 1000)
+             )::bigint AS queue_age_ms
       FROM continuum_activity_tasks AS t
       JOIN continuum_runs AS r ON r.id = t.run_id
       WHERE t.id = $1::text::uuid
@@ -94,7 +99,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     FROM candidate
     WHERE t.id = candidate.id
     RETURNING t.id::text, t.run_id::text, t.seq, t.mfa, t.attempt, t.lease_owner,
-              candidate.lease_token
+              candidate.lease_token, candidate.queue_age_ms
     """
 
     case instance.repo.query(sql, [task_id, expected_attempt, owner, ttl_seconds]) do
@@ -123,7 +128,13 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
       batch_size:
         Keyword.get(opts, :batch_size, Keyword.get(config, :batch_size, @default_batch_size)),
       ttl_seconds:
-        Keyword.get(opts, :ttl_seconds, Keyword.get(config, :ttl_seconds, @default_ttl_seconds))
+        Keyword.get(opts, :ttl_seconds, Keyword.get(config, :ttl_seconds, @default_ttl_seconds)),
+      backpressure_jitter_ms:
+        Keyword.get(
+          opts,
+          :backpressure_jitter_ms,
+          Keyword.get(config, :backpressure_jitter_ms, @default_backpressure_jitter_ms)
+        )
     }
 
     if state.enabled?, do: schedule_poll(0)
@@ -141,24 +152,53 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
       {:error, reason} -> Logger.error("Activity dispatcher poll failed: #{inspect(reason)}")
     end
 
-    schedule_poll(state.interval_ms)
+    saturated? =
+      state.instance.activity_executor == :builtin and available_capacity(state.instance) == 0
+
+    delay = next_poll_delay(state.interval_ms, state.backpressure_jitter_ms, saturated?)
+    schedule_poll(delay)
     {:noreply, state}
   end
 
   defp dispatch_builtin(instance, owner, batch_size, ttl_seconds) do
-    with {:ok, tasks} <- claim(instance, owner, batch_size, ttl_seconds) do
-      Enum.each(tasks, &start_worker/1)
+    active = active_workers(instance)
+    capacity = max(instance.activity_max_concurrency - active, 0)
+    claim_limit = min(batch_size, capacity)
 
-      emit_polled(instance, owner, batch_size, length(tasks), :builtin)
+    if claim_limit == 0 do
+      emit_saturated(instance, owner, batch_size, active)
+      emit_polled(instance, owner, batch_size, 0, :builtin, active, 0)
+      {:ok, 0}
+    else
+      with {:ok, tasks} <- claim(instance, owner, claim_limit, ttl_seconds) do
+        {started, rejected} = start_workers(tasks)
 
-      {:ok, length(tasks)}
+        Enum.each(rejected, fn {task, reason} ->
+          release_unstarted_task(task)
+          emit_claim_rejected(instance, owner, task, reason)
+        end)
+
+        queue_age_ms = tasks |> Enum.map(&Map.get(&1, :queue_age_ms, 0)) |> Enum.max(fn -> 0 end)
+
+        emit_polled(
+          instance,
+          owner,
+          batch_size,
+          started,
+          :builtin,
+          active + started,
+          queue_age_ms
+        )
+
+        {:ok, started}
+      end
     end
   end
 
   defp dispatch_oban(instance, owner, batch_size) do
     with {:ok, tasks} <- available_tasks(instance, batch_size),
          :ok <- enqueue_oban_tasks(instance, tasks) do
-      emit_polled(instance, owner, batch_size, length(tasks), :oban)
+      emit_polled(instance, owner, batch_size, length(tasks), :oban, 0, 0)
 
       {:ok, length(tasks)}
     end
@@ -167,7 +207,11 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   defp claim(instance, owner, batch_size, ttl_seconds) do
     sql = """
     WITH candidates AS (
-      SELECT t.id, r.lease_token
+      SELECT t.id, r.lease_token,
+             GREATEST(
+               0,
+               FLOOR(EXTRACT(EPOCH FROM (clock_timestamp() - t.scheduled_at)) * 1000)
+             )::bigint AS queue_age_ms
       FROM continuum_activity_tasks AS t
       JOIN continuum_runs AS r ON r.id = t.run_id
       WHERE t.state = 'available'
@@ -187,7 +231,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     FROM candidates
     WHERE t.id = candidates.id
     RETURNING t.id::text, t.run_id::text, t.seq, t.mfa, t.attempt, t.lease_owner,
-              candidates.lease_token
+              candidates.lease_token, candidates.queue_age_ms
     """
 
     case instance.repo.query(sql, [owner, batch_size, ttl_seconds]) do
@@ -245,7 +289,8 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
          encoded_task,
          attempt,
          lease_owner,
-         run_lease_token
+         run_lease_token,
+         queue_age_ms
        ]) do
     task =
       encoded_task
@@ -257,10 +302,20 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
         seq: seq,
         attempt: attempt,
         lease_owner: lease_owner,
-        run_lease_token: run_lease_token
+        run_lease_token: run_lease_token,
+        queue_age_ms: queue_age_ms
       })
 
     task
+  end
+
+  defp start_workers(tasks) do
+    Enum.reduce(tasks, {0, []}, fn task, {started, rejected} ->
+      case start_worker(task) do
+        :ok -> {started + 1, rejected}
+        {:error, reason} -> {started, [{task, reason} | rejected]}
+      end
+    end)
   end
 
   defp start_worker(task) do
@@ -273,7 +328,26 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
       {:error, reason} ->
         Logger.error("Activity worker failed to start #{task.id}: #{inspect(reason)}")
-        :error
+        {:error, reason}
+    end
+  end
+
+  defp release_unstarted_task(task) do
+    sql = """
+    UPDATE continuum_activity_tasks
+    SET state = 'available',
+        available_at = clock_timestamp(),
+        lease_owner = NULL,
+        lease_expires_at = NULL
+    WHERE id = $1::text::uuid
+      AND state = 'leased'
+      AND lease_owner = $2
+      AND attempt = $3
+    """
+
+    case task.instance.repo.query(sql, [task.id, task.lease_owner, task.attempt]) do
+      {:ok, _result} -> :ok
+      {:error, reason} -> Logger.error("Activity claim release failed: #{inspect(reason)}")
     end
   end
 
@@ -286,14 +360,111 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     end)
   end
 
-  defp emit_polled(instance, owner, batch_size, count, executor) do
-    Telemetry.execute([:continuum, :activity_dispatcher, :polled], %{count: count}, %{
-      instance: instance.name,
-      owner: owner,
-      batch_size: batch_size,
-      executor: executor
-    })
+  defp emit_polled(instance, owner, batch_size, count, executor, active, queue_age_ms) do
+    Telemetry.execute(
+      [:continuum, :activity_dispatcher, :polled],
+      %{count: count, active: active, oldest_queue_age_ms: queue_age_ms},
+      %{
+        instance: instance.name,
+        owner: owner,
+        batch_size: batch_size,
+        max_concurrency: instance.activity_max_concurrency,
+        executor: executor
+      }
+    )
   end
+
+  defp emit_saturated(instance, owner, batch_size, active) do
+    {pending, queue_age_ms} = pending_queue_stats(instance)
+
+    if pending > 0 do
+      metadata = %{
+        instance: instance.name,
+        owner: owner,
+        batch_size: batch_size,
+        max_concurrency: instance.activity_max_concurrency,
+        reason: :capacity
+      }
+
+      Telemetry.execute(
+        [:continuum, :activity_dispatcher, :saturated],
+        %{active: active, pending: pending, oldest_queue_age_ms: queue_age_ms},
+        metadata
+      )
+
+      Telemetry.execute(
+        [:continuum, :activity_dispatcher, :claim_rejected],
+        %{count: pending},
+        metadata
+      )
+    end
+  end
+
+  defp emit_claim_rejected(instance, owner, task, reason) do
+    Telemetry.execute(
+      [:continuum, :activity_dispatcher, :claim_rejected],
+      %{count: 1},
+      %{
+        instance: instance.name,
+        owner: owner,
+        task_id: task.id,
+        max_concurrency: instance.activity_max_concurrency,
+        reason: reason
+      }
+    )
+  end
+
+  defp pending_queue_stats(instance) do
+    sql = """
+    SELECT COUNT(*)::bigint,
+           COALESCE(
+             MAX(
+               GREATEST(
+                 0,
+                 FLOOR(EXTRACT(EPOCH FROM (clock_timestamp() - t.scheduled_at)) * 1000)
+               )::bigint
+             ),
+             0
+           )::bigint
+    FROM continuum_activity_tasks AS t
+    JOIN continuum_runs AS r ON r.id = t.run_id
+    WHERE t.state = 'available'
+      AND t.available_at <= clock_timestamp()
+      AND r.state IN ('running', 'suspended')
+      AND r.lease_token IS NOT NULL
+      AND r.lease_expires_at > now()
+    """
+
+    case instance.repo.query(sql) do
+      {:ok, %{rows: [[pending, queue_age_ms]]}} ->
+        {pending, queue_age_ms}
+
+      {:error, reason} ->
+        Logger.warning("Activity queue stats failed: #{inspect(reason)}")
+        {0, 0}
+    end
+  end
+
+  defp active_workers(instance) do
+    instance.activity_supervisor
+    |> DynamicSupervisor.count_children()
+    |> Map.fetch!(:active)
+  catch
+    :exit, _reason -> 0
+  end
+
+  defp available_capacity(instance) do
+    max(instance.activity_max_concurrency - active_workers(instance), 0)
+  end
+
+  @doc false
+  def next_poll_delay(interval_ms, jitter_ms, true)
+      when is_integer(interval_ms) and interval_ms >= 0 and is_integer(jitter_ms) and
+             jitter_ms > 0 do
+    interval_ms + :rand.uniform(jitter_ms + 1) - 1
+  end
+
+  def next_poll_delay(interval_ms, _jitter_ms, _saturated?), do: interval_ms
 
   defp classify_claim_miss(instance, task_id, expected_attempt) do
     sql = """

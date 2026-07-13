@@ -90,6 +90,7 @@ defmodule Continuum.Runtime.InstanceTest do
     assert instance.name == name
     assert instance.repo == Continuum.Test.Repo
     assert instance.activity_executor == :builtin
+    assert instance.activity_max_concurrency == 10
     assert instance.registry != Continuum.Runtime.Registry
     assert instance.run_supervisor != Continuum.Runtime.RunSupervisor
 
@@ -107,6 +108,12 @@ defmodule Continuum.Runtime.InstanceTest do
   test "instance rejects invalid activity executors" do
     assert_raise ArgumentError, ~r/invalid Continuum activity executor/, fn ->
       Instance.new(name: unique_instance_name(), activity_executor: :unknown)
+    end
+  end
+
+  test "instance rejects invalid activity concurrency" do
+    assert_raise ArgumentError, ~r/activity_max_concurrency must be a positive integer/, fn ->
+      Instance.new(name: unique_instance_name(), activity_max_concurrency: 0)
     end
   end
 

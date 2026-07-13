@@ -12,7 +12,12 @@ defmodule Continuum.Runtime.ActivityWorker.Supervisor do
   end
 
   @impl true
-  def init(_opts) do
-    DynamicSupervisor.init(strategy: :one_for_one)
+  def init(opts) do
+    instance = Continuum.Runtime.Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
+    DynamicSupervisor.init(
+      strategy: :one_for_one,
+      max_children: instance.activity_max_concurrency
+    )
   end
 end

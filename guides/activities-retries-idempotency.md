@@ -35,6 +35,23 @@ dispatcher leases available tasks with `FOR UPDATE SKIP LOCKED`, starts a
 worker, and the worker journals either `activity_completed` or
 `activity_failed`.
 
+The built-in executor runs at most 10 activities concurrently per Continuum
+instance by default. Configure the limit globally or for a named instance:
+
+```elixir
+config :continuum, activity_max_concurrency: 25
+
+Continuum.children(
+  name: :billing,
+  repo: MyApp.Repo,
+  activity_max_concurrency: 8
+)
+```
+
+The dispatcher claims only currently available capacity. Saturated polls use
+jittered backpressure and emit queue-age, saturation, and rejected-claim
+telemetry. Oban-backed instances continue to use their Oban queue limits.
+
 Retry policy is resolved in this order:
 
 1. The `activity ... retry: ...` option at the call site.

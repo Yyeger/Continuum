@@ -10,6 +10,7 @@ defmodule Continuum.Application do
         name: Continuum,
         repo: Application.get_env(:continuum, :repo),
         activity_executor: Application.get_env(:continuum, :activity_executor, :builtin),
+        activity_max_concurrency: Application.get_env(:continuum, :activity_max_concurrency, 10),
         workflow_modules: Application.get_env(:continuum, :workflow_modules)
       )
       |> Continuum.Runtime.Instance.register()

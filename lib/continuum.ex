@@ -59,7 +59,7 @@ defmodule Continuum do
   override. The default instance follows `config :continuum, :journal`.
 
   Child-specific options may be passed with `:workflow_modules`,
-  `:activity_executor`, `:heartbeater`, `:run_supervisor`,
+  `:activity_executor`, `:activity_max_concurrency`, `:heartbeater`, `:run_supervisor`,
   `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
   `:timer_wheel`, `:signal_router`, and `:snapshotter`.
   Passing `false` for a child omits it from the returned list.
@@ -85,6 +85,12 @@ defmodule Continuum do
         repo: opts[:repo],
         journal: opts[:journal],
         activity_executor: activity_executor,
+        activity_max_concurrency:
+          Keyword.get(
+            opts,
+            :activity_max_concurrency,
+            Application.get_env(:continuum, :activity_max_concurrency, 10)
+          ),
         workflow_modules: opts[:workflow_modules]
       )
       |> Continuum.Runtime.Instance.register()

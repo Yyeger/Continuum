@@ -10,6 +10,7 @@ defmodule Continuum.Runtime.Instance do
     :run_supervisor,
     :activity_supervisor,
     :activity_executor,
+    :activity_max_concurrency,
     :heartbeater,
     :dispatcher,
     :activity_dispatcher,
@@ -63,6 +64,11 @@ defmodule Continuum.Runtime.Instance do
       activity_executor:
         Keyword.get_lazy(opts, :activity_executor, fn -> default_activity_executor(name) end)
         |> normalize_activity_executor!(),
+      activity_max_concurrency:
+        Keyword.get_lazy(opts, :activity_max_concurrency, fn ->
+          default_activity_max_concurrency(name)
+        end)
+        |> positive_integer!(:activity_max_concurrency),
       heartbeater: process_name(name, Continuum.Runtime.Lease.Heartbeater),
       dispatcher: process_name(name, Continuum.Runtime.Dispatcher),
       activity_dispatcher: process_name(name, Continuum.Runtime.ActivityWorker.Dispatcher),
@@ -108,6 +114,12 @@ defmodule Continuum.Runtime.Instance do
 
   defp default_activity_executor(_name), do: :builtin
 
+  defp default_activity_max_concurrency(@default) do
+    Application.get_env(:continuum, :activity_max_concurrency, 10)
+  end
+
+  defp default_activity_max_concurrency(_name), do: 10
+
   defp normalize_activity_executor!(:builtin), do: :builtin
 
   defp normalize_activity_executor!({:oban, opts}) when is_list(opts) do
@@ -130,6 +142,12 @@ defmodule Continuum.Runtime.Instance do
       raise ArgumentError,
             "Continuum activity_executor: :oban requires adding :oban to your application deps"
     end
+  end
+
+  defp positive_integer!(value, _option) when is_integer(value) and value > 0, do: value
+
+  defp positive_integer!(value, option) do
+    raise ArgumentError, "#{option} must be a positive integer, got: #{inspect(value)}"
   end
 
   defp inspect_name(name) do
