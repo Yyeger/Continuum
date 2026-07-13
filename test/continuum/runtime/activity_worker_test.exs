@@ -216,7 +216,14 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     decoded = decode_term(task.mfa)
 
     assert decoded.idempotency_key == "double:5"
-    assert decoded.retry == [max_attempts: 1]
+
+    assert decoded.retry == [
+             max_attempts: 1,
+             backoff: :constant,
+             base_ms: 1_000,
+             max_backoff_ms: 60_000,
+             max_retry_horizon_ms: 86_400_000
+           ]
 
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "activity-test", batch_size: 1)
 

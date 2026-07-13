@@ -17,6 +17,10 @@ defmodule Continuum.Activity do
   arbitrary I/O, talk to NIFs, raise, etc. Their return value is journaled
   on first success and replayed on workflow resume.
 
+  Execution policy is normalized by `Continuum.Activity.Policy`. Invalid
+  module defaults fail compilation; invalid call-site overrides or
+  idempotency keys fail the workflow before durable work is scheduled.
+
   Implementing the optional `c:idempotency_key/1` callback stores the key in
   the durable task payload. Once an activity result has been committed,
   another task for the same activity module and key reuses that committed
@@ -43,18 +47,21 @@ defmodule Continuum.Activity do
   defmacro __using__(opts) do
     retry = Keyword.get(opts, :retry, max_attempts: 1)
     timeout = Keyword.get(opts, :timeout, {:seconds, 30})
+    policy = Continuum.Activity.Policy.normalize!(retry: retry, timeout: timeout)
 
     quote do
       @behaviour Continuum.Activity
 
       @continuum_activity_retry unquote(retry)
       @continuum_activity_timeout unquote(timeout)
+      @continuum_activity_policy unquote(Macro.escape(policy))
 
       def __continuum_activity__ do
         %{
           module: __MODULE__,
           retry: @continuum_activity_retry,
-          timeout: @continuum_activity_timeout
+          timeout: @continuum_activity_timeout,
+          policy: @continuum_activity_policy
         }
       end
     end

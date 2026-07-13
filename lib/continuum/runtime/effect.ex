@@ -430,6 +430,7 @@ defmodule Continuum.Runtime.Effect do
          command_id
        ) do
     task_id = Ecto.UUID.generate()
+    policy = activity_policy(mod, args, opts)
 
     event = %{
       type: :activity_scheduled,
@@ -445,9 +446,9 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor,
       mfa: {mod, fun, args},
       opts: opts,
-      retry: retry_policy(mod, opts),
-      timeout_ms: timeout_ms(mod, opts),
-      idempotency_key: idempotency_key(mod, args, opts),
+      retry: Continuum.Activity.Policy.retry_options(policy),
+      timeout_ms: policy.timeout_ms,
+      idempotency_key: policy.idempotency_key,
       command_id: command_id
     }
 
@@ -824,6 +825,7 @@ defmodule Continuum.Runtime.Effect do
       Enum.map(items, fn item ->
         task_id = Ecto.UUID.generate()
         {mod, _fun, args} = item.mfa
+        policy = activity_policy(mod, args, [])
         seq = ctx.cursor + item.index
 
         event = %{
@@ -842,9 +844,9 @@ defmodule Continuum.Runtime.Effect do
           target_activity_id: item.target_id,
           mfa: item.mfa,
           opts: [],
-          retry: retry_policy(mod, []),
-          timeout_ms: timeout_ms(mod, []),
-          idempotency_key: idempotency_key(mod, args, []),
+          retry: Continuum.Activity.Policy.retry_options(policy),
+          timeout_ms: policy.timeout_ms,
+          idempotency_key: policy.idempotency_key,
           command_id: item.command_id,
           parallel_batch?: true
         }
@@ -982,6 +984,7 @@ defmodule Continuum.Runtime.Effect do
          command_id
        ) do
     task_id = Ecto.UUID.generate()
+    policy = activity_policy(mod, args, [])
 
     event = %{
       type: :compensation_scheduled,
@@ -999,9 +1002,9 @@ defmodule Continuum.Runtime.Effect do
       target_activity_id: target_id,
       mfa: mfa,
       opts: [],
-      retry: retry_policy(mod, []),
-      timeout_ms: timeout_ms(mod, []),
-      idempotency_key: idempotency_key(mod, args, []),
+      retry: Continuum.Activity.Policy.retry_options(policy),
+      timeout_ms: policy.timeout_ms,
+      idempotency_key: policy.idempotency_key,
       command_id: command_id
     }
 
@@ -1769,14 +1772,37 @@ defmodule Continuum.Runtime.Effect do
     |> Base.encode16(case: :lower)
   end
 
-  defp retry_policy(mod, opts) do
-    Keyword.get(opts, :retry) || activity_metadata(mod)[:retry] || [max_attempts: 1]
-  end
+  defp activity_policy(mod, args, opts) do
+    metadata = activity_metadata(mod)
+    module_policy = Map.get(metadata, :policy)
 
-  defp timeout_ms(mod, opts) do
-    opts
-    |> Keyword.get(:timeout, activity_metadata(mod)[:timeout] || {:seconds, 30})
-    |> duration_to_ms()
+    retry =
+      Keyword.get(
+        opts,
+        :retry,
+        if(module_policy,
+          do: Continuum.Activity.Policy.retry_options(module_policy),
+          else: metadata[:retry] || [max_attempts: 1]
+        )
+      )
+
+    timeout =
+      Keyword.get(
+        opts,
+        :timeout,
+        if(module_policy,
+          do: module_policy.timeout_ms,
+          else: metadata[:timeout] || {:seconds, 30}
+        )
+      )
+
+    idempotency_key = idempotency_key(mod, args, opts)
+
+    Continuum.Activity.Policy.normalize!(
+      retry: retry,
+      timeout: timeout,
+      idempotency_key: idempotency_key
+    )
   end
 
   defp signal_timeout(opts) do

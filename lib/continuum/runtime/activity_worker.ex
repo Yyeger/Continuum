@@ -474,12 +474,6 @@ defmodule Continuum.Runtime.ActivityWorker do
   defp idempotency_opts(idempotency), do: [idempotency: idempotency]
 
   defp backoff_ms(retry, attempt) do
-    retry = retry || []
-    base_ms = Keyword.get(retry, :base_ms, 1_000)
-
-    case Keyword.get(retry, :backoff, :constant) do
-      :exponential -> trunc(base_ms * :math.pow(2, max(attempt - 1, 0)))
-      _ -> base_ms
-    end
+    Continuum.Activity.Policy.backoff_ms(retry, attempt)
   end
 end

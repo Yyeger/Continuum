@@ -41,12 +41,32 @@ Retry policy is resolved in this order:
 2. The `use Continuum.Activity, retry: ...` module option.
 3. A single attempt.
 
-`backoff: :exponential` uses `base_ms * 2 ^ (attempt - 1)`. Any other backoff
-value uses constant delay.
+Activity policy is validated before durable work is scheduled. `max_attempts`
+must be positive, `backoff` must be `:constant` or `:exponential`, and
+`base_ms` must be non-negative. `max_backoff_ms` defaults to one minute and
+caps each delay. `max_retry_horizon_ms` defaults to 24 hours and must cover the
+worst-case execution time plus every delay. Per-attempt timeouts must be
+positive and cannot exceed 24 hours.
+
+`backoff: :exponential` uses `base_ms * 2 ^ (attempt - 1)`, capped by
+`max_backoff_ms`. Use an explicit policy for longer horizons:
+
+```elixir
+retry: [
+  max_attempts: 8,
+  backoff: :exponential,
+  base_ms: 500,
+  max_backoff_ms: 60_000,
+  max_retry_horizon_ms: 3_600_000
+]
+```
 
 Idempotency keys are enforced by the Postgres runtime. Once an activity result
 is committed for an activity module and key, another task with the same module
 and key journals that committed result without running the activity body again.
+
+An idempotency key must be a binary or `nil`, whether it comes from the call
+site or `idempotency_key/1`. Invalid keys fail the run before a task is written.
 
 This guarantee starts after Continuum commits success. Activities that perform
 externally visible writes, such as payments, emails, or third-party API
