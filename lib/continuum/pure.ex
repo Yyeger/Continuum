@@ -24,8 +24,10 @@ defmodule Continuum.Pure do
   end
 
   @doc false
-  def __on_definition__(env, _kind, name, args, _guards, body) when not is_nil(body) do
-    case Continuum.AstCheck.scan(body, env) do
+  def __on_definition__(env, _kind, name, args, guards, body) when not is_nil(body) do
+    definition_ast = with_guards(guards, body)
+
+    case Continuum.AstCheck.scan(definition_ast, env) do
       :ok ->
         :ok
 
@@ -42,15 +44,24 @@ defmodule Continuum.Pure do
     # effect call swallows the engine's suspend throw exactly like one in the
     # workflow module would (the runtime SuspendLeakError stays the backstop,
     # but warn at compile time too).
-    Continuum.AstCheck.check_catch_warnings(body, env, name, length(args || []))
+    Continuum.AstCheck.check_catch_warnings(definition_ast, env, name, length(args || []))
 
     # A Pure module is wholly trusted from workflow code, so trust must be
     # transitive: calls into unmarked modules and dynamic receivers get the
     # same diagnostics as workflow clauses — otherwise `use Continuum.Pure`
     # launders unscanned calls past the untrusted_call_severity policy.
-    Continuum.AstCheck.check_helper_calls(body, env, name, length(args || []))
-    Continuum.AstCheck.check_dynamic_call_warnings(body, env, name, length(args || []))
+    Continuum.AstCheck.check_helper_calls(definition_ast, env, name, length(args || []))
+
+    Continuum.AstCheck.check_dynamic_call_warnings(
+      definition_ast,
+      env,
+      name,
+      length(args || [])
+    )
   end
 
   def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok
+
+  defp with_guards([], body), do: body
+  defp with_guards(guards, body), do: {:__block__, [], List.wrap(guards) ++ [body]}
 end

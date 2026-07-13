@@ -368,8 +368,10 @@ defmodule Continuum.Workflow.OnDef do
   @moduledoc false
 
   @doc false
-  def __on_definition__(env, _kind, name, args, _guards, body) when not is_nil(body) do
-    case Continuum.AstCheck.scan(body, env) do
+  def __on_definition__(env, _kind, name, args, guards, body) when not is_nil(body) do
+    definition_ast = with_guards(guards, body)
+
+    case Continuum.AstCheck.scan(definition_ast, env) do
       :ok ->
         :ok
 
@@ -384,13 +386,22 @@ defmodule Continuum.Workflow.OnDef do
               Continuum.AstCheck.format(violations)
     end
 
-    Continuum.AstCheck.check_helper_calls(body, env, name, length(args || []))
+    Continuum.AstCheck.check_helper_calls(definition_ast, env, name, length(args || []))
     Continuum.AstCheck.collect_compensation_sites(body, env, name, length(args || []))
-    Continuum.AstCheck.check_catch_warnings(body, env, name, length(args || []))
-    Continuum.AstCheck.check_dynamic_call_warnings(body, env, name, length(args || []))
+    Continuum.AstCheck.check_catch_warnings(definition_ast, env, name, length(args || []))
+
+    Continuum.AstCheck.check_dynamic_call_warnings(
+      definition_ast,
+      env,
+      name,
+      length(args || [])
+    )
   end
 
   def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok
+
+  defp with_guards([], body), do: body
+  defp with_guards(guards, body), do: {:__block__, [], List.wrap(guards) ++ [body]}
 end
 
 defmodule Continuum.Workflow.BeforeCompile do

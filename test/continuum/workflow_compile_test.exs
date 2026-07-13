@@ -159,6 +159,32 @@ defmodule Continuum.WorkflowCompileTest do
       end
     end
 
+    test "a workflow that reads node identity in a guard refuses to compile" do
+      assert_raise CompileError, ~r/cluster topology is non-deterministic/, fn ->
+        compile_workflow("GuardNode", """
+        def run(input) when node() == :nonode@nohost, do: {:ok, input}
+        """)
+      end
+    end
+
+    test "a Continuum.Pure helper that reads process identity in a guard refuses to compile" do
+      assert_raise CompileError, ~r/pid identity is non-deterministic/, fn ->
+        defmodule GuardedPureHelper do
+          use Continuum.Pure
+
+          def same_process?(pid) when self() == pid, do: true
+          def same_process?(_pid), do: false
+        end
+      end
+    end
+
+    test "deterministic workflow guards still compile" do
+      compile_workflow("DeterministicGuard", """
+      def run(input) when is_integer(input), do: {:ok, input}
+      def run(_input), do: {:error, :not_an_integer}
+      """)
+    end
+
     test "a workflow with a receive block refuses to compile" do
       assert_raise CompileError, ~r/receive blocks bypass the journal/, fn ->
         defmodule BadReceiveFlow do
