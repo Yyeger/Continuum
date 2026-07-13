@@ -312,6 +312,73 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert Repo.aggregate(ActivityResult, :count) == 1
   end
 
+  test "catch-up recovers a committed activity completion when the immediate wake is lost" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ActivityFlow, %{seed: 5}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "lost-completion-wake",
+               30
+             )
+
+    lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+
+    assert :ok =
+             Postgres.complete_activity_task!(
+               Continuum.Runtime.Instance.default(),
+               claimed,
+               {:ok, 10},
+               lease_token
+             )
+
+    assert_wake_pending(run_id)
+    assert :ok = Continuum.Runtime.SignalRouter.catch_up_once()
+
+    assert {:ok, %{state: :completed, result: {:ok, 11}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+  end
+
+  test "catch-up recovers a committed activity failure when the immediate wake is lost" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(DeclinedFlow, %{seed: 9}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "lost-failure-wake",
+               30
+             )
+
+    lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+    error = %DeclinedError{reason: :insufficient_funds, code: "card_declined"}
+
+    assert :ok =
+             Postgres.fail_activity_task!(
+               Continuum.Runtime.Instance.default(),
+               claimed,
+               error,
+               lease_token
+             )
+
+    assert_wake_pending(run_id)
+    assert :ok = Continuum.Runtime.SignalRouter.catch_up_once()
+
+    assert {:ok, %{state: :completed, result: {:ok, {:insufficient_funds, "card_declined"}}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+  end
+
   test "nil idempotency keys do not write activity_results rows" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(NilKeyFlow, %{seed: 11}, journal: Postgres)
@@ -997,6 +1064,19 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     DateTime.utc_now()
     |> DateTime.add(60, :second)
     |> DateTime.truncate(:microsecond)
+  end
+
+  defp assert_wake_pending(run_id) do
+    next_wakeup_at =
+      Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.next_wakeup_at))
+
+    assert %DateTime{} = next_wakeup_at
+    assert DateTime.compare(next_wakeup_at, db_now()) in [:lt, :eq]
+  end
+
+  defp db_now do
+    %{rows: [[now]]} = Repo.query!("SELECT clock_timestamp()")
+    now
   end
 
   defp insert_activity_result(module, key, result) do

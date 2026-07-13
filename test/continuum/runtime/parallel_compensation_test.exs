@@ -3,7 +3,7 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
 
   alias Continuum.Runtime.ActivityWorker.Dispatcher
   alias Continuum.Runtime.Journal.Postgres
-  alias Continuum.Schema.Event
+  alias Continuum.Schema.{ActivityTask, Event, Run}
 
   defmodule Activities do
     use Continuum.Activity, retry: [max_attempts: 1]
@@ -122,6 +122,50 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
                snapshot: snapshot,
                journal: Postgres
              )
+  end
+
+  test "catch-up recovers a committed compensation when the immediate wake is lost" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(SingletonParallelFlow, %{pid: self()}, journal: Postgres)
+
+    assert_eventually(fn -> event_count(run_id, "activity_scheduled") == 1 end)
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "lost-compensation-wake", batch_size: 1)
+    assert_receive {:activity, :first}
+
+    assert_eventually(fn -> event_count(run_id, "compensation_scheduled") == 1 end)
+
+    task =
+      Repo.one!(from(t in ActivityTask, where: t.run_id == ^run_id and t.state == "available"))
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "lost-compensation-wake",
+               30
+             )
+
+    lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+
+    assert :ok =
+             Postgres.complete_compensation_task!(
+               Continuum.Runtime.Instance.default(),
+               claimed,
+               :undone_first,
+               lease_token
+             )
+
+    next_wakeup_at =
+      Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.next_wakeup_at))
+
+    assert %DateTime{} = next_wakeup_at
+    %{rows: [[db_now]]} = Repo.query!("SELECT clock_timestamp()")
+    assert DateTime.compare(next_wakeup_at, db_now) in [:lt, :eq]
+    assert :ok = Continuum.Runtime.SignalRouter.catch_up_once()
+
+    assert {:ok, %{state: :completed, result: {:ok, :after_parallel_compensation}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
   end
 
   defp event_count(run_id, type) do

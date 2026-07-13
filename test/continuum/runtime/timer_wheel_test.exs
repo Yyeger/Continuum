@@ -69,6 +69,36 @@ defmodule Continuum.Runtime.TimerWheelTest do
     assert {:error, :timeout} = Continuum.await(run_id, 25, journal: Postgres)
   end
 
+  test "catch-up recovers a fired timer when the immediate wake is lost" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(Timer, :count) == 1 end)
+    timer = Repo.one!(Timer)
+    force_due(timer.id)
+
+    lease_token = Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
+
+    assert :ok =
+             Postgres.fire_timer!(
+               Continuum.Runtime.Instance.default(),
+               run_id,
+               timer.id,
+               lease_token
+             )
+
+    next_wakeup_at =
+      Repo.one!(from(r in Run, where: r.id == ^run_id, select: r.next_wakeup_at))
+
+    assert %DateTime{} = next_wakeup_at
+    %{rows: [[db_now]]} = Repo.query!("SELECT clock_timestamp()")
+    assert DateTime.compare(next_wakeup_at, db_now) in [:lt, :eq]
+    assert :ok = Continuum.Runtime.SignalRouter.catch_up_once()
+
+    assert {:ok, %{state: :completed, result: {:ok, :fired}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+  end
+
   test "TimerWheel fires a past-due timer loaded during cache hydrate" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)

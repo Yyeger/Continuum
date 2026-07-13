@@ -763,6 +763,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  ),
                  set: [state: "completed", result: encode_term(committed_result)]
                ) do
+          mark_run_wake_pending!(task.run_id, lease_token)
           :ok
         else
           {0, _} -> repo().rollback({:compensation_task_result_failed, :task_lease_mismatch})
@@ -854,6 +855,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  ),
                  set: [state: "completed", result: encode_term(committed_result)]
                ) do
+          mark_run_wake_pending!(task.run_id, lease_token)
           :ok
         else
           {0, _} -> repo().rollback({:activity_task_result_failed, :task_lease_mismatch})
@@ -1520,14 +1522,17 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
             winner_event = insert_event!(run_id, event)
             mark_timer_resolved(run_id, timer_id, lease_token)
+            mark_run_wake_pending!(run_id, lease_token)
             {:ok, winner_event}
 
           {:already_fired, winner_event} ->
             mark_timer_resolved(run_id, timer_id, lease_token)
+            mark_run_wake_pending!(run_id, lease_token)
             {:ok, winner_event}
 
           {:already_resolved, _winner_event} ->
             mark_timer_resolved(run_id, timer_id, lease_token)
+            mark_run_wake_pending!(run_id, lease_token)
             :already_resolved
 
           :not_found ->
@@ -1571,6 +1576,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  ),
                  set: task_updates
                ) do
+          mark_run_wake_pending!(task.run_id, lease_token)
           :ok
         else
           {0, _} -> repo().rollback({:activity_task_result_failed, :task_lease_mismatch})
@@ -2013,6 +2019,22 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     repo().update_all(run_query, set: [next_wakeup_at: nil])
     :ok
+  end
+
+  # The process wake sent after a durable activity/timer transaction is only a
+  # latency optimization: it can disappear with the writer process or between
+  # nodes. Keep database evidence armed until the owning engine receives a wake
+  # and clears it under the same fenced lease.
+  defp mark_run_wake_pending!(run_id, lease_token) do
+    query =
+      from(r in leased_run_query(run_id, lease_token),
+        update: [set: [next_wakeup_at: fragment("clock_timestamp()")]]
+      )
+
+    case repo().update_all(query, []) do
+      {1, _} -> :ok
+      {0, _} -> repo().rollback({:run_wake_marker_failed, :lease_mismatch})
+    end
   end
 
   @impl true

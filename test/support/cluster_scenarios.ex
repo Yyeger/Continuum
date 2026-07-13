@@ -1,7 +1,7 @@
 defmodule Continuum.Test.ClusterScenarios do
   @moduledoc false
 
-  alias Continuum.Runtime.{Engine, Journal}
+  alias Continuum.Runtime.{ActivityWorker, Engine, Instance, Journal}
   alias Continuum.Test.ClusterFlows
 
   def start_signal_run(test_pid, opts) do
@@ -35,6 +35,26 @@ defmodule Continuum.Test.ClusterScenarios do
       )
 
     run_id
+  end
+
+  def complete_activity_without_wake(task_id, attempt, result) do
+    instance = Instance.default()
+
+    {:ok, task} =
+      ActivityWorker.Dispatcher.claim_one(
+        instance,
+        task_id,
+        attempt,
+        "cluster-lost-wake-writer",
+        30
+      )
+
+    Journal.Postgres.complete_activity_task!(
+      instance,
+      task,
+      result,
+      task.run_lease_token
+    )
   end
 
   def attach_lease_lost(test_pid) do
