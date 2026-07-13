@@ -126,7 +126,8 @@ defmodule Continuum.Runtime.Journal.InMemory do
       signal_buffer: %{},
       state: :running,
       result: nil,
-      error: nil
+      error: nil,
+      error_stacktrace: nil
     }
 
     {:reply, :ok, put_run(state, instance.name, run_id, run)}
@@ -196,20 +197,22 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   def handle_call({:fail, instance, run_id, error}, _from, state) do
+    {public_error, stacktrace} = Continuum.RunFailure.split(error)
+
     # Parity with the Postgres adapter's canonical terminal state: a cancel
     # is stored as :cancelled, not failed + :cancelled. (In-memory has no
     # separate cancel path, so a user failure whose error term is literally
     # :cancelled is indistinguishable here — acceptable for the test journal.)
-    terminal_state = if error == :cancelled, do: :cancelled, else: :failed
+    terminal_state = if public_error == :cancelled, do: :cancelled, else: :failed
 
     update =
       update_active_run(state, instance.name, run_id, fn run ->
-        %{run | state: terminal_state, error: error}
+        %{run | state: terminal_state, error: public_error, error_stacktrace: stacktrace}
       end)
 
     case update do
       {:ok, state} ->
-        broadcast_failed(instance, run_id, error)
+        broadcast_failed(instance, run_id, public_error)
         {:reply, :ok, state}
 
       {:error, reason} ->

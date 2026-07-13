@@ -119,7 +119,7 @@ defmodule Continuum.Query do
 
   @doc false
   def decode_run(%Run{} = run) do
-    error = decode_term(run.error)
+    {error, legacy_stacktrace} = run.error |> decode_term() |> Continuum.RunFailure.split()
 
     %{
       id: run.id,
@@ -131,6 +131,7 @@ defmodule Continuum.Query do
       namespace: run.namespace || "default",
       result: decode_term(run.result),
       error: error,
+      error_stacktrace: decode_term(run.error_stacktrace) || legacy_stacktrace,
       trace_context: run.trace_context,
       started_at: run.started_at,
       completed_at: run.completed_at,

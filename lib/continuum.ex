@@ -186,6 +186,10 @@ defmodule Continuum do
 
   @doc """
   Block until the run completes. Test/synchronous use only.
+
+  Failed workflows return a `%Continuum.RunFailure{}` in the result map's
+  `:error` field. Diagnostic stacktraces are intentionally omitted; use
+  `get_run/2` to inspect the separate `:error_stacktrace` field.
   """
   @spec await(run_id(), timeout(), keyword()) :: {:ok, map()} | {:error, term()}
   def await(run_id, timeout \\ 5_000, opts \\ []) do

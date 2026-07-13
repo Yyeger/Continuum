@@ -83,6 +83,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :attributes, :map, null: false, default: %{}
           add :result, :bytea
           add :error, :bytea
+          add :error_stacktrace, :bytea
           add :trace_context, :bytea
           add :parent_run_id, :uuid
           add :parent_command_id, :bytea

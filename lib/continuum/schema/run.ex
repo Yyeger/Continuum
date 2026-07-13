@@ -14,6 +14,7 @@ defmodule Continuum.Schema.Run do
     field(:attributes, :map, default: %{})
     field(:result, :binary)
     field(:error, :binary)
+    field(:error_stacktrace, :binary)
     field(:trace_context, :binary)
     field(:started_at, :utc_datetime_usec)
     field(:completed_at, :utc_datetime_usec)

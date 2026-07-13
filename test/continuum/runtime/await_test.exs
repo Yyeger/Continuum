@@ -42,6 +42,33 @@ defmodule Continuum.Runtime.AwaitTest do
              Task.yield(waiter, 250)
   end
 
+  test "failed runs have the same public shape through broadcast and polling" do
+    instance = Continuum.Runtime.Instance.default()
+    broadcast_id = Ecto.UUID.generate()
+    polled_id = Ecto.UUID.generate()
+    stacktrace = [{SomeWorkflow, :run, 1, [file: ~c"workflow.ex", line: 12]}]
+
+    :ok = InMemory.start_run(instance, broadcast_id, SomeWorkflow, %{})
+    waiter = Task.async(fn -> Continuum.await(broadcast_id, 1_000, journal: InMemory) end)
+    assert Task.yield(waiter, 25) == nil
+    :ok = InMemory.fail!(instance, broadcast_id, {:error, :boom, stacktrace}, nil)
+
+    assert {:ok,
+            {:error,
+             %{
+               state: :failed,
+               error: %Continuum.RunFailure{kind: :error, reason: :boom}
+             }}} = Task.yield(waiter, 250)
+
+    :ok = InMemory.start_run(instance, polled_id, SomeWorkflow, %{})
+    :ok = InMemory.fail!(instance, polled_id, {:error, :boom, stacktrace}, nil)
+
+    assert {:error, %{state: :failed, error: %Continuum.RunFailure{kind: :error, reason: :boom}}} =
+             Continuum.await(polled_id, 250, journal: InMemory)
+
+    assert %{error_stacktrace: ^stacktrace} = InMemory.get_run(instance, polled_id)
+  end
+
   test "await/3 wakes from Postgres cancel_run!/2 broadcast" do
     run_id = Ecto.UUID.generate()
     :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})

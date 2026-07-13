@@ -176,12 +176,27 @@ defmodule Continuum.Journal.PostgresTest do
 
     test "marks a run as failed" do
       run_id = generate_uuid()
+      stacktrace = [{SomeWorkflow, :run, 1, [file: ~c"workflow.ex", line: 12]}]
       :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
-      :ok = Postgres.fail!(Continuum.Runtime.Instance.default(), run_id, {:exit, :boom}, nil)
+
+      :ok =
+        Postgres.fail!(
+          Continuum.Runtime.Instance.default(),
+          run_id,
+          {:exit, :boom, stacktrace},
+          nil
+        )
 
       run = Postgres.get_run(Continuum.Runtime.Instance.default(), run_id)
       assert run.state == :failed
-      assert run.error == {:exit, :boom}
+      assert run.error == %Continuum.RunFailure{kind: :exit, reason: :boom}
+      assert run.error_stacktrace == stacktrace
+
+      assert {:ok,
+              %{
+                error: %Continuum.RunFailure{kind: :exit, reason: :boom},
+                error_stacktrace: ^stacktrace
+              }} = Continuum.get_run(run_id)
     end
   end
 

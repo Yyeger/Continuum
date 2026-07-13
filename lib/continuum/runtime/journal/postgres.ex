@@ -2075,6 +2075,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   @impl true
   def fail!(%Instance{} = instance, run_id, error, lease_token) do
+    {public_error, stacktrace} = Continuum.RunFailure.split(error)
+
     parent_run_id =
       with_repo(instance, fn ->
         parent =
@@ -2084,7 +2086,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
             :ok =
               cas_update_active_run(run_id, lease_token, %{
                 state: "failed",
-                error: encode_term(error),
+                error: encode_term(public_error),
+                error_stacktrace: encode_term(stacktrace),
                 completed_at: DateTime.utc_now()
               })
 
@@ -2092,7 +2095,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
           end)
 
         Snapshotter.maybe_snapshot(instance, run_id, lease_token, __MODULE__)
-        broadcast_failed(instance, run_id, error)
+        broadcast_failed(instance, run_id, public_error)
         parent
       end)
 
@@ -2312,12 +2315,15 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp decode_run(%Run{} = run) do
+    {error, legacy_stacktrace} = run.error |> decode_term() |> Continuum.RunFailure.split()
+
     %{
       run_id: run.id,
       workflow: run.workflow,
       state: String.to_atom(run.state),
       result: decode_term(run.result),
-      error: decode_term(run.error),
+      error: error,
+      error_stacktrace: decode_term(run.error_stacktrace) || legacy_stacktrace,
       input: decode_term(run.input),
       attributes: run.attributes || %{},
       namespace: run.namespace || "default",

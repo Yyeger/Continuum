@@ -36,7 +36,12 @@ defmodule Continuum.Runtime.SuspendLeakTest do
     {:ok, run_id} = Continuum.Test.start_synchronous(flow, %{})
 
     assert {:error, %{state: :failed, error: failure}} = Continuum.await(run_id, 1_000)
-    assert %Continuum.SuspendLeakError{} = error = leak_error(failure)
+
+    assert %Continuum.RunFailure{
+             kind: :error,
+             reason: %Continuum.SuspendLeakError{} = error
+           } = failure
+
     assert Exception.message(error) =~ "suspend signal was swallowed"
     assert Exception.message(error) =~ "rescue"
   end
@@ -64,15 +69,12 @@ defmodule Continuum.Runtime.SuspendLeakTest do
     {:ok, run_id} = Continuum.Test.start_synchronous(flow, %{})
 
     assert {:error, %{state: :failed, error: failure}} = Continuum.await(run_id, 1_000)
-    assert %Continuum.SuspendLeakError{} = leak_error(failure)
-  end
 
-  # `await` resolves the failure from either the engine's `run_finished`
-  # broadcast ({:error, exception}) or the journal row ({kind, reason,
-  # stacktrace}), depending on which side wins the subscribe race.
-  defp leak_error({:error, %Continuum.SuspendLeakError{} = error}), do: error
-  defp leak_error({:error, %Continuum.SuspendLeakError{} = error, _stacktrace}), do: error
-  defp leak_error(other), do: other
+    assert %Continuum.RunFailure{
+             kind: :error,
+             reason: %Continuum.SuspendLeakError{}
+           } = failure
+  end
 
   test "a catch arm that re-throws the control tuple suspends normally" do
     capture_io(:standard_error, fn ->

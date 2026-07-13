@@ -646,7 +646,8 @@ defmodule Continuum.Runtime.Engine do
               :erlang.raise(kind, reason, stacktrace)
 
             true ->
-              {:failed, {kind, reason, stacktrace}, {kind, reason}}
+              failure = %Continuum.RunFailure{kind: kind, reason: reason}
+              {:failed, {kind, reason, stacktrace}, failure}
           end
       after
         Context.clear()
