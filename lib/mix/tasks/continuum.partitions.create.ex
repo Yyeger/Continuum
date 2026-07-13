@@ -1,28 +1,49 @@
 defmodule Mix.Tasks.Continuum.Partitions.Create do
   @moduledoc """
-  Creates a monthly `continuum_events` partition.
+  Ensures a horizon of monthly `continuum_events` partitions.
 
-      mix continuum.partitions.create
-      mix continuum.partitions.create 2026-06
-      mix continuum.partitions.create 2026-06 --repo MyApp.Repo
+      mix continuum.partitions.create --months 3
+      mix continuum.partitions.create 2026-06 --months 3
+      mix continuum.partitions.create 2026-06 --months 3 --repo MyApp.Repo --execute
 
-  The task is idempotent. Without a month argument it creates the current
-  UTC month partition.
+  The task is idempotent and a dry run by default. `--months N` means N
+  consecutive partitions beginning with the positional month, or the current
+  UTC month when omitted. Pass `--execute` to create them.
   """
   use Mix.Task
 
-  @shortdoc "Creates a monthly continuum_events partition"
+  @shortdoc "Ensures a horizon of continuum_events partitions"
+
+  @switches [repo: :string, months: :integer, execute: :boolean]
+  @max_months 120
 
   @impl true
   def run(args) do
-    {opts, rest, _} = OptionParser.parse(args, switches: [repo: :string])
+    {opts, rest, invalid} = OptionParser.parse(args, strict: @switches)
+    validate_args!(rest, invalid)
     Mix.Task.run("app.start")
 
     repo = parse_repo(opts)
     month = parse_month(List.first(rest))
-    create_partition(repo, month)
+    months = parse_months(opts)
+    dry_run? = not Keyword.get(opts, :execute, false)
 
-    Mix.shell().info("Created #{partition_name(month)}")
+    partitions = Enum.map(0..(months - 1), &shift_month(month, &1))
+
+    Enum.each(partitions, fn partition_month ->
+      if dry_run? do
+        Mix.shell().info("Would create #{partition_name(partition_month)}")
+      else
+        create_partition(repo, partition_month)
+        Mix.shell().info("Created #{partition_name(partition_month)}")
+      end
+    end)
+
+    :telemetry.execute([:continuum, :partition, :created], %{count: length(partitions)}, %{
+      dry_run?: dry_run?,
+      months: months,
+      partitions: Enum.map(partitions, &partition_name/1)
+    })
   end
 
   defp create_partition(repo, month) do
@@ -47,6 +68,29 @@ defmodule Mix.Tasks.Continuum.Partitions.Create do
     end
   end
 
+  defp parse_months(opts) do
+    case Keyword.get(opts, :months, 1) do
+      months when is_integer(months) and months > 0 and months <= @max_months ->
+        months
+
+      months ->
+        Mix.raise(
+          "--months must be an integer between 1 and #{@max_months}, got: #{inspect(months)}"
+        )
+    end
+  end
+
+  defp validate_args!(rest, invalid) do
+    if invalid != [], do: Mix.raise("invalid options: #{format_invalid(invalid)}")
+    if length(rest) > 1, do: Mix.raise("expected at most one YYYY-MM month argument")
+  end
+
+  defp format_invalid(invalid) do
+    Enum.map_join(invalid, ", ", fn {option, value} ->
+      if is_nil(value), do: to_string(option), else: "#{option}=#{value}"
+    end)
+  end
+
   defp parse_month(nil) do
     today = Date.utc_today()
     Date.new!(today.year, today.month, 1)
@@ -63,6 +107,11 @@ defmodule Mix.Tasks.Continuum.Partitions.Create do
   end
 
   defp parse_month(_), do: Mix.raise("month must be in YYYY-MM format")
+
+  defp shift_month(%Date{} = month, offset) do
+    absolute_month = month.year * 12 + month.month - 1 + offset
+    Date.new!(div(absolute_month, 12), rem(absolute_month, 12) + 1, 1)
+  end
 
   defp partition_name(%Date{year: year, month: month}) do
     "continuum_events_y#{year}_m#{pad2(month)}"

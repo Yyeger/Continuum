@@ -25,18 +25,32 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
     end)
   end
 
-  test "create builds monthly partitions idempotently" do
-    month = "2030-01"
-    partition = "continuum_events_y2030_m01"
+  test "create dry-runs and executes a multi-month horizon idempotently" do
+    partitions = ~w(
+      continuum_events_y2031_m01
+      continuum_events_y2031_m02
+      continuum_events_y2031_m03
+    )
 
-    Mix.Task.rerun("continuum.partitions.create", [month])
-    Mix.Task.rerun("continuum.partitions.create", [month])
+    Enum.each(partitions, &drop_partition/1)
 
-    assert partition_exists?(partition)
+    Mix.Task.rerun("continuum.partitions.create", ["2031-01", "--months", "3"])
+
+    Enum.each(partitions, fn partition ->
+      refute partition_exists?(partition)
+      assert_received {:mix_shell, :info, ["Would create " <> ^partition]}
+    end)
+
+    args = ["2031-01", "--months", "3", "--execute"]
+    Mix.Task.rerun("continuum.partitions.create", args)
+    Mix.Task.rerun("continuum.partitions.create", args)
+
+    Enum.each(partitions, fn partition -> assert partition_exists?(partition) end)
+    Enum.each(partitions, &drop_partition/1)
   end
 
   test "list reports managed partitions and row counts" do
-    Mix.Task.rerun("continuum.partitions.create", ["2030-02"])
+    Mix.Task.rerun("continuum.partitions.create", ["2030-02", "--execute"])
 
     Mix.Task.rerun("continuum.partitions.list", [])
 
@@ -44,8 +58,8 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
   end
 
   test "parent inserts route events into the generated month partitions" do
-    Mix.Task.rerun("continuum.partitions.create", ["2030-03"])
-    Mix.Task.rerun("continuum.partitions.create", ["2030-04"])
+    Mix.Task.rerun("continuum.partitions.create", ["2030-03", "--execute"])
+    Mix.Task.rerun("continuum.partitions.create", ["2030-04", "--execute"])
 
     march_run = Ecto.UUID.generate()
     april_run = Ecto.UUID.generate()
@@ -60,7 +74,7 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
 
   test "drop_old is dry-run by default and drops only expired partitions when executed" do
     partition = "continuum_events_y2000_m01"
-    Mix.Task.rerun("continuum.partitions.create", ["2000-01"])
+    Mix.Task.rerun("continuum.partitions.create", ["2000-01", "--execute"])
 
     run_id = Ecto.UUID.generate()
     :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
@@ -89,7 +103,7 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    Mix.Task.rerun("continuum.partitions.drop_old", [])
+    Mix.Task.rerun("continuum.partitions.drop_old", ["--older-than", "180d"])
     assert partition_exists?(partition)
     assert_received {:mix_shell, :info, ["Would clean 1 activity_results rows"]}
     assert_received {:mix_shell, :info, ["Would drop " <> ^partition]}
@@ -101,7 +115,7 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
     assert partition in dry_run_partitions
     assert dry_run_count == length(dry_run_partitions)
 
-    Mix.Task.rerun("continuum.partitions.drop_old", ["--execute"])
+    Mix.Task.rerun("continuum.partitions.drop_old", ["--older-than", "180d", "--execute"])
     refute partition_exists?(partition)
     assert_received {:mix_shell, :info, ["Cleaned 1 activity_results rows"]}
     assert_received {:mix_shell, :info, ["Dropped " <> ^partition]}
@@ -112,6 +126,46 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
 
     assert partition in execute_partitions
     assert execute_count == length(execute_partitions)
+  end
+
+  test "drop_old honors the older-than cutoff" do
+    partition = "continuum_events_y2020_m01"
+    drop_partition(partition)
+
+    Mix.Task.rerun("continuum.partitions.create", ["2020-01", "--execute"])
+    flush_mix_shell()
+
+    Mix.Task.rerun("continuum.partitions.drop_old", [
+      "--older-than",
+      "3000d",
+      "--execute"
+    ])
+
+    assert partition_exists?(partition)
+    refute_received {:mix_shell, :info, ["Dropped " <> ^partition]}
+    drop_partition(partition)
+  end
+
+  test "partition tasks reject unknown and malformed arguments" do
+    assert_raise Mix.Error, ~r/invalid options/, fn ->
+      Mix.Task.rerun("continuum.partitions.create", ["--montsh", "3"])
+    end
+
+    assert_raise Mix.Error, ~r/--months must be an integer between/, fn ->
+      Mix.Task.rerun("continuum.partitions.create", ["--months", "0"])
+    end
+
+    assert_raise Mix.Error, ~r/--older-than must be a non-negative duration/, fn ->
+      Mix.Task.rerun("continuum.partitions.drop_old", ["--older-than", "six months"])
+    end
+
+    assert_raise Mix.Error, ~r/invalid options/, fn ->
+      Mix.Task.rerun("continuum.partitions.drop_old", ["--force"])
+    end
+
+    assert_raise Mix.Error, ~r/unexpected partition list arguments/, fn ->
+      Mix.Task.rerun("continuum.partitions.list", ["--unknown"])
+    end
   end
 
   defp insert_event(run_id, seq, payload, inserted_at) do
@@ -141,6 +195,10 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
   defp partition_exists?(partition) do
     %{rows: [[name]]} = Repo.query!("SELECT to_regclass($1)::text", [partition])
     name == partition
+  end
+
+  defp drop_partition(partition) do
+    Repo.query!("DROP TABLE IF EXISTS \"#{partition}\"")
   end
 
   defp create_activity_results_fixture(run_id) do

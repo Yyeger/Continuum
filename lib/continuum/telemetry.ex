@@ -48,6 +48,8 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :activity_dispatcher, :requeued]`
     * `[:continuum, :activity_dispatcher, :saturated]`
     * `[:continuum, :activity_dispatcher, :claim_rejected]`
+    * `[:continuum, :partition, :created]`
+    * `[:continuum, :partition, :dropped]`
     * `[:continuum, :recovery, :completed]`
     * `[:continuum, :snapshot, :taken]`
     * `[:continuum, :snapshot, :skipped]`
@@ -112,6 +114,8 @@ defmodule Continuum.Telemetry do
     [:continuum, :activity_dispatcher, :requeued],
     [:continuum, :activity_dispatcher, :saturated],
     [:continuum, :activity_dispatcher, :claim_rejected],
+    [:continuum, :partition, :created],
+    [:continuum, :partition, :dropped],
     [:continuum, :recovery, :completed],
     [:continuum, :snapshot, :taken],
     [:continuum, :snapshot, :skipped]

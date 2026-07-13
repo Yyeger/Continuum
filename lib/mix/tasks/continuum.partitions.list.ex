@@ -11,7 +11,12 @@ defmodule Mix.Tasks.Continuum.Partitions.List do
 
   @impl true
   def run(args) do
-    {opts, _, _} = OptionParser.parse(args, switches: [repo: :string])
+    {opts, rest, invalid} = OptionParser.parse(args, strict: [repo: :string])
+
+    if invalid != [] or rest != [] do
+      Mix.raise("unexpected partition list arguments: #{Enum.join(args, " ")}")
+    end
+
     Mix.Task.run("app.start")
 
     repo = parse_repo(opts)
