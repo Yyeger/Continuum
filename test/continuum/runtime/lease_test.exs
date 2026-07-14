@@ -115,6 +115,28 @@ defmodule Continuum.Runtime.LeaseTest do
     end
   end
 
+  describe "release/4" do
+    test "atomically releases only the matching fenced lease" do
+      run_id = Ecto.UUID.generate()
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
+      assert {:ok, %Lease{owner: owner, token: token}} = Lease.acquire(run_id, owner: "node-a")
+
+      assert {:error, :lost} = Lease.release(run_id, "node-b", token)
+      assert {:error, :lost} = Lease.release(run_id, owner, token + 1)
+      assert :ok = Lease.release(run_id, owner, token)
+
+      run = Repo.one!(from(r in Run, where: r.id == ^run_id))
+      assert run.lease_owner == nil
+      assert run.lease_token == nil
+      assert run.lease_expires_at == nil
+
+      assert {:ok, %Lease{owner: "node-b", token: next_token}} =
+               Lease.acquire(run_id, owner: "node-b")
+
+      assert next_token > token
+    end
+  end
+
   describe "journal fencing" do
     test "rejects stale journal writes after another owner steals the lease" do
       run_id = Ecto.UUID.generate()
@@ -251,7 +273,7 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
   use Continuum.Test.DataCase, async: false
 
   alias Continuum.Runtime.Journal.Postgres
-  alias Continuum.Runtime.Lease
+  alias Continuum.Runtime.{Instance, Lease}
   alias Continuum.Runtime.Lease.Heartbeater
   alias Continuum.Schema.Run
 
@@ -261,6 +283,78 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
     def run(_input) do
       await(signal(:continue))
     end
+  end
+
+  defmodule BlockingPgFlow do
+    def __continuum_workflow__ do
+      %{
+        module: __MODULE__,
+        entrypoint: __MODULE__,
+        version: 1,
+        version_hash: :crypto.hash(:sha256, "blocking-lease-drain-test")
+      }
+    end
+
+    def run(%{test_pid: test_pid}) do
+      send(test_pid, {:blocking_flow_started, self()})
+      Process.sleep(:infinity)
+    end
+  end
+
+  test "supervisor shutdown drains engines before the heartbeater exits" do
+    {instance, supervisor} = start_runtime!(drain_timeout_ms: 500)
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(SuspendedPgFlow, %{},
+        instance: instance,
+        journal: Postgres
+      )
+
+    assert_eventually(fn -> Repo.get!(Run, run_id).state == "suspended" end)
+    [{engine_pid, _}] = Registry.lookup(instance.registry, run_id)
+    ref = Process.monitor(engine_pid)
+
+    assert :ok = Supervisor.stop(supervisor, :shutdown, 2_000)
+    assert_receive {:DOWN, ^ref, :process, ^engine_pid, :normal}, 1_000
+
+    run = Repo.get!(Run, run_id)
+    assert run.state == "suspended"
+    assert run.lease_owner == nil
+    assert run.lease_token == nil
+    assert run.lease_expires_at == nil
+
+    assert {:ok, %Lease{owner: "replacement"}} =
+             Lease.acquire(run_id, owner: "replacement", repo: Repo)
+  end
+
+  test "drain forcibly fences a workflow step that exceeds the deadline" do
+    {instance, supervisor} = start_runtime!(drain_timeout_ms: 20)
+    on_exit(fn -> if Process.alive?(supervisor), do: Supervisor.stop(supervisor) end)
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(BlockingPgFlow, %{test_pid: self()},
+        instance: instance,
+        journal: Postgres
+      )
+
+    assert_receive {:blocking_flow_started, engine_pid}, 1_000
+    ref = Process.monitor(engine_pid)
+
+    assert {:ok,
+            %{
+              tracked_count: 1,
+              graceful_count: 0,
+              forced_count: 1,
+              unreleased_count: 0
+            }} = Heartbeater.drain(instance, 20)
+
+    assert_receive {:DOWN, ^ref, :process, ^engine_pid, :killed}, 1_000
+
+    run = Repo.get!(Run, run_id)
+    assert run.state == "running"
+    assert run.lease_owner == nil
+    assert run.lease_token == nil
+    assert :sys.get_state(instance.dispatcher).enabled? == false
   end
 
   test "engine stops itself when the heartbeater detects a stolen lease" do
@@ -300,7 +394,7 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
                     %{run_id: ^run_id, owner: _, lease_token: _}},
                    1_000
 
-    assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1_000
+    assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_000
     assert_eventually(fn -> Registry.lookup(Continuum.Runtime.Registry, run_id) == [] end)
   end
 
@@ -314,6 +408,34 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
       from(r in Run, where: r.id == ^run_id),
       set: [lease_expires_at: expired_at]
     )
+  end
+
+  defp start_runtime!(opts) do
+    name = :"lease_drain_test_#{System.unique_integer([:positive])}"
+
+    children =
+      Continuum.children(
+        name: name,
+        repo: Repo,
+        heartbeater: opts,
+        activity_supervisor: false,
+        recovery: false,
+        dispatcher: [enabled?: false],
+        activity_dispatcher: false,
+        snapshotter: false,
+        timer_wheel: false,
+        signal_router: false,
+        version_registry: false
+      )
+
+    {:ok, supervisor} =
+      Supervisor.start_link(children,
+        strategy: :one_for_one,
+        name: :"lease_drain_supervisor_#{System.unique_integer([:positive])}"
+      )
+
+    Process.unlink(supervisor)
+    {Instance.lookup(name), supervisor}
   end
 
   defp assert_eventually(fun, attempts \\ 20)

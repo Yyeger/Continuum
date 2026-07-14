@@ -10,10 +10,25 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.Lease, Telemetry}
+  alias Continuum.{Runtime.Dispatcher, Runtime.Engine, Runtime.Lease, Telemetry}
 
   @default_interval_ms 10_000
   @default_ttl_seconds 30
+  @default_drain_timeout_ms 5_000
+  @kill_timeout_ms 1_000
+
+  @doc false
+  def child_spec(opts) do
+    drain_timeout_ms = Keyword.get(opts, :drain_timeout_ms, @default_drain_timeout_ms)
+
+    %{
+      id: {__MODULE__, Keyword.get(opts, :instance, Continuum)},
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :permanent,
+      shutdown: drain_timeout_ms + @kill_timeout_ms + 1_000,
+      type: :worker
+    }
+  end
 
   @doc false
   def start_link(opts \\ []) do
@@ -45,13 +60,30 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
     GenServer.call(instance.heartbeater, :renew_once)
   end
 
+  @doc """
+  Stop new run claims and hand off all locally tracked run leases.
+
+  Engines get up to `timeout_ms` to finish their current workflow step and
+  release voluntarily. Engines still busy at the deadline are stopped before
+  their leases are fenced and released.
+  """
+  def drain(instance, timeout_ms \\ @default_drain_timeout_ms) do
+    GenServer.call(
+      instance.heartbeater,
+      {:drain, timeout_ms},
+      timeout_ms + @kill_timeout_ms + 1_000
+    )
+  end
+
   @impl true
   def init(opts) do
+    Process.flag(:trap_exit, true)
     instance = Continuum.Runtime.Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     state = %{
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
       ttl_seconds: Keyword.get(opts, :ttl_seconds, @default_ttl_seconds),
+      drain_timeout_ms: Keyword.get(opts, :drain_timeout_ms, @default_drain_timeout_ms),
       instance: instance.name,
       repo: instance.repo,
       leases: %{},
@@ -91,6 +123,11 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
     {:reply, :ok, renew_all(state)}
   end
 
+  def handle_call({:drain, timeout_ms}, _from, state) do
+    {summary, state} = drain_tracked_leases(state, timeout_ms)
+    {:reply, {:ok, summary}, state}
+  end
+
   @impl true
   def handle_info(:heartbeat, state) do
     state = renew_all(state)
@@ -103,6 +140,98 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
       {:ok, run_id} -> {:noreply, untrack_run(state, run_id)}
       :error -> {:noreply, state}
     end
+  end
+
+  @impl true
+  def terminate(reason, state) when reason in [:shutdown, :normal] do
+    drain_tracked_leases(state, state.drain_timeout_ms)
+    :ok
+  end
+
+  def terminate({:shutdown, _reason}, state) do
+    drain_tracked_leases(state, state.drain_timeout_ms)
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
+
+  defp drain_tracked_leases(state, timeout_ms) do
+    :ok = Dispatcher.pause(Continuum.Runtime.Instance.lookup(state.instance))
+    state = renew_all(state)
+    leases = state.leases
+
+    Telemetry.execute([:continuum, :lease, :drain_started], %{count: map_size(leases)}, %{
+      instance: state.instance,
+      timeout_ms: timeout_ms
+    })
+
+    Enum.each(leases, fn {_run_id, entry} -> Engine.drain(entry.pid) end)
+
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    remaining = await_down(leases, deadline)
+    forced_count = map_size(remaining)
+
+    Enum.each(remaining, fn {_run_id, entry} -> Process.exit(entry.pid, :kill) end)
+
+    remaining_after_kill =
+      await_down(remaining, System.monotonic_time(:millisecond) + @kill_timeout_ms)
+
+    releasable = Map.drop(leases, Map.keys(remaining_after_kill))
+
+    {released_count, release_failed_count} =
+      Enum.reduce(releasable, {0, 0}, fn {run_id, entry}, {released, failed} ->
+        case Lease.release(run_id, entry.owner, entry.token, repo: state.repo) do
+          :ok ->
+            {released + 1, failed}
+
+          {:error, :lost} ->
+            {released, failed}
+
+          {:error, reason} ->
+            Logger.error("Lease release during drain failed for #{run_id}: #{inspect(reason)}")
+            {released, failed + 1}
+        end
+      end)
+
+    clear_state = clear_tracked_leases(state)
+
+    summary = %{
+      tracked_count: map_size(leases),
+      graceful_count: map_size(leases) - forced_count,
+      forced_count: forced_count,
+      unreleased_count: map_size(remaining_after_kill) + release_failed_count,
+      released_count: released_count
+    }
+
+    Telemetry.execute([:continuum, :lease, :drain_completed], summary, %{
+      instance: state.instance
+    })
+
+    {summary, clear_state}
+  end
+
+  defp await_down(leases, _deadline) when map_size(leases) == 0, do: leases
+
+  defp await_down(leases, deadline) do
+    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {:DOWN, ref, :process, _pid, _reason} ->
+        await_down(drop_ref(leases, ref), deadline)
+    after
+      timeout -> leases
+    end
+  end
+
+  defp drop_ref(leases, ref) do
+    leases
+    |> Enum.reject(fn {_run_id, entry} -> entry.ref == ref end)
+    |> Map.new()
+  end
+
+  defp clear_tracked_leases(state) do
+    Enum.each(state.refs, fn {ref, _run_id} -> Process.demonitor(ref, [:flush]) end)
+    %{state | leases: %{}, refs: %{}}
   end
 
   defp renew_all(state) do

@@ -139,6 +139,44 @@ defmodule Continuum.Runtime.Lease do
     end
   end
 
+  @doc """
+  Release a lease only while its owner and fencing token still match.
+
+  Clearing the token fences the old engine before another dispatcher can
+  acquire the run. `{:error, :lost}` means the run is terminal or its lease was
+  already released or replaced.
+  """
+  @spec release(binary(), binary(), integer(), keyword()) :: :ok | {:error, term()}
+  def release(run_id, owner, token, opts \\ []) do
+    sql = """
+    UPDATE continuum_runs
+    SET lease_owner = NULL,
+        lease_token = NULL,
+        lease_expires_at = NULL
+    WHERE id = $1::text::uuid
+      AND lease_owner = $2
+      AND lease_token = $3
+      AND state IN ('running', 'suspended')
+    """
+
+    case repo(opts).query(sql, [run_id, owner, token]) do
+      {:ok, %{num_rows: 1}} ->
+        Telemetry.execute([:continuum, :lease, :released], %{}, %{
+          run_id: run_id,
+          owner: owner,
+          lease_token: token
+        })
+
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        {:error, :lost}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp repo(opts) do
     Keyword.get(opts, :repo) || Application.fetch_env!(:continuum, :repo)
   end

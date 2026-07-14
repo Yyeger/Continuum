@@ -473,6 +473,22 @@ defmodule Continuum.Runtime.Engine do
     {:noreply, state, {:continue, :run}}
   end
 
+  def handle_cast(:drain, %{journal: Postgres, lease_token: token} = state)
+      when is_integer(token) do
+    case Lease.release(state.run_id, state.lease_owner, token, repo: state.instance.repo) do
+      result when result in [:ok, {:error, :lost}] ->
+        state = %{state | status: :drained}
+        Telemetry.execute([:continuum, :run, :drained], %{}, run_metadata(state))
+        {:stop, :normal, state}
+
+      {:error, reason} ->
+        Logger.error("Workflow #{state.run_id} drain release failed: #{inspect(reason)}")
+        {:noreply, state}
+    end
+  end
+
+  def handle_cast(:drain, state), do: {:stop, :normal, %{state | status: :drained}}
+
   # A dispatcher claimed this run while a live local engine already owned it
   # (fresh-start race): hand the rotated token to the existing engine instead
   # of dropping it, which would fence the engine out until the orphaned lease
@@ -530,6 +546,9 @@ defmodule Continuum.Runtime.Engine do
     :exit, {:timeout, _} -> {:error, :timeout}
     :exit, reason -> {:error, reason}
   end
+
+  @doc false
+  def drain(pid) when is_pid(pid), do: GenServer.cast(pid, :drain)
 
   @impl true
   def handle_info(

@@ -4,6 +4,30 @@ Continuum's runtime tables are intentionally append-heavy. v0.4 adds two
 dry-run-by-default cleanup tasks for data that is safe to prune after operators
 decide their retention policy.
 
+## Graceful Shutdown
+
+Stopping the supervisor that owns `Continuum.children/1` performs a bounded
+lease drain. New run claims pause first, the heartbeater remains alive while
+engines finish their current step, and each engine is stopped before its fenced
+lease is released. This lets another node claim the run without waiting for the
+lease TTL.
+
+The default drain deadline is five seconds. Increase it for workflows whose
+individual deterministic steps legitimately take longer:
+
+```elixir
+Continuum.children(
+  repo: MyApp.Repo,
+  heartbeater: [drain_timeout_ms: 10_000]
+)
+```
+
+Your deployment platform's termination grace period must also cover activity
+worker shutdown. With the built-in executor defaults, allow at least seven
+seconds beyond the run-drain deadline (12 seconds total with the default).
+If the VM is killed before supervision can shut down, ordinary lease-expiry
+recovery remains the fallback.
+
 ## Workflow Version Registry GC
 
 `continuum_workflow_versions` records loaded workflow hashes so Postgres-backed

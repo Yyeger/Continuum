@@ -15,6 +15,7 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :run, :failed]`
     * `[:continuum, :run, :cancelled]`
     * `[:continuum, :run, :lease_lost]`
+    * `[:continuum, :run, :drained]`
     * `[:continuum, :run, :forwarded]`
     * `[:continuum, :run, :unknown_version]`
     * `[:continuum, :patched, :hit]`
@@ -41,6 +42,9 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :lease, :acquired]`
     * `[:continuum, :lease, :renewed]`
     * `[:continuum, :lease, :lost]`
+    * `[:continuum, :lease, :released]`
+    * `[:continuum, :lease, :drain_started]`
+    * `[:continuum, :lease, :drain_completed]`
     * `[:continuum, :dispatcher, :polled]`
     * `[:continuum, :dispatcher, :claimed]`
     * `[:continuum, :activity_dispatcher, :polled]`
@@ -83,6 +87,7 @@ defmodule Continuum.Telemetry do
     [:continuum, :run, :failed],
     [:continuum, :run, :cancelled],
     [:continuum, :run, :lease_lost],
+    [:continuum, :run, :drained],
     [:continuum, :run, :forwarded],
     [:continuum, :run, :unknown_version],
     [:continuum, :patched, :hit],
@@ -109,6 +114,9 @@ defmodule Continuum.Telemetry do
     [:continuum, :lease, :acquired],
     [:continuum, :lease, :renewed],
     [:continuum, :lease, :lost],
+    [:continuum, :lease, :released],
+    [:continuum, :lease, :drain_started],
+    [:continuum, :lease, :drain_completed],
     [:continuum, :dispatcher, :polled],
     [:continuum, :dispatcher, :claimed],
     [:continuum, :activity_dispatcher, :polled],

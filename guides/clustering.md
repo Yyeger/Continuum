@@ -20,10 +20,30 @@ lease check and the heartbeater stops that engine.
 
 ## Failure Recovery
 
-Node failure recovery is lease-expiry based in v0.5.0. A run abandoned by a dead
-node becomes claimable after its lease TTL expires, then any node's dispatcher can
-resume it from the journal. The default TTL is 30 seconds, so worst-case resume
-latency after node death is roughly that TTL plus the dispatcher poll interval.
+Abrupt node failure recovery is lease-expiry based. A run abandoned by a dead
+node becomes claimable after its lease TTL expires, then any node's dispatcher
+can resume it from the journal. The default TTL is 30 seconds, so worst-case
+resume latency after node death is roughly that TTL plus the dispatcher poll
+interval.
+
+Planned supervisor shutdowns drain instead of waiting for that TTL. The
+heartbeater pauses new run claims, renews tracked leases once, and gives engines
+up to five seconds to finish their current step or reach suspension. It then
+stops any remaining engine before atomically fencing and releasing its lease,
+so another node can take over immediately. Configure the bound per instance:
+
+```elixir
+Continuum.children(
+  repo: MyApp.Repo,
+  heartbeater: [drain_timeout_ms: 10_000]
+)
+```
+
+Keep the Continuum children under your release's normal application supervisor;
+its shutdown sequence is the pre-stop hook. Abrupt VM or machine death still
+falls back to lease expiry. With the built-in activity executor, configure the
+platform termination grace period to exceed the run-drain deadline by at least
+seven seconds so activity workers can stop first.
 
 Activity tasks use the same rule. Boot recovery only requeues leased activity
 tasks after their task lease has expired, so a newly booted node does not steal
@@ -34,7 +54,9 @@ work from a live worker on another node.
 Continuum emits `[:continuum, :run, :forwarded]` when a wake is forwarded through
 `:pg`, with `:from_node` and `:to_node` metadata. It emits
 `[:continuum, :lease, :lost]` when a heartbeater discovers that another owner has
-stolen a run lease.
+stolen a run lease. Graceful shutdown emits `[:continuum, :lease,
+:drain_started]` and `[:continuum, :lease, :drain_completed]`; alert when the
+completed event reports a non-zero `unreleased_count`.
 
 ## Test Harness
 

@@ -46,6 +46,16 @@ defmodule Continuum.Runtime.Dispatcher do
     end
   end
 
+  @doc false
+  def pause(instance) do
+    case Process.whereis(instance.dispatcher) do
+      nil -> :ok
+      _pid -> GenServer.call(instance.dispatcher, :pause)
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
   @impl true
   def init(opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -72,6 +82,13 @@ defmodule Continuum.Runtime.Dispatcher do
   end
 
   @impl true
+  def handle_call(:pause, _from, state) do
+    {:reply, :ok, %{state | enabled?: false}}
+  end
+
+  @impl true
+  def handle_info(:poll, %{enabled?: false} = state), do: {:noreply, state}
+
   def handle_info(:poll, state) do
     case dispatch_once(
            instance: state.instance,
