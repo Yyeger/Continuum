@@ -531,9 +531,16 @@ defmodule Continuum.Workflow.BeforeCompile do
     |> Base.encode16(case: :lower)
   end
 
-  # Strip line metadata, keep structure.
+  # Strip line metadata, keep structure. Elixir 1.20 changed the synthetic
+  # variable used when lowering `&local_fun/1` from `:capture` to `:"_&"` with
+  # an `:elixir_fn` context. The name is not source semantics, so canonicalize
+  # the new representation to the established form to keep durable workflow
+  # hashes stable across supported compiler versions.
   defp normalize(ast) do
     Macro.prewalk(ast, fn
+      {:"_&", _meta, :elixir_fn} ->
+        {:capture, [], nil}
+
       {form, meta, args} when is_list(meta) ->
         {form, [], args}
 

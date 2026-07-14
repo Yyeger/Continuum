@@ -240,8 +240,6 @@ defmodule Continuum.OpenTelemetry do
     _ -> :no_span
   end
 
-  defp end_span(_state, :no_span, _status, _attributes), do: :ok
-
   defp end_span(%{tracer: :opentelemetry}, %{span: span, previous: previous}, status, attributes) do
     apply(:otel_span, :set_attributes, [span, attributes])
     if status != :unset, do: apply(:otel_span, :set_status, [span, status])
@@ -256,8 +254,6 @@ defmodule Continuum.OpenTelemetry do
     call_custom_tracer(tracer, :end_span, [span, status, attributes, custom_config(tracer)])
     :ok
   end
-
-  defp add_event(_state, :no_span, _name, _attributes), do: :ok
 
   defp add_event(%{tracer: :opentelemetry}, %{span: span}, name, attributes) do
     apply(:otel_span, :add_event, [span, name, attributes])

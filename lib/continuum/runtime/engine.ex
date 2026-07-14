@@ -135,8 +135,6 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
-  defp request_cancel(%Instance{repo: nil}, _run_id), do: :ok
-
   defp request_cancel(instance, run_id) do
     result =
       instance.repo.query(
@@ -848,10 +846,6 @@ defmodule Continuum.Runtime.Engine do
       if lease_lost?(:error, mark_error),
         do: lease_lost(state),
         else: fail_run(state, {:error, error, []}, {:error, error})
-  end
-
-  defp unknown_version(state, error) do
-    fail_run(state, {:error, error, []}, {:error, error})
   end
 
   defp cancel_run(%{journal: Continuum.Runtime.Journal.Postgres} = state) do

@@ -8,7 +8,7 @@ defmodule Continuum.MixProject do
     [
       app: :continuum,
       version: @version,
-      elixir: "~> 1.19",
+      elixir: ">= 1.19.0 and < 1.21.0",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
