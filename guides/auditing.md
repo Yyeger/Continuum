@@ -3,6 +3,9 @@
 `mix continuum.audit` is a read-only operator task for workflow metadata and
 patch-marker hygiene.
 
+For live operational state, queue/lease lag, partition coverage, and fenced
+repair actions, use `mix continuum.health`; see `guides/operations.md`.
+
 ```bash
 mix continuum.audit --repo MyApp.Repo
 mix continuum.audit --repo MyApp.Repo --format json

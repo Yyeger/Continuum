@@ -73,6 +73,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  """
                  UPDATE continuum_runs
                  SET lease_token = nextval('continuum_lease_token_seq'),
+                     lease_acquired_at = clock_timestamp(),
+                     lease_heartbeat_at = clock_timestamp(),
                      lease_expires_at = now() + make_interval(secs => $2)
                  WHERE id = $1::text::uuid
                  RETURNING lease_token

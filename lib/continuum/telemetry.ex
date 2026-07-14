@@ -57,6 +57,7 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :partition, :dropped]`
     * `[:continuum, :version_registry, :registered]`
     * `[:continuum, :version_registry, :failed]`
+    * `[:continuum, :health, :repaired]`
     * `[:continuum, :recovery, :completed]`
     * `[:continuum, :snapshot, :taken]`
     * `[:continuum, :snapshot, :skipped]`
@@ -130,6 +131,7 @@ defmodule Continuum.Telemetry do
     [:continuum, :partition, :dropped],
     [:continuum, :version_registry, :registered],
     [:continuum, :version_registry, :failed],
+    [:continuum, :health, :repaired],
     [:continuum, :recovery, :completed],
     [:continuum, :snapshot, :taken],
     [:continuum, :snapshot, :skipped]

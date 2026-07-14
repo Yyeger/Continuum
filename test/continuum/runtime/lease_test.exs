@@ -54,6 +54,8 @@ defmodule Continuum.Runtime.LeaseTest do
       assert is_integer(token)
       assert run.lease_owner == "node-a"
       assert run.lease_token == token
+      assert %DateTime{} = run.lease_acquired_at
+      assert %DateTime{} = run.lease_heartbeat_at
       assert run.lease_expires_at != nil
     end
 
@@ -98,7 +100,11 @@ defmodule Continuum.Runtime.LeaseTest do
       :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
       assert {:ok, %Lease{owner: owner, token: token}} = Lease.acquire(run_id, owner: "node-a")
 
+      past = DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+      Repo.update_all(from(r in Run, where: r.id == ^run_id), set: [lease_heartbeat_at: past])
+
       assert :ok = Lease.renew(run_id, owner, token)
+      assert DateTime.compare(Repo.get!(Run, run_id).lease_heartbeat_at, past) == :gt
       assert {:error, :lost} = Lease.renew(run_id, "node-b", token)
       assert {:error, :lost} = Lease.renew(run_id, owner, token + 1)
     end

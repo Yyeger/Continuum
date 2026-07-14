@@ -93,6 +93,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :completed_at, :utc_datetime_usec
           add :lease_owner, :text
           add :lease_token, :bigint
+          add :lease_acquired_at, :utc_datetime_usec
+          add :lease_heartbeat_at, :utc_datetime_usec
           add :lease_expires_at, :utc_datetime_usec
           add :next_wakeup_at, :utc_datetime_usec
           add :retention_until, :utc_datetime_usec
@@ -258,9 +260,24 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         ALTER TABLE continuum_workflow_versions
           ADD PRIMARY KEY (workflow, version_hash)
         \"\"\"
+
+        create table(:continuum_health_reviews, primary_key: false) do
+          add :finding_type, :text, null: false
+          add :subject_id, :text, null: false
+          add :fingerprint, :text, null: false
+          add :reviewed_by, :text
+          add :reason, :text
+          add :reviewed_at, :utc_datetime_usec, null: false, default: fragment(\"now()\")
+        end
+
+        execute \"\"\"
+        ALTER TABLE continuum_health_reviews
+          ADD PRIMARY KEY (finding_type, subject_id, fingerprint)
+        \"\"\"
       end
 
       def down do
+        drop_if_exists table(:continuum_health_reviews)
         drop_if_exists table(:continuum_workflow_versions)
         drop_if_exists table(:continuum_snapshots)
         drop_if_exists table(:continuum_activity_results)

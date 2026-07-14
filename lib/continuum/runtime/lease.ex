@@ -47,6 +47,8 @@ defmodule Continuum.Runtime.Lease do
     UPDATE continuum_runs
     SET lease_owner = $1,
         lease_token = nextval('continuum_lease_token_seq'),
+        lease_acquired_at = clock_timestamp(),
+        lease_heartbeat_at = clock_timestamp(),
         lease_expires_at = now() + make_interval(secs => $2)
     WHERE id = $3::text::uuid
       AND state IN ('running', 'suspended')
@@ -105,7 +107,8 @@ defmodule Continuum.Runtime.Lease do
 
     sql = """
     UPDATE continuum_runs
-    SET lease_expires_at = now() + make_interval(secs => $4)
+    SET lease_heartbeat_at = clock_timestamp(),
+        lease_expires_at = now() + make_interval(secs => $4)
     WHERE id = $1::text::uuid
       AND lease_owner = $2
       AND lease_token = $3

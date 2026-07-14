@@ -136,7 +136,10 @@
 }
 
 .co-pagination button,
-.co-actions button {
+.co-actions button,
+.co-header button,
+.co-health-finding button,
+.co-repair-confirm button {
   background: #17202a;
   border: 1px solid #17202a;
   border-radius: 6px;
@@ -147,7 +150,8 @@
 }
 
 .co-pagination button:disabled,
-.co-actions button:disabled {
+.co-actions button:disabled,
+.co-health-finding button:disabled {
   background: #edf1f5;
   border-color: #d9e0e7;
   color: #7a8694;
@@ -246,4 +250,74 @@
   border-radius: 6px;
   overflow: auto;
   padding: 10px;
+}
+
+.co-health-summary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  margin-bottom: 24px;
+}
+
+.co-health-summary article {
+  background: #f6f8fa;
+  border: 1px solid #e6ebf0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.co-health-summary span,
+.co-health-summary strong {
+  display: block;
+}
+
+.co-health-summary span {
+  color: #5b6775;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.co-health-summary strong {
+  font-size: 20px;
+}
+
+.co-health-finding,
+.co-repair-confirm {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 7px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin: 8px 0;
+  padding: 10px 12px;
+}
+
+.co-health-finding.co-reviewed {
+  background: #f6f8fa;
+  border-color: #d9e0e7;
+  color: #5b6775;
+}
+
+.co-health-finding > div,
+.co-repair-confirm {
+  display: flex;
+  gap: 8px;
+}
+
+.co-repair-confirm {
+  background: #e7f0ff;
+  border-color: #b8d2f3;
+  margin-bottom: 20px;
+}
+
+.co-repair-confirm p {
+  flex: 1;
+  margin: 0;
+}
+
+.co-secondary {
+  background: #fff !important;
+  color: #17202a !important;
 }

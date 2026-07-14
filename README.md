@@ -212,9 +212,11 @@ end
 ## Observer
 
 The optional `Continuum.Observer` LiveView lists runs, renders the journal
-event timeline per run, and exposes operator actions for cancelling a run and
-sending a signal. It is mounted from a host Phoenix router and ships no
-authentication of its own — wrap it in your existing admin pipeline.
+event timeline per run, and includes an operational health panel for
+partitions, workflow versions, durable wakes, timers, leases, activities, and
+signals. It exposes operator actions for cancelling a run, sending a signal,
+and previewing fenced repairs. It is mounted from a host Phoenix router and
+ships no authentication of its own — wrap it in your existing admin pipeline.
 
 ![Continuum Observer runs index](./dev/ui.png)
 

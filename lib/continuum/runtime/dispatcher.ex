@@ -130,6 +130,8 @@ defmodule Continuum.Runtime.Dispatcher do
     UPDATE continuum_runs AS r
     SET lease_owner = $1,
         lease_token = nextval('continuum_lease_token_seq'),
+        lease_acquired_at = clock_timestamp(),
+        lease_heartbeat_at = clock_timestamp(),
         lease_expires_at = now() + make_interval(secs => $3)
     FROM candidates
     WHERE r.id = candidates.id

@@ -53,6 +53,16 @@ defmodule Continuum.ObserverLiveTest do
     assert html =~ run_id
   end
 
+  test "health panel renders the shared operational report" do
+    {:ok, _view, html} = live(build_conn(), "/continuum/health")
+
+    assert html =~ "Operational health"
+    assert html =~ "Missing partitions"
+    assert html =~ "Active and suspended runs"
+    assert html =~ "Run leases"
+    assert html =~ "Activities and signals"
+  end
+
   test "runs index shows cancelled runs in the cancelled filter" do
     {:ok, run_id} = Continuum.Test.start_postgres(TimerFlow, %{})
     wait_for_event(run_id, "timer_started")

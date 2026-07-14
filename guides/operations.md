@@ -4,6 +4,61 @@ Continuum's runtime tables are intentionally append-heavy. v0.4 adds two
 dry-run-by-default cleanup tasks for data that is safe to prune after operators
 decide their retention policy.
 
+## Operational Health and Repair
+
+`Continuum.Health.report/1` is the shared health source used by the Mix task
+and Observer. It covers event partition horizon, loaded and durable workflow
+versions, active-run wait reasons and age, lost durable wakes, overdue timers,
+run lease age and heartbeat lag, activity queues/retries/dead letters, and the
+undelivered signal backlog.
+
+```elixir
+{:ok, report} = Continuum.Health.report(instance: :myapp_continuum)
+report.status #=> :ok | :degraded
+```
+
+The command supports text and JSON output. `--strict` exits non-zero when the
+report is degraded.
+
+```bash
+mix continuum.health --repo MyApp.Repo
+mix continuum.health --repo MyApp.Repo --format json
+mix continuum.health --repo MyApp.Repo --strict
+```
+
+Repairs are dry runs by default and must carry the authority observed in the
+report. Review the plan, then repeat it with `--execute`:
+
+```bash
+# Arm a durable wake without overwriting a newer lease epoch.
+mix continuum.health --repo MyApp.Repo --repair wake --target RUN_ID \
+  --lease-token EPOCH
+mix continuum.health --repo MyApp.Repo --repair wake --target RUN_ID \
+  --lease-token EPOCH --execute
+
+# Release only an already-expired run lease.
+mix continuum.health --repo MyApp.Repo --repair release --target RUN_ID \
+  --lease-owner OWNER --lease-token EPOCH --execute
+
+# Requeue only the observed expired task claim.
+mix continuum.health --repo MyApp.Repo --repair requeue --target TASK_ID \
+  --lease-owner OWNER --attempt ATTEMPT --execute
+
+# Retry durable registration for every loaded hash of a workflow.
+mix continuum.health --repo MyApp.Repo --repair retry \
+  --target MyApp.OrderFlow --execute
+
+# Acknowledge exactly the condition fingerprint shown in the report.
+mix continuum.health --repo MyApp.Repo --repair review --target SUBJECT_ID \
+  --finding-type FINDING --fingerprint SHA256 --reviewed-by oncall \
+  --reason "investigated" --execute
+```
+
+The `retry` action re-attempts durable registration for a loaded workflow. The
+`review` action stores a condition fingerprint, so recurrence with a new lease
+epoch, attempt, timestamp, or error becomes unreviewed again. Applied repairs
+emit `[:continuum, :health, :repaired]` telemetry.
+
 ## Graceful Shutdown
 
 Stopping the supervisor that owns `Continuum.children/1` performs a bounded

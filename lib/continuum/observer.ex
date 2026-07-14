@@ -91,6 +91,24 @@ defmodule Continuum.Observer do
   end
 
   @doc """
+  Builds the operational health report shown by the Observer health panel.
+  """
+  @spec health(keyword()) :: {:ok, map()} | {:error, term()}
+  def health(opts \\ []), do: Continuum.Health.report(opts)
+
+  @doc """
+  Plans or executes a fenced operational repair from the Observer.
+
+  Repairs remain dry-run by default; pass `execute: true` after presenting an
+  explicit confirmation to the operator.
+  """
+  @spec repair_health(atom() | binary(), binary(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def repair_health(action, subject_id, opts \\ []) do
+    Continuum.Health.repair(action, subject_id, opts)
+  end
+
+  @doc """
   Returns the run id that this run continued into via `continue_as_new`, or nil.
   """
   @spec successor_run_id(binary(), keyword()) :: binary() | nil

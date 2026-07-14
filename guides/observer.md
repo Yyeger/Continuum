@@ -30,6 +30,14 @@ The Observer provides:
 * a run detail page at `/continuum/runs/:id` with run metadata and decoded
   journal events
 * operator actions for cancelling a run and sending a JSON signal payload
+* an operational health panel at `/continuum/health` backed by
+  `Continuum.Health`, including partition/version drift, run wait reasons,
+  durable wake and timer lag, lease heartbeats, activity queues, dead-letter
+  candidates, and signal backlog
+
+Health repairs in the panel always perform a dry-run preview first. The
+confirmation step executes the same fenced, idempotent repair API exposed by
+`mix continuum.health`; stale lease epochs, owners, and attempts are rejected.
 
 The index subscribes to the per-instance `"continuum:runs"` PubSub topic. That
 topic intentionally receives only coarse state changes and terminal

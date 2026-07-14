@@ -92,6 +92,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             <div><span>Started</span><.timestamp value={@run.started_at} /></div>
             <div><span>Completed</span><.timestamp value={@run.completed_at} /></div>
             <div><span>Lease owner</span><code><%= @run.lease_owner || "-" %></code></div>
+            <div><span>Lease acquired</span><.timestamp value={@run.lease_acquired_at} /></div>
+            <div><span>Lease heartbeat</span><.timestamp value={@run.lease_heartbeat_at} /></div>
             <div><span>Lease expires</span><.timestamp value={@run.lease_expires_at} /></div>
             <div><span>Retention</span><.timestamp value={@run.retention_until} /></div>
             <div><span>Next wakeup</span><.timestamp value={@run.next_wakeup_at} /></div>

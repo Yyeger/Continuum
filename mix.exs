@@ -85,7 +85,8 @@ defmodule Continuum.MixProject do
         "guides/migrations/MIGRATING_v0_3_to_v0_4.md",
         "guides/migrations/MIGRATING_v0_4_to_v0_5.md",
         "guides/migrations/MIGRATING_v0_5_to_v0_5_1.md",
-        "guides/migrations/MIGRATING_v0_5_1_to_v0_6.md"
+        "guides/migrations/MIGRATING_v0_5_1_to_v0_6.md",
+        "guides/migrations/MIGRATING_v0_6_1_to_v0_6_2.md"
       ],
       groups_for_extras: [
         Guides: ~r/guides\/.*/

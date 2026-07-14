@@ -74,6 +74,13 @@ defmodule Continuum.Observer.Router do
           :show,
           as: :continuum_observer_run
         )
+
+        Phoenix.LiveView.Router.live(
+          unquote(base) <> "/health",
+          Continuum.Observer.HealthLive,
+          :show,
+          as: :continuum_observer_health
+        )
       end
     end
   end

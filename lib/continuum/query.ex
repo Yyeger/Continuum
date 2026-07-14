@@ -137,6 +137,8 @@ defmodule Continuum.Query do
       completed_at: run.completed_at,
       lease_owner: run.lease_owner,
       lease_token: run.lease_token,
+      lease_acquired_at: run.lease_acquired_at,
+      lease_heartbeat_at: run.lease_heartbeat_at,
       lease_expires_at: run.lease_expires_at,
       next_wakeup_at: run.next_wakeup_at,
       retention_until: run.retention_until,

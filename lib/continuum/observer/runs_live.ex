@@ -62,6 +62,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             <h1>Continuum</h1>
             <p>Workflow runs for <code><%= inspect(@instance) %></code></p>
           </div>
+          <a href={"#{@observer_path}/health"} class="co-back">Operational health</a>
         </header>
 
         <form id="co-runs-filter" phx-change="filter" class="co-toolbar">

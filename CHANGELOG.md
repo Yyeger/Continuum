@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.6.2 — Unreleased — "Operational health"
+
+### Features
+
+- Added `Continuum.Health.report/1` and `mix continuum.health` with text, JSON,
+  and strict output covering partition horizon, workflow registration drift,
+  active-run wait reasons and age, lost wakes, overdue timers, lease age and
+  heartbeat lag, activity backlog/retries/dead letters, and signal catch-up
+  lag.
+- Added dry-run-by-default fenced repairs for waking runs, retrying workflow
+  registration, releasing expired run leases, requeuing expired activity
+  claims, and fingerprinted operator reviews. Mutating repairs compare the
+  observed lease epoch/owner or activity attempt/owner and are idempotent.
+- Added an Observer operational health panel with repair previews and explicit
+  execution confirmation.
+- Added durable run lease acquisition/heartbeat timestamps and
+  `continuum_health_reviews`; generated migrations include the new schema.
+
 ## v0.6.1 — 2026-06-27 — "Audit follow-up"
 
 A second logic audit after the v0.6.0 hardening release surfaced a follow-up
