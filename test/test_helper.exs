@@ -1,5 +1,10 @@
 ExUnit.start()
 
+case Continuum.Test.ImpureProbe.start_link() do
+  {:ok, _pid} -> :ok
+  {:error, {:already_started, _pid}} -> :ok
+end
+
 cluster_test? = System.get_env("CONTINUUM_CLUSTER_TEST") == "1"
 
 unless cluster_test? do

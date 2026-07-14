@@ -3,7 +3,7 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   require Logger
 
-  alias Continuum.{Runtime.Engine, Runtime.Journal, Telemetry}
+  alias Continuum.{DurableTerm, Runtime.Engine, Runtime.Journal, Telemetry}
 
   def execute(task) do
     started_at = System.monotonic_time(:millisecond)
@@ -29,7 +29,7 @@ defmodule Continuum.Runtime.ActivityWorker do
 
                 :miss ->
                   case run_activity(task) do
-                    {:ok, result} -> complete(task, result, started_at)
+                    {:ok, result} -> complete_durable(task, result, started_at)
                     {:error, error} -> fail_or_retry(task, error, started_at)
                   end
               end
@@ -47,6 +47,13 @@ defmodule Continuum.Runtime.ActivityWorker do
         )
 
         :ok
+    end
+  end
+
+  defp complete_durable(task, result, started_at) do
+    case DurableTerm.validate(result, :activity_result) do
+      :ok -> complete(task, result, started_at)
+      {:error, error} -> fail(task, error, started_at)
     end
   end
 

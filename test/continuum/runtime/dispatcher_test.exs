@@ -226,8 +226,10 @@ defmodule Continuum.Runtime.DispatcherTest do
   end
 
   test "dispatch_once resumes an expired running row after the engine dies" do
+    probe = Continuum.Test.ImpureProbe.register()
+
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(RunningCrashFlow, %{seed: 8, test_pid: self()},
+      Continuum.Runtime.Engine.start_run(RunningCrashFlow, %{seed: 8, test_pid: probe},
         journal: Postgres
       )
 

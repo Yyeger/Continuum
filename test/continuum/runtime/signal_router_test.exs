@@ -83,6 +83,21 @@ defmodule Continuum.Runtime.SignalRouterTest do
     assert {:error, :not_found} = Continuum.signal(Ecto.UUID.generate(), :decision, :go)
   end
 
+  test "rejects node-local identities in durable signal payloads" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+    end)
+
+    assert_raise Continuum.DurableTermError, ~r/signal.approver/, fn ->
+      Continuum.signal(run_id, :decision, %{approver: self()})
+    end
+
+    assert Repo.aggregate(Signal, :count) == 0
+  end
+
   test "signaling a terminal run returns {:error, :run_terminal}" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)

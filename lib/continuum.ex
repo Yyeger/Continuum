@@ -151,6 +151,10 @@ defmodule Continuum do
   persisting an opaque W3C traceparent binary that
   observability integrations can use to link resumed run attempts, and
   `:attributes` for JSON-encodable search metadata stored on the run row.
+
+  Inputs cross a journal boundary and must not contain PIDs, references, ports,
+  or functions. `Continuum.DurableTermError` reports the path to an invalid
+  nested value before the run is inserted.
   """
   @spec start(workflow_module(), input(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def start(workflow_module, input, opts \\ []) do
@@ -158,7 +162,8 @@ defmodule Continuum do
   end
 
   @doc """
-  Deliver a signal to a running workflow.
+  Deliver a signal to a running workflow. Signal payloads must not contain
+  PIDs, references, ports, or functions.
   """
   @spec signal(run_id(), atom(), term()) :: :ok | {:error, term()}
   def signal(run_id, name, payload) do
@@ -167,7 +172,8 @@ defmodule Continuum do
 
   @doc """
   Deliver a signal to a running workflow, selecting a Continuum instance with
-  `:instance`.
+  `:instance`. Signal payloads follow the same durable-term restrictions as
+  workflow inputs.
   """
   @spec signal(run_id(), atom(), term(), keyword()) :: :ok | {:error, term()}
   def signal(run_id, name, payload, opts) do
@@ -309,8 +315,9 @@ defmodule Continuum do
 
   The function is called once on first execution; its return value is
   journaled and returned on every subsequent replay. Return values must be
-  serializable via `:erlang.term_to_binary/1` — pids, refs, ports, and
-  similar local-only terms are rejected.
+  replay-safe across processes and nodes. PIDs, references, ports, and
+  functions are rejected recursively with a path-aware
+  `Continuum.DurableTermError`.
 
   This is a macro so Continuum can capture the source call site for a stable
   command identity. Workflow modules that `use Continuum.Workflow` already

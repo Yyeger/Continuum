@@ -295,8 +295,8 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
       }
     end
 
-    def run(%{test_pid: test_pid}) do
-      send(test_pid, {:blocking_flow_started, self()})
+    def run(%{test_pid: probe}) do
+      Continuum.Test.ImpureProbe.notify_with_self(probe, :blocking_flow_started)
       Process.sleep(:infinity)
     end
   end
@@ -330,9 +330,10 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
   test "drain forcibly fences a workflow step that exceeds the deadline" do
     {instance, supervisor} = start_runtime!(drain_timeout_ms: 20)
     on_exit(fn -> if Process.alive?(supervisor), do: Supervisor.stop(supervisor) end)
+    probe = Continuum.Test.ImpureProbe.register()
 
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(BlockingPgFlow, %{test_pid: self()},
+      Continuum.Runtime.Engine.start_run(BlockingPgFlow, %{test_pid: probe},
         instance: instance,
         journal: Postgres
       )

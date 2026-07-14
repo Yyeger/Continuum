@@ -4,12 +4,11 @@ defmodule Continuum.Cluster.ActivityNodeDeathTest do
   test "an activity task leased by a dead node is requeued after lease expiry" do
     peer_a = start_peer!(:activity_a)
     peer_b = start_peer!(:activity_b)
-    test_pid = self()
 
     try do
       run_id =
         peer_call(peer_a, Continuum.Test.ClusterScenarios, :start_activity_run, [
-          %{test_pid: test_pid, value: 7},
+          %{value: 7},
           [lease_ttl_seconds: 30]
         ])
 
@@ -22,8 +21,12 @@ defmodule Continuum.Cluster.ActivityNodeDeathTest do
                  ttl_seconds: 30
                )
 
-      assert_receive {:cluster_activity_started, node_a}, 5_000
-      assert String.contains?(Atom.to_string(node_a), "activity_a")
+      wait_until(fn ->
+        case Repo.one(from(t in ActivityTask, where: t.run_id == ^run_id)) do
+          %ActivityTask{state: "leased", lease_owner: "activity-a"} -> true
+          _ -> false
+        end
+      end)
 
       # Node A dies mid-activity (the activity is parked in Process.sleep(:infinity)),
       # so its run and task leases are left dangling. Rather than wait out a real
@@ -49,9 +52,6 @@ defmodule Continuum.Cluster.ActivityNodeDeathTest do
                  batch_size: 1,
                  ttl_seconds: 5
                )
-
-      assert_receive {:cluster_activity_started, node_b}, 5_000
-      assert String.contains?(Atom.to_string(node_b), "activity_b")
 
       assert {:ok, %{state: :completed, result: {:ok, 14}}} =
                Engine.await(run_id, 5_000, journal: Journal.Postgres)

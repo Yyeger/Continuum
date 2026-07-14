@@ -8,10 +8,15 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
   defmodule Activities do
     use Continuum.Activity, retry: [max_attempts: 1]
 
-    def first(pid), do: send(pid, {:activity, :first}) && {:ok, :first}
-    def second(pid), do: send(pid, {:activity, :second}) && {:ok, :second}
-    def undo_first(pid), do: send(pid, {:compensated, :first}) && :undone_first
-    def undo_second(pid), do: send(pid, {:compensated, :second}) && :undone_second
+    def first(probe), do: notify(probe, {:activity, :first}, {:ok, :first})
+    def second(probe), do: notify(probe, {:activity, :second}, {:ok, :second})
+    def undo_first(probe), do: notify(probe, {:compensated, :first}, :undone_first)
+    def undo_second(probe), do: notify(probe, {:compensated, :second}, :undone_second)
+
+    defp notify(probe, message, result) do
+      Continuum.Test.ImpureProbe.notify(probe, message)
+      result
+    end
   end
 
   defmodule ParallelFlow do
@@ -48,8 +53,10 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
   end
 
   test "parallel compensate_all schedules all compensations before any complete" do
+    probe = Continuum.Test.ImpureProbe.register()
+
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(ParallelFlow, %{pid: self()}, journal: Postgres)
+      Continuum.Runtime.Engine.start_run(ParallelFlow, %{pid: probe}, journal: Postgres)
 
     assert_eventually(fn -> event_count(run_id, "activity_scheduled") == 1 end)
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "parallel-comp", batch_size: 1)
@@ -80,8 +87,10 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
   end
 
   test "single parallel compensation replays from compacted snapshot step" do
+    probe = Continuum.Test.ImpureProbe.register()
+
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(SingletonParallelFlow, %{pid: self()}, journal: Postgres)
+      Continuum.Runtime.Engine.start_run(SingletonParallelFlow, %{pid: probe}, journal: Postgres)
 
     assert_eventually(fn -> event_count(run_id, "activity_scheduled") == 1 end)
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "parallel-singleton", batch_size: 1)
@@ -117,7 +126,7 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
     assert {:ok, {:ok, :after_parallel_compensation}} =
              Continuum.Test.replay(
                SingletonParallelFlow,
-               %{pid: self()},
+               %{pid: probe},
                remaining,
                snapshot: snapshot,
                journal: Postgres
@@ -125,8 +134,10 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
   end
 
   test "catch-up recovers a committed compensation when the immediate wake is lost" do
+    probe = Continuum.Test.ImpureProbe.register()
+
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(SingletonParallelFlow, %{pid: self()}, journal: Postgres)
+      Continuum.Runtime.Engine.start_run(SingletonParallelFlow, %{pid: probe}, journal: Postgres)
 
     assert_eventually(fn -> event_count(run_id, "activity_scheduled") == 1 end)
     assert {:ok, 1} = Dispatcher.dispatch_once(owner: "lost-compensation-wake", batch_size: 1)

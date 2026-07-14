@@ -24,6 +24,20 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule LocalIdentityActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(_seed), do: self()
+  end
+
+  defmodule LocalIdentityFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      activity(LocalIdentityActivity.run(input.seed))
+    end
+  end
+
   defmodule IdempotentActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
 
@@ -148,8 +162,8 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
   defmodule LeaseRaceActivity do
     use Continuum.Activity, retry: [max_attempts: 2]
 
-    def run(test_pid) do
-      send(test_pid, {:lease_race_activity_started, self()})
+    def run(probe) do
+      Continuum.Test.ImpureProbe.notify_with_self(probe, :lease_race_activity_started)
 
       receive do
         :finish_lease_race_activity -> {:ok, :finished}
@@ -231,6 +245,24 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
 
     assert Repo.one!(ActivityTask).state == "completed"
+  end
+
+  test "turns a node-local activity result into a non-retryable durable failure" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(LocalIdentityFlow, %{seed: 1}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    assert {:ok, 1} = Dispatcher.dispatch_once(owner: "invalid-result", batch_size: 1)
+
+    assert {:ok,
+            %{
+              state: :completed,
+              result: {:error, %Continuum.DurableTermError{kind: :PID} = error}
+            }} = Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Exception.message(error) =~ "activity_result"
+    assert Repo.one!(ActivityTask).state == "discarded"
+    assert event_types(run_id) == ["activity_scheduled", "activity_failed"]
   end
 
   test "activity idempotency hit skips the MFA and journals the committed result" do
@@ -1000,10 +1032,12 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
   end
 
   test "a stale worker cannot release a newer attempt owned by the same dispatcher" do
+    probe = Continuum.Test.ImpureProbe.register()
+
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(
         LeaseRaceFlow,
-        %{test_pid: self()},
+        %{test_pid: probe},
         journal: Postgres
       )
 

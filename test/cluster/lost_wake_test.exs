@@ -10,7 +10,7 @@ defmodule Continuum.Cluster.LostWakeTest do
     try do
       run_id =
         peer_call(owner, Continuum.Test.ClusterScenarios, :start_activity_run, [
-          %{test_pid: self(), value: 7},
+          %{value: 7},
           [lease_ttl_seconds: 30]
         ])
 

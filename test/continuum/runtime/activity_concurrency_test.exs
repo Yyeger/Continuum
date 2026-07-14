@@ -18,8 +18,8 @@ defmodule Continuum.Runtime.ActivityConcurrencyTest do
   end
 
   defmodule BlockingActivity do
-    def run(parent) do
-      send(parent, {:activity_started, self()})
+    def run(probe) do
+      Continuum.Test.ImpureProbe.notify_with_self(probe, :activity_started)
 
       receive do
         :release -> {:ok, :done}
@@ -73,7 +73,8 @@ defmodule Continuum.Runtime.ActivityConcurrencyTest do
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
-    Enum.each(1..3, &schedule_blocking_task(instance, &1))
+    probe = Continuum.Test.ImpureProbe.register()
+    Enum.each(1..3, &schedule_blocking_task(instance, &1, probe))
 
     two_seconds_ago = DateTime.add(DateTime.utc_now(), -2, :second)
     Repo.update_all(ActivityTask, set: [scheduled_at: two_seconds_ago])
@@ -114,7 +115,7 @@ defmodule Continuum.Runtime.ActivityConcurrencyTest do
     assert Dispatcher.next_poll_delay(1_000, 0, true) == 1_000
   end
 
-  defp schedule_blocking_task(instance, index) do
+  defp schedule_blocking_task(instance, index, probe) do
     run_id = Ecto.UUID.generate()
     task_id = Ecto.UUID.generate()
     owner = "capacity-run-#{index}"
@@ -125,7 +126,7 @@ defmodule Continuum.Runtime.ActivityConcurrencyTest do
     event = %{
       type: :activity_scheduled,
       task_id: task_id,
-      mfa: {BlockingActivity, :run, [self()]},
+      mfa: {BlockingActivity, :run, [probe]},
       opts: [],
       command_id: {:capacity, index},
       seq: 0
@@ -134,7 +135,7 @@ defmodule Continuum.Runtime.ActivityConcurrencyTest do
     task = %{
       id: task_id,
       seq: 0,
-      mfa: {BlockingActivity, :run, [self()]},
+      mfa: {BlockingActivity, :run, [probe]},
       opts: [],
       retry: [max_attempts: 1],
       timeout_ms: 5_000,

@@ -20,7 +20,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   alias Continuum.Runtime.{Instance, JournalError, Snapshotter}
   alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Snapshot, Timer}
-  alias Continuum.Telemetry
+  alias Continuum.{DurableTerm, Telemetry}
 
   @impl true
   def start_run(%Instance{} = instance, run_id, workflow, input, opts \\ []) do
@@ -38,7 +38,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         version_hash: metadata.version_hash,
         namespace: normalize_namespace(Keyword.get(opts, :namespace, "default")),
         state: "running",
-        input: encode_term(input),
+        input: encode_term(input, :input),
         attributes: normalize_attributes(Keyword.get(opts, :attributes, %{})),
         correlation_id: run_id,
         trace_context: Keyword.get(opts, :trace_context)
@@ -326,7 +326,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             namespace: parent.namespace,
             attributes: parent.attributes,
             state: "running",
-            input: encode_term(child.input),
+            input: encode_term(child.input, :input),
             parent_run_id: parent_run_id,
             parent_command_id: child.parent_command_id,
             correlation_id: child.child_run_id,
@@ -600,7 +600,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                 namespace: run.namespace,
                 attributes: run.attributes,
                 state: "running",
-                input: encode_term(next_input),
+                input: encode_term(next_input, :input),
                 correlation_id: correlation,
                 continued_from_run_id: run_id,
                 parent_run_id: run.parent_run_id,
@@ -743,6 +743,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp complete_compensation_task_with_repo!(task, result, lease_token, opts) do
+    DurableTerm.validate!(result, :activity_result)
     idempotency = Keyword.get(opts, :idempotency)
 
     tx_result =
@@ -835,6 +836,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp complete_activity_task_with_repo!(task, result, lease_token, opts) do
+    DurableTerm.validate!(result, :activity_result)
     idempotency = Keyword.get(opts, :idempotency)
 
     tx_result =
@@ -1352,6 +1354,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp deliver_signal_with_repo!(run_id, name, payload) do
+    DurableTerm.validate!(payload, :signal)
     signal_name = Atom.to_string(name)
     now = DateTime.utc_now()
 
@@ -2258,7 +2261,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       event
       |> Map.delete(:type)
       |> Map.delete(:seq)
-      |> encode_term()
+      |> encode_term(:event)
 
     {Atom.to_string(type), payload}
   end
@@ -2340,8 +2343,13 @@ defmodule Continuum.Runtime.Journal.Postgres do
     now
   end
 
-  defp encode_term(nil), do: nil
-  defp encode_term(term), do: :erlang.term_to_binary(term)
+  defp encode_term(term, root \\ :value)
+  defp encode_term(nil, _root), do: nil
+
+  defp encode_term(term, root) do
+    DurableTerm.validate!(term, root)
+    :erlang.term_to_binary(term)
+  end
 
   defp decode_term(nil), do: nil
   defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)

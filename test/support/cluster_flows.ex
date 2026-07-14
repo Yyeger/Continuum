@@ -25,8 +25,6 @@ defmodule Continuum.Test.ClusterFlows do
     use Continuum.Activity, retry: [max_attempts: 2]
 
     def run(input) do
-      send(input.test_pid, {:cluster_activity_started, node()})
-
       if String.contains?(Atom.to_string(node()), "activity_a") do
         Process.sleep(:infinity)
       else

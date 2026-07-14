@@ -45,6 +45,21 @@ defmodule Continuum.Journal.PostgresTest do
       assert Postgres.get_run(Continuum.Runtime.Instance.default(), generate_uuid()) == nil
     end
 
+    test "rejects node-local identities in workflow input before insert" do
+      run_id = generate_uuid()
+
+      assert_raise Continuum.DurableTermError, ~r/input.customer.owner/, fn ->
+        Postgres.start_run(
+          Continuum.Runtime.Instance.default(),
+          run_id,
+          SomeWorkflow,
+          %{customer: %{owner: self()}}
+        )
+      end
+
+      assert Repo.get(Run, run_id) == nil
+    end
+
     test "stores trace_context as opaque binary" do
       run_id = generate_uuid()
       trace_context = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
@@ -97,6 +112,19 @@ defmodule Continuum.Journal.PostgresTest do
       assert loaded.kind == :now
       assert loaded.payload == ~U[2026-01-01 00:00:00Z]
       assert loaded.seq == 0
+    end
+
+    test "rejects node-local identities in event payloads before append" do
+      run_id = generate_uuid()
+      :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
+
+      event = %{type: :side_effect, kind: :user, payload: %{owner: self()}, seq: 0}
+
+      assert_raise Continuum.DurableTermError, ~r/event.payload.owner/, fn ->
+        Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
+      end
+
+      assert Postgres.load(Continuum.Runtime.Instance.default(), run_id) == []
     end
 
     test "appends and loads activity_completed events" do

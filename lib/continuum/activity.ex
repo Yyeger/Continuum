@@ -15,7 +15,10 @@ defmodule Continuum.Activity do
 
   Activities are not subject to the determinism scanner — they can do
   arbitrary I/O, talk to NIFs, raise, etc. Their return value is journaled
-  on first success and replayed on workflow resume.
+  on first success and replayed on workflow resume. Results therefore must not
+  contain PIDs, references, ports, or functions; an invalid result becomes a
+  non-retryable activity failure with a path-aware
+  `Continuum.DurableTermError`.
 
   Execution policy is normalized by `Continuum.Activity.Policy`. Invalid
   module defaults fail compilation; invalid call-site overrides or

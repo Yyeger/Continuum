@@ -122,6 +122,13 @@ not worth a full activity, such as choosing a UUID-like correlation key or
 capturing a small derived value. The function runs only at the live tail; its
 return value is journaled and later replayed.
 
+Every value crossing a journal boundary must remain meaningful after replay on
+another process or node. Workflow and child inputs, side-effect and activity
+results, and signal payloads may use ordinary nested ETF data, but must not
+contain PIDs, references, ports, or functions. Continuum checks recursively
+before committing and raises `Continuum.DurableTermError` with the invalid
+value's path.
+
 Do not use `side_effect/1` for external work. HTTP calls, database writes,
 payments, emails, and anything that needs retry/idempotency belong in
 activities. `side_effect/1` composes with v0.3 effects (`patched?/1`,

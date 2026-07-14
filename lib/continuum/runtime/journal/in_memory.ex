@@ -14,6 +14,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
   # Public API
   # ---------------------------------------------------------------------------
 
+  alias Continuum.DurableTerm
   alias Continuum.Runtime.{Instance, JournalError}
 
   def start_link(_opts \\ []) do
@@ -22,11 +23,14 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def start_run(%Instance{} = instance, run_id, workflow, input) do
+    DurableTerm.validate!(input, :input)
     GenServer.call(__MODULE__, {:start_run, instance, run_id, workflow, input})
   end
 
   @impl true
   def append!(%Instance{} = instance, run_id, event, _lease_token) do
+    DurableTerm.validate!(event, :event)
+
     __MODULE__
     |> GenServer.call({:append, instance, run_id, event})
     |> unwrap_write!(:append!)
@@ -44,6 +48,8 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def take_snapshot!(%Instance{} = instance, %Continuum.Snapshot{} = snapshot) do
+    DurableTerm.validate!(snapshot, :snapshot)
+
     __MODULE__
     |> GenServer.call({:take_snapshot, instance.name, snapshot})
     |> unwrap_write!(:take_snapshot!)
@@ -58,6 +64,8 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def complete!(%Instance{} = instance, run_id, result, _lease_token) do
+    DurableTerm.validate!(result, :result)
+
     __MODULE__
     |> GenServer.call({:complete, instance, run_id, result})
     |> unwrap_write!(:complete!)
@@ -65,6 +73,8 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def fail!(%Instance{} = instance, run_id, error, _lease_token) do
+    DurableTerm.validate!(error, :error)
+
     __MODULE__
     |> GenServer.call({:fail, instance, run_id, error})
     |> unwrap_write!(:fail!)
@@ -81,6 +91,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
   """
   @impl true
   def deliver_signal!(%Instance{} = instance, run_id, name, payload) do
+    DurableTerm.validate!(payload, :signal)
     GenServer.call(__MODULE__, {:deliver_signal, instance.name, run_id, name, payload})
   end
 

@@ -46,8 +46,8 @@ defmodule Continuum.ObanTest do
   defmodule SlowActivity do
     use Continuum.Activity, retry: [max_attempts: 1], timeout: 1
 
-    def run(pid) do
-      send(pid, :slow_started)
+    def run(probe) do
+      Continuum.Test.ImpureProbe.notify(probe, :slow_started)
       Process.sleep(25)
       {:ok, :too_late}
     end
@@ -84,9 +84,17 @@ defmodule Continuum.ObanTest do
   defmodule SagaActivities do
     use Continuum.Activity, retry: [max_attempts: 1]
 
-    def reserve(pid), do: send(pid, :reserved) && {:ok, :reservation}
-    def fail(_pid), do: raise("boom")
-    def release(pid), do: send(pid, :released) && {:ok, :released}
+    def reserve(probe) do
+      Continuum.Test.ImpureProbe.notify(probe, :reserved)
+      {:ok, :reservation}
+    end
+
+    def fail(_probe), do: raise("boom")
+
+    def release(probe) do
+      Continuum.Test.ImpureProbe.notify(probe, :released)
+      {:ok, :released}
+    end
   end
 
   defmodule SagaFlow do
@@ -112,8 +120,8 @@ defmodule Continuum.ObanTest do
   defmodule BlockingActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
 
-    def run(pid) do
-      send(pid, {:blocking_started, self()})
+    def run(probe) do
+      Continuum.Test.ImpureProbe.notify_with_self(probe, :blocking_started)
 
       receive do
         :finish -> {:ok, :done}
@@ -225,9 +233,10 @@ defmodule Continuum.ObanTest do
 
   test "Oban worker preserves Continuum timeout semantics" do
     instance = start_oban_continuum!()
+    probe = Continuum.Test.ImpureProbe.register()
 
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(TimeoutFlow, %{pid: self()},
+      Continuum.Runtime.Engine.start_run(TimeoutFlow, %{pid: probe},
         journal: Postgres,
         instance: instance.name
       )
@@ -288,9 +297,10 @@ defmodule Continuum.ObanTest do
 
   test "Oban worker completion is fenced by the captured run lease token" do
     instance = start_oban_continuum!()
+    probe = Continuum.Test.ImpureProbe.register()
 
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(BlockingFlow, %{pid: self()},
+      Continuum.Runtime.Engine.start_run(BlockingFlow, %{pid: probe},
         journal: Postgres,
         instance: instance.name
       )
@@ -360,9 +370,10 @@ defmodule Continuum.ObanTest do
 
   test "compensation runs through Oban worker" do
     instance = start_oban_continuum!()
+    probe = Continuum.Test.ImpureProbe.register()
 
     {:ok, run_id} =
-      Continuum.Runtime.Engine.start_run(SagaFlow, %{pid: self()},
+      Continuum.Runtime.Engine.start_run(SagaFlow, %{pid: probe},
         journal: Postgres,
         instance: instance.name
       )
