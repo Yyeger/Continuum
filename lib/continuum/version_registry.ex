@@ -2,19 +2,25 @@ defmodule Continuum.VersionRegistry do
   @moduledoc """
   Registry for workflow version hashes and callable entrypoints.
 
-  The hot path is process-independent: loaded workflow metadata is cached in
-  `:persistent_term` so module-load/start/resume registration never depends on
-  a GenServer being alive. The supervised child is only a short-lived boot task
-  that upserts loaded versions into the configured instance's repo.
+  Loaded workflow metadata is cached in `:persistent_term`. Each durable
+  instance also owns a registrar process that upserts configured versions at
+  boot, retries transient failures, and records versions discovered on first
+  use.
   """
 
+  use GenServer
+
   import Ecto.Query
+  require Logger
 
   alias Continuum.Runtime.Instance
   alias Continuum.Schema.{Run, WorkflowVersion}
+  alias Continuum.Telemetry
 
   @registry_key {__MODULE__, :entries}
   @snapshot_hint_key {__MODULE__, :any_snapshot_threshold}
+  @default_retry_base_ms 1_000
+  @default_retry_max_ms 30_000
 
   @type entry :: %{
           workflow: module(),
@@ -30,7 +36,7 @@ defmodule Continuum.VersionRegistry do
     %{
       id: {__MODULE__, Keyword.get(opts, :instance, Continuum)},
       start: {__MODULE__, :start_link, [opts]},
-      restart: :temporary,
+      restart: :permanent,
       type: :worker
     }
   end
@@ -38,13 +44,64 @@ defmodule Continuum.VersionRegistry do
   @doc false
   def start_link(opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-
-    Task.start_link(fn ->
-      if instance.repo do
-        upsert_instance(instance, Keyword.get(opts, :workflow_modules, instance.workflow_modules))
-      end
-    end)
+    GenServer.start_link(__MODULE__, {instance, opts}, name: server_name(instance))
   end
+
+  @impl true
+  def init({instance, opts}) do
+    state = %{
+      instance: instance,
+      workflow_modules: Keyword.get(opts, :workflow_modules, instance.workflow_modules),
+      registration_fun: Keyword.get(opts, :registration_fun, &persist_entries/2),
+      retry_base_ms: Keyword.get(opts, :retry_base_ms, @default_retry_base_ms),
+      retry_max_ms: Keyword.get(opts, :retry_max_ms, @default_retry_max_ms),
+      retry_attempt: 0,
+      retry_ref: nil,
+      registered: MapSet.new(),
+      pending: %{},
+      state: :starting,
+      last_error: nil,
+      last_success_at: nil
+    }
+
+    {:ok, state, {:continue, :register_boot}}
+  end
+
+  @impl true
+  def handle_continue(:register_boot, state) do
+    entries = configured_entries(state.workflow_modules)
+    {:noreply, register_entries(state, entries)}
+  end
+
+  @impl true
+  def handle_call(:status, _from, state), do: {:reply, status_map(state), state}
+
+  def handle_call({:ensure_durable, entries}, _from, state) do
+    missing = Enum.reject(entries, &MapSet.member?(state.registered, entry_key(&1)))
+
+    case missing do
+      [] ->
+        {:reply, :ok, state}
+
+      entries ->
+        state = register_entries(state, entries)
+
+        case state.state do
+          :ready -> {:reply, :ok, state}
+          :degraded -> {:reply, {:error, {:registration_failed, state.last_error}}, state}
+        end
+    end
+  end
+
+  @impl true
+  def handle_info(:retry_registration, state) do
+    entries =
+      state.pending |> Map.values() |> Kernel.++(configured_entries(state.workflow_modules))
+
+    {:noreply, register_entries(%{state | retry_ref: nil}, entries)}
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
 
   @doc since: "0.3.0"
   @doc """
@@ -61,6 +118,18 @@ defmodule Continuum.VersionRegistry do
 
       true ->
         {:error, :not_a_workflow}
+    end
+  end
+
+  @doc since: "0.6.2"
+  @doc """
+  Register workflow metadata locally and ensure it is durable for an instance.
+  """
+  @spec ensure_registered(module(), Instance.t()) :: {:ok, entry()} | {:error, term()}
+  def ensure_registered(module, %Instance{} = instance) when is_atom(module) do
+    with {:ok, entry} <- ensure_registered(module),
+         :ok <- ensure_durable(instance, [entry]) do
+      {:ok, entry}
     end
   end
 
@@ -144,6 +213,37 @@ defmodule Continuum.VersionRegistry do
     end
   end
 
+  @doc since: "0.6.2"
+  @doc """
+  Resolve a workflow version and ensure the discovered entry is durable for an
+  instance.
+  """
+  @spec resolve(module() | String.t(), binary(), Instance.t()) ::
+          {:ok, entry()} | {:error, term()}
+  def resolve(workflow, version_hash, %Instance{} = instance) do
+    with {:ok, entry} <- resolve(workflow, version_hash),
+         :ok <- ensure_durable(instance, [entry]) do
+      {:ok, entry}
+    end
+  end
+
+  @doc since: "0.6.2"
+  @doc "Return the durable registrar status for an instance."
+  @spec status(Instance.t() | atom()) :: map()
+  def status(instance_or_name \\ Continuum) do
+    instance = Instance.lookup(instance_or_name)
+
+    case GenServer.whereis(server_name(instance)) do
+      nil ->
+        %{state: :not_running, registered_count: 0, pending_count: 0, last_error: nil}
+
+      _pid ->
+        GenServer.call(server_name(instance), :status)
+    end
+  catch
+    :exit, _ -> %{state: :not_running, registered_count: 0, pending_count: 0, last_error: nil}
+  end
+
   @doc since: "0.3.0"
   @doc """
   Upsert loaded workflow versions for an instance into `continuum_workflow_versions`.
@@ -154,17 +254,47 @@ defmodule Continuum.VersionRegistry do
   def upsert_instance(%Instance{repo: nil}, _workflow_modules), do: :ok
 
   def upsert_instance(%Instance{} = instance, workflow_modules) do
-    rows =
-      workflow_modules
-      |> configured_modules()
-      |> Enum.flat_map(fn module ->
-        case ensure_registered(module) do
-          {:ok, entry} -> [entry]
-          {:error, _} -> []
-        end
-      end)
-      |> Enum.uniq_by(&{&1.workflow_string, &1.version_hash})
-      |> Enum.map(&workflow_version_row/1)
+    persist_entries(instance, configured_entries(workflow_modules))
+  rescue
+    error in Postgrex.Error ->
+      if missing_workflow_versions_table?(error), do: :ok, else: reraise(error, __STACKTRACE__)
+  end
+
+  defp ensure_durable(%Instance{repo: nil}, _entries), do: :ok
+
+  defp ensure_durable(%Instance{} = instance, entries) do
+    case GenServer.whereis(server_name(instance)) do
+      nil -> safe_persist_entries(instance, entries)
+      _pid -> GenServer.call(server_name(instance), {:ensure_durable, entries}, 15_000)
+    end
+  catch
+    :exit, _ -> safe_persist_entries(instance, entries)
+  end
+
+  defp safe_persist_entries(instance, entries) do
+    persist_entries(instance, entries)
+  rescue
+    error -> {:error, {:registration_failed, Exception.message(error)}}
+  catch
+    kind, reason -> {:error, {:registration_failed, Exception.format_banner(kind, reason)}}
+  end
+
+  defp configured_entries(workflow_modules) do
+    workflow_modules
+    |> configured_modules()
+    |> Enum.flat_map(fn module ->
+      case ensure_registered(module) do
+        {:ok, entry} -> [entry]
+        {:error, _} -> []
+      end
+    end)
+    |> Enum.uniq_by(&entry_key/1)
+  end
+
+  defp persist_entries(%Instance{repo: nil}, _entries), do: :ok
+
+  defp persist_entries(%Instance{} = instance, entries) do
+    rows = Enum.map(entries, &workflow_version_row/1)
 
     if rows != [] do
       instance.repo.insert_all(WorkflowVersion, rows,
@@ -176,10 +306,100 @@ defmodule Continuum.VersionRegistry do
     end
 
     :ok
-  rescue
-    error in Postgrex.Error ->
-      if missing_workflow_versions_table?(error), do: :ok, else: reraise(error, __STACKTRACE__)
   end
+
+  defp register_entries(state, entries) do
+    entries =
+      (entries ++ Map.values(state.pending))
+      |> Enum.uniq_by(&entry_key/1)
+
+    case invoke_registration(state.registration_fun, state.instance, entries) do
+      :ok -> registration_succeeded(state, entries)
+      {:error, error} -> registration_failed(state, entries, error)
+    end
+  end
+
+  defp invoke_registration(registration_fun, instance, entries) do
+    case registration_fun.(instance, entries) do
+      :ok -> :ok
+      {:error, _} = error -> error
+      other -> {:error, {:unexpected_registration_result, other}}
+    end
+  rescue
+    error -> {:error, Exception.message(error)}
+  catch
+    kind, reason -> {:error, Exception.format_banner(kind, reason)}
+  end
+
+  defp registration_succeeded(state, entries) do
+    cancel_retry(state.retry_ref)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    Telemetry.execute([:continuum, :version_registry, :registered], %{count: length(entries)}, %{
+      instance: state.instance.name
+    })
+
+    %{
+      state
+      | state: :ready,
+        registered: Enum.reduce(entries, state.registered, &MapSet.put(&2, entry_key(&1))),
+        pending: %{},
+        retry_attempt: 0,
+        retry_ref: nil,
+        last_error: nil,
+        last_success_at: now
+    }
+  end
+
+  defp registration_failed(state, entries, error) do
+    cancel_retry(state.retry_ref)
+    delay = retry_delay(state)
+    retry_ref = Process.send_after(self(), :retry_registration, delay)
+    error = inspect(error)
+
+    Logger.warning(
+      "Continuum workflow version registration failed for #{inspect(state.instance.name)}; " <>
+        "retrying in #{delay}ms: #{error}"
+    )
+
+    Telemetry.execute([:continuum, :version_registry, :failed], %{retry_in_ms: delay}, %{
+      instance: state.instance.name,
+      error: error
+    })
+
+    pending = Map.new(entries, &{entry_key(&1), &1})
+
+    %{
+      state
+      | state: :degraded,
+        pending: Map.merge(state.pending, pending),
+        retry_attempt: state.retry_attempt + 1,
+        retry_ref: retry_ref,
+        last_error: error
+    }
+  end
+
+  defp retry_delay(state) do
+    multiplier = trunc(:math.pow(2, min(state.retry_attempt, 10)))
+    min(state.retry_max_ms, state.retry_base_ms * multiplier)
+  end
+
+  defp cancel_retry(nil), do: :ok
+  defp cancel_retry(ref), do: Process.cancel_timer(ref, async: true, info: false)
+
+  defp status_map(state) do
+    %{
+      state: state.state,
+      registered_count: MapSet.size(state.registered),
+      pending_count: map_size(state.pending),
+      retry_attempt: state.retry_attempt,
+      last_error: state.last_error,
+      last_success_at: state.last_success_at
+    }
+  end
+
+  defp server_name(instance), do: Instance.child_name(instance, __MODULE__)
+  defp entry_key(entry), do: {entry.workflow_string, entry.version_hash}
 
   # Runs marked stuck_unknown_version by pre-0.5.2 nodes become runnable the
   # moment their version is registered again: flip them back to suspended with

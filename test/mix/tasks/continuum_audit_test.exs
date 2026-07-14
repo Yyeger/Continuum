@@ -44,6 +44,7 @@ defmodule Mix.Tasks.ContinuumAuditTest do
     Mix.Task.rerun("continuum.audit", ["--repo", "Continuum.Test.Repo"])
     output = shell_output()
     assert output =~ "Continuum audit"
+    assert output =~ "workflow_registration:"
     assert output =~ "still-in-use"
     assert output =~ "pre_patch=1"
 
@@ -83,7 +84,16 @@ defmodule Mix.Tasks.ContinuumAuditTest do
         Mix.Task.rerun("continuum.audit", ["--repo", "Continuum.Test.Repo", "--format", "json"])
       end)
 
-    assert %{"workflows" => workflows} = Jason.decode!(output)
+    assert %{
+             "workflows" => workflows,
+             "workflow_registration" => %{
+               "registrar_state" => registrar_state,
+               "missing_durable_versions" => missing
+             }
+           } = Jason.decode!(output)
+
+    assert registrar_state in ["ready", "degraded"]
+    assert is_list(missing)
     assert Enum.any?(workflows, &(&1["workflow"] =~ "AuditFlow"))
   after
     Mix.shell(Mix.Shell.Process)

@@ -41,8 +41,11 @@ longer require hand-written `V1`/`V2` wrapper modules.
 
 ## Durable Registry
 
-Each Continuum instance upserts loaded workflow versions into
-`continuum_workflow_versions` on boot. The hot path uses an in-memory registry
+Each Continuum instance supervises a registrar that upserts loaded workflow
+versions into `continuum_workflow_versions` on boot. Transient database failures
+are retried with bounded exponential backoff. The first time an engine resolves
+a workflow that was not in the boot scan, it also waits for that version to be
+registered durably before executing it. The hot path uses an in-memory registry
 backed by `:persistent_term`; the table gives operators a durable view of known
 workflow hashes.
 
@@ -59,6 +62,9 @@ Continuum.children(
 If `workflow_modules:` is omitted, Continuum falls back to
 `config :continuum, :workflow_modules` and then to loaded modules that expose
 `__continuum_workflow__/0`.
+
+`mix continuum.audit --repo MyApp.Repo` reports the registrar state and lists
+any loaded workflow hashes missing from the durable table.
 
 ## Unknown Versions
 

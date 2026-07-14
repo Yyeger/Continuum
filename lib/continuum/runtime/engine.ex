@@ -688,7 +688,7 @@ defmodule Continuum.Runtime.Engine do
            journal: Continuum.Runtime.Journal.Postgres
          } = state
        ) do
-    case Continuum.VersionRegistry.ensure_registered(state.workflow_module) do
+    case Continuum.VersionRegistry.ensure_registered(state.workflow_module, state.instance) do
       {:ok, %{entrypoint: entrypoint, workflow_string: workflow, version_hash: version_hash}} ->
         {:ok,
          %{
@@ -714,7 +714,7 @@ defmodule Continuum.Runtime.Engine do
          state.version_hash || Map.get(run, :version_hash)}
       end
 
-    case Continuum.VersionRegistry.resolve(workflow, version_hash) do
+    case Continuum.VersionRegistry.resolve(workflow, version_hash, state.instance) do
       {:ok, %{entrypoint: entrypoint}} ->
         {:ok,
          %{state | workflow_module: entrypoint, workflow: workflow, version_hash: version_hash}}

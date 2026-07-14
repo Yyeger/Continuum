@@ -10,7 +10,7 @@ defmodule Mix.Tasks.Continuum.Audit do
 
   import Ecto.Query
 
-  alias Continuum.Schema.{ActivityTask, Event, Run}
+  alias Continuum.Schema.{ActivityTask, Event, Run, WorkflowVersion}
 
   @shortdoc "Audits determinism metadata and stale patch markers"
   @non_terminal_states ~w(running suspended stuck_unknown_version)
@@ -36,15 +36,46 @@ defmodule Mix.Tasks.Continuum.Audit do
   end
 
   defp build_report(repo) do
+    entries = Continuum.VersionRegistry.entries()
+
     workflows =
-      Continuum.VersionRegistry.entries()
+      entries
       |> Enum.sort_by(&{&1.workflow_string, Base.encode16(&1.version_hash)})
       |> Enum.map(&audit_workflow(repo, &1))
 
     %{
       workflows: workflows,
+      workflow_registration: workflow_registration(repo, entries),
       stuck_unknown_version_runs: stuck_unknown_version_count(repo),
       expired_leased_activity_tasks: expired_leased_task_count(repo)
+    }
+  end
+
+  defp workflow_registration(repo, entries) do
+    durable_versions =
+      repo.all(from(v in WorkflowVersion, select: {v.workflow, v.version_hash}))
+      |> MapSet.new()
+
+    missing =
+      entries
+      |> Enum.reject(&MapSet.member?(durable_versions, {&1.workflow_string, &1.version_hash}))
+      |> Enum.map(fn entry ->
+        %{
+          workflow: entry.workflow_string,
+          version_hash: Base.encode16(entry.version_hash, case: :lower)
+        }
+      end)
+
+    registrar = Continuum.VersionRegistry.status()
+
+    %{
+      registrar_state: to_string(registrar.state),
+      registered_count: registrar.registered_count,
+      pending_count: Map.get(registrar, :pending_count, 0),
+      last_error: registrar.last_error,
+      loaded_versions: length(entries),
+      durable_loaded_versions: length(entries) - length(missing),
+      missing_durable_versions: missing
     }
   end
 
@@ -135,8 +166,12 @@ defmodule Mix.Tasks.Continuum.Audit do
     )
   end
 
-  defp strict_failure?(%{workflows: workflows, stuck_unknown_version_runs: stuck}) do
-    stuck > 0 or
+  defp strict_failure?(%{
+         workflows: workflows,
+         workflow_registration: registration,
+         stuck_unknown_version_runs: stuck
+       }) do
+    stuck > 0 or registration.missing_durable_versions != [] or
       Enum.any?(workflows, fn workflow ->
         Enum.any?(workflow.patch_sites, &(&1.verdict == "safe-to-remove"))
       end)
@@ -147,6 +182,20 @@ defmodule Mix.Tasks.Continuum.Audit do
     Mix.shell().info("stuck_unknown_version_runs: #{report.stuck_unknown_version_runs}")
 
     Mix.shell().info("expired_leased_activity_tasks: #{report.expired_leased_activity_tasks}")
+
+    registration = report.workflow_registration
+
+    Mix.shell().info(
+      "workflow_registration: #{registration.registrar_state}, " <>
+        "loaded=#{registration.loaded_versions}, " <>
+        "durable=#{registration.durable_loaded_versions}, " <>
+        "missing=#{length(registration.missing_durable_versions)}, " <>
+        "pending=#{registration.pending_count}"
+    )
+
+    Enum.each(registration.missing_durable_versions, fn missing ->
+      Mix.shell().info("  missing #{missing.workflow} #{missing.version_hash}")
+    end)
 
     Enum.each(report.workflows, fn workflow ->
       Mix.shell().info("#{workflow.workflow} #{workflow.version_hash}")
