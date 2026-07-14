@@ -57,6 +57,7 @@ defmodule Continuum.ObserverLiveTest do
     {:ok, _view, html} = live(build_conn(), "/continuum/health")
 
     assert html =~ "Operational health"
+    assert html =~ "Runtime readiness"
     assert html =~ "Missing partitions"
     assert html =~ "Active and suspended runs"
     assert html =~ "Run leases"

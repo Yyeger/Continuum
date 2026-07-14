@@ -43,6 +43,7 @@ defmodule Continuum.Health do
       activities = activity_health(instance.repo, now, opts, reviews)
       signals = signal_health(instance.repo, now)
       lost_wakes = lost_wake_health(instance.repo, now, opts, reviews)
+      runtime = Continuum.readiness(instance: instance)
 
       runs =
         runs
@@ -55,7 +56,17 @@ defmodule Continuum.Health do
       report = %{
         generated_at: now,
         instance: inspect(instance.name),
-        status: overall_status(partitions, workflow_versions, runs, timers, leases, activities),
+        status:
+          overall_status(
+            runtime,
+            partitions,
+            workflow_versions,
+            runs,
+            timers,
+            leases,
+            activities
+          ),
+        runtime: runtime,
         partitions: partitions,
         workflow_versions: workflow_versions,
         runs: runs,
@@ -505,9 +516,10 @@ defmodule Continuum.Health do
     }
   end
 
-  defp overall_status(partitions, versions, runs, timers, leases, activities) do
+  defp overall_status(runtime, partitions, versions, runs, timers, leases, activities) do
     degraded? =
-      partitions.status == :degraded or versions.status == :degraded or
+      runtime.state == :degraded or partitions.status == :degraded or
+        versions.status == :degraded or
         unreviewed?(runs.lost_wake_count, runs.lost_wake_candidates) or
         unreviewed?(timers.overdue_count, timers.overdue) or
         unreviewed?(leases.expired_count, Enum.filter(leases.entries, & &1.expired)) or
@@ -804,8 +816,25 @@ defmodule Continuum.Health do
         if instance.repo, do: {:ok, instance}, else: {:error, :repo_not_configured}
 
       repo ->
-        {:ok, Instance.new(name: Keyword.get(opts, :instance, :health), repo: repo)}
+        repo_instance_for_repo(repo, Keyword.get(opts, :instance))
     end
+  end
+
+  defp repo_instance_for_repo(repo, nil) do
+    case Instance.running_for_repo(repo) do
+      {:ok, instance} -> {:ok, instance}
+      :none -> {:ok, Instance.new(name: :health, repo: repo)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp repo_instance_for_repo(repo, %Instance{} = instance) do
+    if instance.repo == repo, do: {:ok, instance}, else: {:error, :instance_repo_mismatch}
+  end
+
+  defp repo_instance_for_repo(repo, instance_name) do
+    instance = Instance.lookup(instance_name)
+    repo_instance_for_repo(repo, instance)
   end
 
   defp database_now(repo), do: scalar(repo, "SELECT clock_timestamp()")

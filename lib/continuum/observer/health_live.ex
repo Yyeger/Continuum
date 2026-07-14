@@ -75,6 +75,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         <%= if @report do %>
           <section class="co-health-summary">
             <article><span>Status</span><strong><%= @report.status %></strong></article>
+            <article><span>Runtime readiness</span><strong><%= @report.runtime.state %></strong></article>
             <article><span>Missing partitions</span><strong><%= length(@report.partitions.missing) %></strong></article>
             <article><span>Active runs</span><strong><%= @report.runs.active_count %></strong></article>
             <article><span>Lost wakes</span><strong><%= @report.runs.lost_wake_count %></strong></article>

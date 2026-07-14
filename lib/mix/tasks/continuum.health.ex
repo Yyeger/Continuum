@@ -19,6 +19,7 @@ defmodule Mix.Tasks.Continuum.Health do
   @shortdoc "Reports Continuum health and performs fenced repairs"
   @switches [
     repo: :string,
+    instance: :string,
     format: :string,
     strict: :boolean,
     partition_months: :integer,
@@ -41,7 +42,7 @@ defmodule Mix.Tasks.Continuum.Health do
     {opts, rest, invalid} = OptionParser.parse(args, strict: @switches)
     validate_args!(rest, invalid)
     Mix.Task.run("app.start")
-    opts = Keyword.put(opts, :repo, parse_repo(opts))
+    opts = opts |> Keyword.put(:repo, parse_repo(opts)) |> parse_instance()
 
     case Keyword.get(opts, :repair) do
       nil -> report(opts)
@@ -77,6 +78,7 @@ defmodule Mix.Tasks.Continuum.Health do
   defp print(report, _format) when is_map_key(report, :generated_at) do
     Mix.shell().info("Continuum health: #{report.status}")
     Mix.shell().info("generated_at: #{DateTime.to_iso8601(report.generated_at)}")
+    Mix.shell().info("runtime: #{report.runtime.state} ready=#{report.runtime.ready?}")
 
     Mix.shell().info(
       "partitions: present=#{length(report.partitions.present)} " <>
@@ -135,6 +137,15 @@ defmodule Mix.Tasks.Continuum.Health do
   defp duration(ms) when ms < 1_000, do: "#{ms}ms"
   defp duration(ms) when ms < 60_000, do: "#{div(ms, 1_000)}s"
   defp duration(ms), do: "#{div(ms, 60_000)}m"
+
+  defp parse_instance(opts) do
+    case Keyword.get(opts, :instance) do
+      nil -> opts
+      name -> Keyword.put(opts, :instance, String.to_existing_atom(name))
+    end
+  rescue
+    ArgumentError -> Mix.raise("unknown Continuum instance: #{opts[:instance]}")
+  end
 
   defp parse_repo(opts) do
     case opts[:repo] do

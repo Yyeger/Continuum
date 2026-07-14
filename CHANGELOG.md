@@ -4,6 +4,12 @@
 
 ### Features
 
+- Added public, per-instance graceful lifecycle APIs: `Continuum.drain/1`,
+  `readiness/1`, `ready?/1`, and `drained?/1`. Drain marks readiness false
+  before pausing claims, closes the claim/drain race with reservations, remains
+  bounded even when lease-release I/O stalls, tracks both durable and in-memory
+  engines, and is idempotent. Runtime lifecycle is also visible in health,
+  strict aggregate status, the Mix task, and Observer.
 - Added `Continuum.Health.report/1` and `mix continuum.health` with text, JSON,
   and strict output covering partition horizon, workflow registration drift,
   active-run wait reasons and age, lost wakes, overdue timers, lease age and

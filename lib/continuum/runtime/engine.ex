@@ -57,12 +57,23 @@ defmodule Continuum.Runtime.Engine do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     opts = Keyword.put(opts, :instance, instance)
 
-    case DynamicSupervisor.start_child(
-           instance.run_supervisor,
-           {__MODULE__, {workflow_module, input, run_id, opts}}
-         ) do
-      {:ok, _pid} -> {:ok, run_id}
-      {:error, _} = err -> err
+    with {:ok, reservation} <- reserve_claim(instance, opts) do
+      opts = Keyword.put(opts, :claim_reservation, reservation)
+
+      result =
+        try do
+          DynamicSupervisor.start_child(
+            instance.run_supervisor,
+            {__MODULE__, {workflow_module, input, run_id, opts}}
+          )
+        after
+          cancel_claim(instance, reservation)
+        end
+
+      case result do
+        {:ok, _pid} -> {:ok, run_id}
+        {:error, _} = error -> error
+      end
     end
   end
 
@@ -422,6 +433,10 @@ defmodule Continuum.Runtime.Engine do
     {lease_owner, lease_token, cancel_requested_at} =
       acquire_lease(instance, journal, run_id, opts, start_lease)
 
+    if is_nil(lease_token) do
+      track_engine(instance, run_id, Keyword.get(opts, :claim_reservation))
+    end
+
     trace_context = resume_trace_context(journal, instance, run_id, trace_context, opts)
     join_pg(instance, run_id)
 
@@ -498,7 +513,7 @@ defmodule Continuum.Runtime.Engine do
         _from,
         %{run_id: run_id} = state
       ) do
-    track_lease(state.instance, %Lease{run_id: run_id, owner: owner, token: token})
+    track_lease(state.instance, %Lease{run_id: run_id, owner: owner, token: token}, nil)
 
     state = %{
       state
@@ -932,8 +947,8 @@ defmodule Continuum.Runtime.Engine do
   # Fresh Postgres starts are leased at insert time (same transaction) — the
   # lease comes back from start_run and there is no acquire window for a
   # concurrent dispatcher to steal.
-  defp acquire_lease(instance, _journal, _run_id, _opts, %Lease{} = lease) do
-    track_lease(instance, lease)
+  defp acquire_lease(instance, _journal, _run_id, opts, %Lease{} = lease) do
+    track_lease(instance, lease, Keyword.get(opts, :claim_reservation))
     {lease.owner, lease.token, lease.cancel_requested_at}
   end
 
@@ -941,7 +956,13 @@ defmodule Continuum.Runtime.Engine do
     case {Keyword.get(opts, :lease_owner), Keyword.get(opts, :lease_token)} do
       {owner, token} when is_binary(owner) and is_integer(token) ->
         cancel_requested_at = Keyword.get(opts, :cancel_requested_at)
-        track_lease(instance, %Lease{run_id: run_id, owner: owner, token: token})
+
+        track_lease(
+          instance,
+          %Lease{run_id: run_id, owner: owner, token: token},
+          Keyword.get(opts, :claim_reservation)
+        )
+
         {owner, token, cancel_requested_at}
 
       _ ->
@@ -952,17 +973,58 @@ defmodule Continuum.Runtime.Engine do
             ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
           )
 
-        track_lease(instance, lease)
+        track_lease(instance, lease, Keyword.get(opts, :claim_reservation))
         {lease.owner, lease.token, lease.cancel_requested_at}
     end
   end
 
   defp acquire_lease(_instance, _journal, _run_id, _opts, nil), do: {nil, nil, nil}
 
-  defp track_lease(instance, %Lease{} = lease) do
+  defp track_lease(instance, %Lease{} = lease, reservation) do
     if Process.whereis(instance.heartbeater) do
-      Continuum.Runtime.Lease.Heartbeater.track(instance, lease, self())
+      case Continuum.Runtime.Lease.Heartbeater.track(instance, lease, self(), reservation) do
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          Lease.release(lease.run_id, lease.owner, lease.token, repo: instance.repo)
+          raise "Continuum runtime is not ready to claim work: #{inspect(reason)}"
+      end
     end
+  end
+
+  defp reserve_claim(instance, _opts) do
+    if Process.whereis(instance.heartbeater) do
+      Continuum.Runtime.Lease.Heartbeater.reserve_claim(instance)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp track_engine(instance, run_id, reservation) do
+    if Process.whereis(instance.heartbeater) do
+      case Continuum.Runtime.Lease.Heartbeater.track_engine(
+             instance,
+             run_id,
+             self(),
+             reservation
+           ) do
+        :ok -> :ok
+        {:error, reason} -> raise "Continuum runtime is not ready: #{inspect(reason)}"
+      end
+    end
+  end
+
+  defp cancel_claim(_instance, nil), do: :ok
+
+  defp cancel_claim(instance, reservation) do
+    if Process.whereis(instance.heartbeater) do
+      Continuum.Runtime.Lease.Heartbeater.cancel_claim(instance, reservation)
+    else
+      :ok
+    end
+  catch
+    :exit, _ -> :ok
   end
 
   defp join_pg(instance, run_id) do

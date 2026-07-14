@@ -18,7 +18,8 @@ defmodule Continuum.Runtime.Instance do
     :signal_router,
     :snapshotter,
     :recovery,
-    :workflow_modules
+    :workflow_modules,
+    :drain_timeout_ms
   ]
 
   alias __MODULE__
@@ -49,6 +50,23 @@ defmodule Continuum.Runtime.Instance do
     instance
   end
 
+  @doc false
+  def running_for_repo(repo) do
+    instances =
+      :persistent_term.get()
+      |> Enum.flat_map(fn
+        {{__MODULE__, _name}, %Instance{repo: ^repo} = instance} -> [instance]
+        _entry -> []
+      end)
+      |> Enum.uniq_by(& &1.name)
+      |> Enum.filter(&Process.whereis(&1.heartbeater))
+
+    case Enum.find(instances, &(&1.name == @default)) do
+      %Instance{} = instance -> {:ok, instance}
+      nil -> one_running_instance(instances)
+    end
+  end
+
   def new(opts) do
     name = Keyword.get(opts, :name, @default)
     repo = Keyword.get(opts, :repo) || default_repo(name)
@@ -76,7 +94,8 @@ defmodule Continuum.Runtime.Instance do
       signal_router: process_name(name, Continuum.Runtime.SignalRouter),
       snapshotter: process_name(name, Continuum.Runtime.Snapshotter),
       recovery: process_name(name, Continuum.Runtime.Recovery),
-      workflow_modules: Keyword.get(opts, :workflow_modules)
+      workflow_modules: Keyword.get(opts, :workflow_modules),
+      drain_timeout_ms: Keyword.get(opts, :drain_timeout_ms, 5_000)
     }
   end
 
@@ -93,6 +112,13 @@ defmodule Continuum.Runtime.Instance do
 
   defp process_name(name, module) do
     Module.concat([Continuum.Instances, inspect_name(name), module_name(module)])
+  end
+
+  defp one_running_instance([]), do: :none
+  defp one_running_instance([instance]), do: {:ok, instance}
+
+  defp one_running_instance(instances) do
+    {:error, {:ambiguous_instances, Enum.map(instances, & &1.name)}}
   end
 
   defp default_repo(@default), do: Application.get_env(:continuum, :repo)

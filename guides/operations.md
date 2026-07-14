@@ -22,9 +22,14 @@ report is degraded.
 
 ```bash
 mix continuum.health --repo MyApp.Repo
+mix continuum.health --repo MyApp.Repo --instance billing_continuum
 mix continuum.health --repo MyApp.Repo --format json
 mix continuum.health --repo MyApp.Repo --strict
 ```
+
+When `--instance` is omitted, the task resolves the running default instance
+for that repo (or the only running named instance). Pass `--instance` when
+multiple named runtimes share one repo.
 
 Repairs are dry runs by default and must carry the authority observed in the
 report. Review the plan, then repeat it with `--execute`:
@@ -63,9 +68,9 @@ emit `[:continuum, :health, :repaired]` telemetry.
 
 Stopping the supervisor that owns `Continuum.children/1` performs a bounded
 lease drain. New run claims pause first, the heartbeater remains alive while
-engines finish their current step, and each engine is stopped before its fenced
-lease is released. This lets another node claim the run without waiting for the
-lease TTL.
+Postgres-backed and in-memory engines finish their current step, and each
+durable engine is stopped before its fenced lease is released. This lets
+another node claim the run without waiting for the lease TTL.
 
 The default drain deadline is five seconds. Increase it for workflows whose
 individual deterministic steps legitimately take longer:
@@ -82,6 +87,25 @@ worker shutdown. With the built-in executor defaults, allow at least seven
 seconds beyond the run-drain deadline (12 seconds total with the default).
 If the VM is killed before supervision can shut down, ordinary lease-expiry
 recovery remains the fallback.
+
+For orchestrated deployments, mark the instance unready and begin the same
+bounded handoff before stopping its supervisor:
+
+```elixir
+Continuum.ready?()
+#=> true
+
+{:ok, summary} = Continuum.drain(timeout: 10_000)
+Continuum.drained?()
+#=> true
+```
+
+Named runtimes accept `instance: :billing_continuum`. `readiness/1` returns the
+full `:ready | :draining | :drained | :degraded | :not_started` lifecycle state,
+active-run and pending-claim counts, and the last drain summary. A drain marks
+readiness false before pausing claims, is safe to call repeatedly, and never
+waits beyond its deadline plus the bounded engine-stop allowance. Do not route
+new service traffic to a node after its readiness becomes false.
 
 ## Catch-up Backstop
 

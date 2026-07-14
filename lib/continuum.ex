@@ -13,6 +13,7 @@ defmodule Continuum do
   ## Public API
 
     * `children/1` — Postgres runtime child specs for host supervision trees
+    * `drain/1`, `readiness/1`, `ready?/1`, and `drained?/1` — deployment lifecycle
     * `start/3` — start a new workflow run
     * `signal/3` — deliver an external signal to a running workflow
     * `cancel/2` — cancel a running workflow
@@ -24,7 +25,8 @@ defmodule Continuum do
     * `patched?/1` — journaled patch marker for compatible workflow changes
   """
 
-  alias Continuum.Runtime.{Context, Effect}
+  alias Continuum.Runtime.{Context, Effect, Instance}
+  alias Continuum.Runtime.Lease.Heartbeater
 
   @type run_id :: binary()
   @type workflow_module :: module()
@@ -91,7 +93,8 @@ defmodule Continuum do
             :activity_max_concurrency,
             Application.get_env(:continuum, :activity_max_concurrency, 10)
           ),
-        workflow_modules: opts[:workflow_modules]
+        workflow_modules: opts[:workflow_modules],
+        drain_timeout_ms: configured_drain_timeout(opts)
       )
       |> Continuum.Runtime.Instance.register()
 
@@ -142,6 +145,46 @@ defmodule Continuum do
     (base_children ++ runtime_children)
     |> Enum.reject(&is_nil/1)
   end
+
+  @doc """
+  Drains one Continuum runtime without stopping its supervisor.
+
+  Readiness becomes false before new run claims are paused. Locally owned
+  workflow engines then get the configured heartbeater drain deadline to
+  release their leases; overdue engines are stopped and fenced. Repeated calls
+  are idempotent and return the same completed drain summary.
+
+  Pass `instance: name` for a named runtime and `timeout: milliseconds` to
+  override its configured `:drain_timeout_ms` for this drain.
+  """
+  @spec drain(keyword()) :: {:ok, map()} | {:error, term()}
+  def drain(opts \\ []) do
+    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+    Heartbeater.drain(instance, Keyword.get(opts, :timeout))
+  end
+
+  @doc """
+  Returns the local lifecycle and claim-readiness state for one runtime.
+
+  The state is one of `:ready`, `:draining`, `:drained`, `:degraded`, or
+  `:not_started`. A degraded drain is not ready and reports a non-zero
+  `unreleased_count` in its last drain summary.
+  """
+  @spec readiness(keyword()) :: map()
+  def readiness(opts \\ []) do
+    opts
+    |> Keyword.get(:instance, Continuum)
+    |> Instance.lookup()
+    |> Heartbeater.readiness()
+  end
+
+  @doc "Returns true only while the local runtime accepts new run claims."
+  @spec ready?(keyword()) :: boolean()
+  def ready?(opts \\ []), do: readiness(opts).ready?
+
+  @doc "Returns true after a successful bounded drain has completed."
+  @spec drained?(keyword()) :: boolean()
+  def drained?(opts \\ []), do: readiness(opts).drained?
 
   @doc """
   Start a new workflow run.
@@ -438,6 +481,16 @@ defmodule Continuum do
   end
 
   defp activity_supervisor_child(_opts, _instance), do: nil
+
+  defp configured_drain_timeout(opts) do
+    case Keyword.get(opts, :heartbeater, []) do
+      heartbeater_opts when is_list(heartbeater_opts) ->
+        Keyword.get(heartbeater_opts, :drain_timeout_ms, 5_000)
+
+      _other ->
+        5_000
+    end
+  end
 
   @doc false
   def __generate_uuid4__ do

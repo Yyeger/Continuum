@@ -45,6 +45,11 @@ falls back to lease expiry. With the built-in activity executor, configure the
 platform termination grace period to exceed the run-drain deadline by at least
 seven seconds so activity workers can stop first.
 
+Orchestrators can initiate the handoff before supervisor termination with
+`Continuum.drain/1`, and use `Continuum.ready?/1`, `Continuum.drained?/1`, or the
+detailed `Continuum.readiness/1` state for readiness checks. The lifecycle is
+per instance; pass `instance: name` for named runtimes.
+
 Activity tasks use the same rule. Boot recovery only requeues leased activity
 tasks after their task lease has expired, so a newly booted node does not steal
 work from a live worker on another node.

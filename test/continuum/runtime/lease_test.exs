@@ -307,6 +307,32 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
     end
   end
 
+  defmodule CompletingPgFlow do
+    def __continuum_workflow__ do
+      %{
+        module: __MODULE__,
+        entrypoint: __MODULE__,
+        version: 1,
+        version_hash: :crypto.hash(:sha256, "completing-lease-drain-test")
+      }
+    end
+
+    def run(%{test_pid: probe}) do
+      Continuum.Test.ImpureProbe.notify_with_self(probe, :completing_flow_started)
+
+      receive do
+        :finish -> :done
+      end
+    end
+  end
+
+  defmodule SlowReleaseRepo do
+    def query(_sql, _params) do
+      Process.sleep(5_000)
+      {:ok, %{num_rows: 1}}
+    end
+  end
+
   test "supervisor shutdown drains engines before the heartbeater exits" do
     {instance, supervisor} = start_runtime!(drain_timeout_ms: 500)
 
@@ -362,6 +388,158 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
     assert run.lease_owner == nil
     assert run.lease_token == nil
     assert :sys.get_state(instance.dispatcher).enabled? == false
+  end
+
+  test "public readiness flips before claims pause and drain is idempotent per instance" do
+    {instance, supervisor} = start_runtime!(drain_timeout_ms: 500)
+    on_exit(fn -> if Process.alive?(supervisor), do: Supervisor.stop(supervisor) end)
+
+    assert %{
+             state: :ready,
+             ready?: true,
+             drained?: false,
+             active_run_count: 0,
+             pending_claim_count: 0
+           } = Continuum.readiness(instance: instance.name)
+
+    assert Continuum.ready?(instance: instance.name)
+    refute Continuum.drained?(instance: instance.name)
+
+    :ok = :sys.suspend(instance.dispatcher)
+
+    drain_task =
+      Task.async(fn -> Continuum.drain(instance: instance.name, timeout: 500) end)
+
+    assert_eventually(fn ->
+      Continuum.readiness(instance: instance.name).state == :draining
+    end)
+
+    refute Continuum.ready?(instance: instance.name)
+
+    run_count = Repo.aggregate(Run, :count)
+
+    assert {:error, :not_ready} =
+             Continuum.start(SuspendedPgFlow, %{}, instance: instance.name, journal: Postgres)
+
+    assert Repo.aggregate(Run, :count) == run_count
+
+    repeated_drain_task =
+      Task.async(fn -> Continuum.drain(instance: instance.name, timeout: 500) end)
+
+    :ok = :sys.resume(instance.dispatcher)
+
+    assert {:ok, summary} = Task.await(drain_task, 2_000)
+    assert {:ok, ^summary} = Task.await(repeated_drain_task, 2_000)
+    assert summary.tracked_count == 0
+    assert summary.unreleased_count == 0
+    assert summary.abandoned_claim_count == 0
+
+    assert Continuum.drained?(instance: instance.name)
+    refute Continuum.ready?(instance: instance.name)
+
+    assert %{
+             state: :drained,
+             ready?: false,
+             drained?: true,
+             last_drain: ^summary
+           } = Continuum.readiness(instance: instance.name)
+
+    assert {:ok, ^summary} = Continuum.drain(instance: instance.name)
+  end
+
+  test "drain completes promptly when an in-flight workflow finishes normally" do
+    {instance, supervisor} = start_runtime!(drain_timeout_ms: 1_000)
+    on_exit(fn -> if Process.alive?(supervisor), do: Supervisor.stop(supervisor) end)
+    probe = Continuum.Test.ImpureProbe.register()
+
+    {:ok, run_id} =
+      Continuum.start(CompletingPgFlow, %{test_pid: probe},
+        instance: instance.name,
+        journal: Postgres
+      )
+
+    assert_receive {:completing_flow_started, engine_pid}, 1_000
+
+    drain_task =
+      Task.async(fn -> Continuum.drain(instance: instance.name, timeout: 1_000) end)
+
+    assert_eventually(fn -> Continuum.readiness(instance: instance.name).state == :draining end)
+    send(engine_pid, :finish)
+
+    assert {:ok, %{tracked_count: 1, graceful_count: 1, forced_count: 0}} =
+             Task.await(drain_task, 500)
+
+    assert Repo.get!(Run, run_id).state == "completed"
+    assert Continuum.drained?(instance: instance.name)
+  end
+
+  test "readiness reports a runtime that has not been started" do
+    name = :unstarted_readiness_test
+    Instance.new(name: name, repo: Repo) |> Instance.register()
+
+    assert %{state: :not_started, ready?: false, drained?: false} =
+             Continuum.readiness(instance: name)
+
+    refute Continuum.ready?(instance: name)
+    refute Continuum.drained?(instance: name)
+    assert {:error, :runtime_not_started} = Continuum.drain(instance: name)
+    assert {:error, {:invalid_timeout, -1}} = Continuum.drain(instance: name, timeout: -1)
+  end
+
+  test "slow lease release cannot extend the public drain hard deadline" do
+    name = :slow_release_drain_test
+
+    instance =
+      Instance.new(name: name, repo: SlowReleaseRepo, drain_timeout_ms: 20)
+      |> Instance.register()
+
+    start_supervised!({Heartbeater, instance: instance, drain_timeout_ms: 20})
+
+    engine = spawn(fn -> ignore_messages() end)
+
+    assert :ok =
+             Heartbeater.track(
+               instance,
+               %Lease{run_id: Ecto.UUID.generate(), owner: "slow-owner", token: 1},
+               engine
+             )
+
+    started_at = System.monotonic_time(:millisecond)
+    assert {:ok, summary} = Continuum.drain(instance: name, timeout: 20)
+    elapsed_ms = System.monotonic_time(:millisecond) - started_at
+
+    assert elapsed_ms < 1_500
+    assert summary.forced_count == 1
+    assert summary.unreleased_count == 1
+    assert Continuum.readiness(instance: name).state == :degraded
+    refute Continuum.drained?(instance: name)
+  end
+
+  test "named in-memory engines participate in drain lifecycle" do
+    {instance, supervisor} = start_in_memory_runtime!()
+    on_exit(fn -> if Process.alive?(supervisor), do: Supervisor.stop(supervisor) end)
+    probe = Continuum.Test.ImpureProbe.register()
+
+    assert {:ok, _run_id} =
+             Continuum.start(BlockingPgFlow, %{test_pid: probe},
+               instance: instance.name,
+               journal: Continuum.Runtime.Journal.InMemory
+             )
+
+    assert_receive {:blocking_flow_started, engine_pid}, 1_000
+    monitor = Process.monitor(engine_pid)
+
+    assert {:ok, %{tracked_count: 1, forced_count: 1, unreleased_count: 0}} =
+             Continuum.drain(instance: instance.name, timeout: 20)
+
+    assert_receive {:DOWN, ^monitor, :process, ^engine_pid, :killed}, 1_000
+    assert Continuum.drained?(instance: instance.name)
+
+    assert {:error, :not_ready} =
+             Continuum.start(SuspendedPgFlow, %{},
+               instance: instance.name,
+               journal: Continuum.Runtime.Journal.InMemory
+             )
   end
 
   test "engine stops itself when the heartbeater detects a stolen lease" do
@@ -443,6 +621,40 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
 
     Process.unlink(supervisor)
     {Instance.lookup(name), supervisor}
+  end
+
+  defp start_in_memory_runtime! do
+    name = :"memory_drain_test_#{System.unique_integer([:positive])}"
+
+    children =
+      Continuum.children(
+        name: name,
+        journal: Continuum.Runtime.Journal.InMemory,
+        heartbeater: [drain_timeout_ms: 20],
+        activity_supervisor: false,
+        recovery: false,
+        dispatcher: false,
+        activity_dispatcher: false,
+        snapshotter: false,
+        timer_wheel: false,
+        signal_router: false,
+        version_registry: false
+      )
+
+    {:ok, supervisor} =
+      Supervisor.start_link(children,
+        strategy: :one_for_one,
+        name: :"memory_drain_supervisor_#{System.unique_integer([:positive])}"
+      )
+
+    Process.unlink(supervisor)
+    {Instance.lookup(name), supervisor}
+  end
+
+  defp ignore_messages do
+    receive do
+      _message -> ignore_messages()
+    end
   end
 
   defp assert_eventually(fun, attempts \\ 20)

@@ -77,6 +77,7 @@ defmodule Continuum.HealthTest do
              Continuum.Health.report(repo: Repo, partition_months: 1, lost_wake_after_ms: 0)
 
     assert report.status == :degraded
+    assert %{instance: Continuum, state: :ready, ready?: true} = report.runtime
     assert is_list(report.partitions.present)
     assert report.workflow_versions.loaded_count >= 0
     assert Enum.any?(report.runs.groups, &(&1.reason == "signal"))
@@ -201,6 +202,23 @@ defmodule Continuum.HealthTest do
 
     assert %HealthReview{fingerprint: ^fingerprint, reviewed_by: "ops"} =
              Repo.one!(HealthReview)
+  end
+
+  test "a degraded runtime makes the aggregate health report degraded" do
+    heartbeater = Process.whereis(Continuum.Runtime.Lease.Heartbeater)
+    original_lifecycle = :sys.get_state(heartbeater).lifecycle
+
+    on_exit(fn ->
+      if Process.alive?(heartbeater) do
+        :sys.replace_state(heartbeater, &%{&1 | lifecycle: original_lifecycle})
+      end
+    end)
+
+    :sys.replace_state(heartbeater, &%{&1 | lifecycle: :degraded})
+
+    assert {:ok, report} = Continuum.Health.report(repo: Repo, partition_months: 1)
+    assert report.runtime.state == :degraded
+    assert report.status == :degraded
   end
 
   test "retry repair idempotently restores a loaded durable workflow registration" do

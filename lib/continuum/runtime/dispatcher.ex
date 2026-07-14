@@ -213,9 +213,25 @@ defmodule Continuum.Runtime.Dispatcher do
             resume_after_failed_adoption(claim, opts)
         end
 
+      {:error, :not_ready} ->
+        release_unstarted_claim(instance, claim)
+
       {:error, reason} ->
         Logger.error("Continuum dispatcher failed to start #{claim.run_id}: #{inspect(reason)}")
         :error
+    end
+  end
+
+  defp release_unstarted_claim(instance, claim) do
+    case Lease.release(claim.run_id, claim.lease_owner, claim.lease_token, repo: instance.repo) do
+      result when result in [:ok, {:error, :lost}] ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "Continuum dispatcher failed to release #{claim.run_id} while draining: " <>
+            inspect(reason)
+        )
     end
   end
 
@@ -226,6 +242,9 @@ defmodule Continuum.Runtime.Dispatcher do
 
       {:error, {:already_started, _pid}} ->
         :ok
+
+      {:error, :not_ready} ->
+        release_unstarted_claim(Keyword.fetch!(opts, :instance), claim)
 
       {:error, reason} ->
         Logger.error(
