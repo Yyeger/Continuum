@@ -21,6 +21,7 @@ defmodule Continuum.Runtime.SignalRouter do
 
   @listener_retry_ms 5_000
   @catch_up_interval_ms 30_000
+  @catch_up_batch_size 500
 
   def start_link(opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -49,12 +50,13 @@ defmodule Continuum.Runtime.SignalRouter do
   Scan for durable signal or wake evidence whose runs have a local engine and
   wake them. The LISTEN path is best-effort (notifications can be dropped, the
   listener can be down); this is the poll backstop the router runs periodically
-  while listening, exposed for tests and operators.
+  while listening, exposed for tests and operators. Pass `:batch_size` to bound
+  the number of local run IDs checked by each database query.
   """
   @spec catch_up_once(keyword()) :: :ok
   def catch_up_once(opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    catch_up(instance)
+    catch_up(instance, catch_up_batch_size(opts, router_config()))
   end
 
   @impl true
@@ -72,6 +74,7 @@ defmodule Continuum.Runtime.SignalRouter do
           :catch_up_interval_ms,
           Keyword.get(config, :catch_up_interval_ms, @catch_up_interval_ms)
         ),
+      catch_up_batch_size: catch_up_batch_size(opts, config),
       notifier: nil,
       ref: nil
     }
@@ -97,7 +100,7 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   def handle_info(:catch_up, state) do
-    catch_up(state.instance)
+    catch_up(state.instance, state.catch_up_batch_size)
     schedule_catch_up(state)
     {:noreply, state}
   end
@@ -180,7 +183,7 @@ defmodule Continuum.Runtime.SignalRouter do
 
           # Anything delivered while we were deaf is woken now; afterwards the
           # periodic backstop covers dropped notifications.
-          catch_up(state.instance)
+          catch_up(state.instance, state.catch_up_batch_size)
           schedule_catch_up(state)
 
           %{state | notifier: notifier, ref: ref}
@@ -203,42 +206,146 @@ defmodule Continuum.Runtime.SignalRouter do
     Process.send_after(self(), :catch_up, state.catch_up_interval_ms)
   end
 
-  defp catch_up(%Instance{repo: nil}), do: :ok
+  defp catch_up(%Instance{repo: nil}, _batch_size), do: :ok
 
-  defp catch_up(instance) do
+  defp catch_up(instance, batch_size) do
+    local_run_ids = local_run_ids(instance)
+
+    stats =
+      local_run_ids
+      |> Enum.chunk_every(batch_size)
+      |> Enum.reduce_while(initial_catch_up_stats(length(local_run_ids)), fn run_ids, stats ->
+        case catch_up_page(instance, run_ids) do
+          {:ok, rows} ->
+            {:cont, collect_catch_up_page(instance, rows, stats)}
+
+          {:error, reason} ->
+            Logger.warning("Continuum.SignalRouter catch-up scan failed: #{inspect(reason)}")
+            {:halt, %{stats | page_count: stats.page_count + 1, status: :error}}
+        end
+      end)
+
+    Telemetry.execute(
+      [:continuum, :signal_router, :catch_up],
+      Map.take(stats, [
+        :scanned_count,
+        :matched_count,
+        :woken_count,
+        :page_count,
+        :oldest_wake_age_ms
+      ]),
+      %{instance: instance.name, batch_size: batch_size, status: stats.status}
+    )
+
+    :ok
+  end
+
+  defp catch_up_page(instance, local_run_ids) do
     sql = """
-    SELECT run_id
-    FROM (
-      SELECT s.run_id::text AS run_id
-      FROM continuum_signals AS s
-      JOIN continuum_runs AS r ON r.id = s.run_id
-      WHERE s.delivered = false
-        AND r.state IN ('running', 'suspended')
-
-      UNION
-
-      SELECT r.id::text AS run_id
+    WITH local_runs AS (
+      SELECT r.id, r.next_wakeup_at
       FROM continuum_runs AS r
-      WHERE r.next_wakeup_at <= clock_timestamp()
+      WHERE r.id = ANY($1::uuid[])
         AND r.state IN ('running', 'suspended')
-    ) AS wake_candidates
+        AND r.lease_owner IS NOT NULL
+        AND r.lease_token IS NOT NULL
+        AND r.lease_expires_at > clock_timestamp()
+    ), wake_evidence AS (
+      SELECT s.run_id, s.inserted_at AS evidence_at
+      FROM continuum_signals AS s
+      JOIN local_runs AS r ON r.id = s.run_id
+      WHERE s.delivered = false
+
+      UNION ALL
+
+      SELECT r.id AS run_id, r.next_wakeup_at AS evidence_at
+      FROM local_runs AS r
+      WHERE r.next_wakeup_at <= clock_timestamp()
+    )
+    SELECT run_id::text,
+           GREATEST(
+             FLOOR(EXTRACT(EPOCH FROM (clock_timestamp() - MIN(evidence_at))) * 1000),
+             0
+           )::bigint AS oldest_wake_age_ms
+    FROM wake_evidence
+    GROUP BY run_id
+    ORDER BY MIN(evidence_at), run_id
     """
 
-    case instance.repo.query(sql, []) do
-      {:ok, %{rows: rows}} ->
-        Enum.each(rows, fn [run_id] ->
-          # Local engines only: parked engines holding live leases are
-          # invisible to the dispatcher, so a missed wake strands them.
-          # Runs without a local engine are the dispatcher's job.
-          case Registry.lookup(instance.registry, run_id) do
-            [{_pid, _}] -> Engine.wake(instance, run_id)
-            [] -> :ok
-          end
-        end)
+    encoded_run_ids = Enum.map(local_run_ids, &Ecto.UUID.dump!/1)
 
-      {:error, reason} ->
-        Logger.warning("Continuum.SignalRouter catch-up scan failed: #{inspect(reason)}")
-        :ok
+    case instance.repo.query(sql, [encoded_run_ids]) do
+      {:ok, %{rows: rows}} -> {:ok, rows}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp collect_catch_up_page(instance, rows, stats) do
+    woken_count = Enum.count(rows, fn [run_id, _age_ms] -> wake_local(instance, run_id) end)
+
+    oldest_wake_age_ms =
+      rows
+      |> Enum.map(fn [_run_id, age_ms] -> age_ms end)
+      |> Enum.max(fn -> 0 end)
+
+    %{
+      stats
+      | matched_count: stats.matched_count + length(rows),
+        woken_count: stats.woken_count + woken_count,
+        page_count: stats.page_count + 1,
+        oldest_wake_age_ms: max(stats.oldest_wake_age_ms, oldest_wake_age_ms)
+    }
+  end
+
+  defp wake_local(instance, run_id) do
+    # Registry membership is checked again after the query because an engine
+    # can finish or lose its lease while its page is being scanned.
+    case Registry.lookup(instance.registry, run_id) do
+      [{_pid, _}] ->
+        Engine.wake(instance, run_id)
+        true
+
+      [] ->
+        false
+    end
+  end
+
+  defp initial_catch_up_stats(scanned_count) do
+    %{
+      scanned_count: scanned_count,
+      matched_count: 0,
+      woken_count: 0,
+      page_count: 0,
+      oldest_wake_age_ms: 0,
+      status: :ok
+    }
+  end
+
+  defp local_run_ids(instance) do
+    Registry.select(instance.registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
+  defp catch_up_batch_size(opts, config) do
+    batch_size =
+      Keyword.get(
+        opts,
+        :batch_size,
+        Keyword.get(
+          opts,
+          :catch_up_batch_size,
+          Keyword.get(config, :catch_up_batch_size, @catch_up_batch_size)
+        )
+      )
+
+    if is_integer(batch_size) and batch_size > 0 do
+      batch_size
+    else
+      raise ArgumentError,
+            "catch-up batch size must be a positive integer, got: #{inspect(batch_size)}"
     end
   end
 

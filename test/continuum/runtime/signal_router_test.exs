@@ -160,6 +160,91 @@ defmodule Continuum.Runtime.SignalRouterTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
   end
 
+  test "catch_up_once pages only local live-leased runs and reports scan metrics" do
+    {:ok, first_run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)
+
+    {:ok, second_run_id} =
+      Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)
+
+    assert_eventually(fn ->
+      Enum.all?([first_run_id, second_run_id], fn run_id ->
+        Repo.one!(from(r in Run, where: r.id == ^run_id)).state == "suspended"
+      end)
+    end)
+
+    global_run_id = Ecto.UUID.generate()
+    :ok = Postgres.start_run(Instance.default(), global_run_id, DurableSignalFlow, %{})
+
+    inserted_at =
+      DateTime.utc_now()
+      |> DateTime.add(-2, :second)
+      |> DateTime.truncate(:microsecond)
+
+    Enum.each([first_run_id, second_run_id, global_run_id], fn run_id ->
+      Repo.insert!(%Signal{
+        run_id: run_id,
+        name: "decision",
+        payload: :erlang.term_to_binary(:go),
+        delivered: false,
+        inserted_at: inserted_at
+      })
+    end)
+
+    handler_id = "signal-router-catch-up-#{System.unique_integer([:positive])}"
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:continuum, :signal_router, :catch_up],
+        fn event, measurements, metadata, test_pid ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+
+    assert :ok = Continuum.Runtime.SignalRouter.catch_up_once(batch_size: 1)
+
+    assert_receive {:telemetry, [:continuum, :signal_router, :catch_up], measurements,
+                    %{batch_size: 1, status: :ok}}
+
+    assert measurements.scanned_count >= 2
+    assert measurements.matched_count == 2
+    assert measurements.woken_count == 2
+    assert measurements.page_count == measurements.scanned_count
+    assert measurements.oldest_wake_age_ms >= 1_000
+
+    for run_id <- [first_run_id, second_run_id] do
+      assert {:ok, %{state: :completed, result: {:ok, :went}}} =
+               Continuum.await(run_id, 1_000, journal: Postgres)
+    end
+
+    assert Repo.one!(from(s in Signal, where: s.run_id == ^global_run_id)).delivered == false
+  end
+
+  test "catch_up_once rejects an invalid batch size" do
+    assert_raise ArgumentError, ~r/positive integer/, fn ->
+      Continuum.Runtime.SignalRouter.catch_up_once(batch_size: 0)
+    end
+  end
+
+  test "active wake catch-up has a partial index" do
+    %{rows: [[definition]]} =
+      Repo.query!("""
+      SELECT indexdef
+      FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND indexname = 'continuum_runs_catch_up_idx'
+      """)
+
+    assert definition =~ "next_wakeup_at"
+    assert definition =~ "lease_expires_at"
+    assert definition =~ "lease_owner IS NOT NULL"
+    assert definition =~ "lease_token IS NOT NULL"
+  end
+
   test "catch_up_once wakes a local engine with durable wake evidence" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(DurableSignalFlow, %{}, journal: Postgres)

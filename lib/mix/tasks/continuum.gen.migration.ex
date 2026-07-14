@@ -112,6 +112,15 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         \"\"\"
 
         execute \"\"\"
+        CREATE INDEX continuum_runs_catch_up_idx
+          ON continuum_runs (next_wakeup_at, lease_expires_at, id)
+          WHERE state IN ('running', 'suspended')
+            AND lease_owner IS NOT NULL
+            AND lease_token IS NOT NULL
+            AND next_wakeup_at IS NOT NULL
+        \"\"\"
+
+        execute \"\"\"
         CREATE INDEX continuum_runs_parent_idx
           ON continuum_runs (parent_run_id)
           WHERE parent_run_id IS NOT NULL

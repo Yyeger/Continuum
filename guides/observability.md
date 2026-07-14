@@ -50,6 +50,12 @@ Snapshot telemetry keeps the stable `[:continuum, :snapshot, :taken]` and
 `format_version` and `compacted_prefix_length` so operators can distinguish v0.4
 format-versioned snapshots from older unversioned payloads.
 
+The catch-up backstop emits `[:continuum, :signal_router, :catch_up]` once per
+pass. Measurements include `scanned_count`, `matched_count`, `woken_count`,
+`page_count`, and `oldest_wake_age_ms`; metadata includes the instance,
+configured batch size, and `:ok` or `:error` status. Alert on a rising oldest
+wake age or repeated error status.
+
 The current CI suite tests the bridge with a fake tracer so Continuum can keep
 OpenTelemetry optional. Before tagging a release, run a smoke test in an application
 that includes `:opentelemetry`, `:opentelemetry_api`, and your exporter.

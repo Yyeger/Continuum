@@ -31,6 +31,7 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "continuum_runs_correlation_completed_idx"
       assert source =~ "continuum_runs_attributes_gin_idx"
       assert source =~ "continuum_runs_namespace_state_idx"
+      assert source =~ "continuum_runs_catch_up_idx"
     end)
   end
 

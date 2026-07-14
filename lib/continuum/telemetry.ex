@@ -39,6 +39,7 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :signal, :awaited]`
     * `[:continuum, :signal, :delivered]`
     * `[:continuum, :signal, :received]`
+    * `[:continuum, :signal_router, :catch_up]`
     * `[:continuum, :lease, :acquired]`
     * `[:continuum, :lease, :renewed]`
     * `[:continuum, :lease, :lost]`
@@ -111,6 +112,7 @@ defmodule Continuum.Telemetry do
     [:continuum, :signal, :awaited],
     [:continuum, :signal, :delivered],
     [:continuum, :signal, :received],
+    [:continuum, :signal_router, :catch_up],
     [:continuum, :lease, :acquired],
     [:continuum, :lease, :renewed],
     [:continuum, :lease, :lost],

@@ -28,6 +28,32 @@ seconds beyond the run-drain deadline (12 seconds total with the default).
 If the VM is killed before supervision can shut down, ordinary lease-expiry
 recovery remains the fallback.
 
+## Catch-up Backstop
+
+The signal router periodically recovers notifications missed after durable
+signal, activity, compensation, and timer writes. Each node snapshots only the
+run IDs in its local engine registry, checks active live leases in bounded
+database pages, and leaves unowned runs to the dispatcher. Tune the page size
+without changing the polling interval:
+
+```elixir
+config :continuum, :signal_router,
+  catch_up_interval_ms: 30_000,
+  catch_up_batch_size: 500
+```
+
+Existing databases should add the active-wakeup index with a concurrent
+migration; newly generated Continuum migrations include it automatically:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS continuum_runs_catch_up_idx
+ON continuum_runs (next_wakeup_at, lease_expires_at, id)
+WHERE state IN ('running', 'suspended')
+  AND lease_owner IS NOT NULL
+  AND lease_token IS NOT NULL
+  AND next_wakeup_at IS NOT NULL;
+```
+
 ## Workflow Version Registry GC
 
 `continuum_workflow_versions` records loaded workflow hashes so Postgres-backed
