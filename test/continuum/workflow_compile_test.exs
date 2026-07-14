@@ -178,6 +178,33 @@ defmodule Continuum.WorkflowCompileTest do
       end
     end
 
+    test "a workflow that uses the process dictionary through a private helper refuses to compile" do
+      assert_raise CompileError, ~r/process dictionary is not durable/, fn ->
+        compile_workflow("ProcessDictionaryHelper", """
+        def run(input), do: remember(input)
+        defp remember(input), do: Process.put(:workflow_input, input)
+        """)
+      end
+    end
+
+    test "a workflow that imports a process dictionary function refuses to compile" do
+      assert_raise CompileError, ~r/process dictionary is not durable/, fn ->
+        compile_workflow("ImportedProcessDictionary", """
+        import Process, only: [get: 1]
+        def run(_input), do: get(:workflow_input)
+        """)
+      end
+    end
+
+    test "a workflow that aliases Process refuses to compile" do
+      assert_raise CompileError, ~r/process-local state is non-deterministic/, fn ->
+        compile_workflow("AliasedProcessInspection", """
+        alias Process, as: P
+        def run(pid), do: P.info(pid)
+        """)
+      end
+    end
+
     test "deterministic workflow guards still compile" do
       compile_workflow("DeterministicGuard", """
       def run(input) when is_integer(input), do: {:ok, input}

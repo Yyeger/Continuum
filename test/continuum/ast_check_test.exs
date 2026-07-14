@@ -71,6 +71,88 @@ defmodule Continuum.AstCheckTest do
                "Continuum.timer/1"
     end
 
+    test "rejects process dictionaries and node-local process inspection" do
+      ast =
+        quote do
+          Process.put(:key, :value)
+          Process.get(:key)
+          Process.delete(:key)
+          Process.get_keys()
+          Process.info(self(), :messages)
+          Process.whereis(:worker)
+          Process.register(self(), :worker)
+          Process.alive?(self())
+          :erlang.put(:key, :value)
+          :erlang.get(:key)
+          :erlang.erase(:key)
+          :erlang.process_info(self())
+          :erlang.registered()
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      mfas = MapSet.new(violations, & &1.mfa)
+
+      for mfa <- [
+            {Process, :put},
+            {Process, :get},
+            {Process, :delete},
+            {Process, :get_keys},
+            {Process, :info},
+            {Process, :whereis},
+            {Process, :register},
+            {Process, :alive?},
+            {:erlang, :put},
+            {:erlang, :get},
+            {:erlang, :erase},
+            {:erlang, :process_info},
+            {:erlang, :registered}
+          ] do
+        assert MapSet.member?(mfas, mfa), "expected #{inspect(mfa)} to be rejected"
+      end
+    end
+
+    test "resolves aliased and imported process dictionary calls" do
+      ast =
+        quote do
+          alias Process, as: P
+          P.get(:aliased)
+          import Process, only: [put: 2]
+          put(:imported, true)
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert Enum.map(violations, & &1.mfa) == [{Process, :get}, {Process, :put}]
+    end
+
+    test "rejects process-local calls in guard AST" do
+      ast =
+        quote do
+          value when Process.get(:guard_key) == value -> :match
+        end
+
+      assert {:error, [%{mfa: {Process, :get}}]} = AstCheck.scan(ast)
+    end
+
+    test "rejects application environment reads" do
+      ast =
+        quote do
+          Application.get_env(:my_app, :mode)
+          Application.fetch_env(:my_app, :mode)
+          Application.fetch_env!(:my_app, :mode)
+          Application.get_all_env(:my_app)
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      assert MapSet.new(violations, & &1.mfa) ==
+               MapSet.new([
+                 {Application, :get_env},
+                 {Application, :fetch_env},
+                 {Application, :fetch_env!},
+                 {Application, :get_all_env}
+               ])
+    end
+
     test "rejects Continuum facade calls that would mutate runtime state" do
       ast =
         quote do
