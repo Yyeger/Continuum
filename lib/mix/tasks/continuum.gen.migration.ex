@@ -168,6 +168,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         \"\"\"
 
         create_initial_event_partitions()
+        create_default_event_partition()
 
         create table(:continuum_signals) do
           add :run_id, :uuid, null: false
@@ -306,6 +307,13 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         PARTITION OF continuum_events
         FOR VALUES FROM ('\#{Date.to_iso8601(month)} 00:00:00+00')
         TO ('\#{Date.to_iso8601(next_month)} 00:00:00+00')
+        \"\"\"
+      end
+
+      defp create_default_event_partition do
+        execute \"\"\"
+        CREATE TABLE IF NOT EXISTS continuum_events_default
+        PARTITION OF continuum_events DEFAULT
         \"\"\"
       end
 

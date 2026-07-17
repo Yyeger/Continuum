@@ -17,6 +17,7 @@ defmodule Continuum.Runtime.Instance do
     :timer_wheel,
     :signal_router,
     :snapshotter,
+    :partition_maintainer,
     :recovery,
     :workflow_modules,
     :drain_timeout_ms
@@ -93,6 +94,7 @@ defmodule Continuum.Runtime.Instance do
       timer_wheel: process_name(name, Continuum.Runtime.TimerWheel),
       signal_router: process_name(name, Continuum.Runtime.SignalRouter),
       snapshotter: process_name(name, Continuum.Runtime.Snapshotter),
+      partition_maintainer: process_name(name, Continuum.Runtime.PartitionMaintainer),
       recovery: process_name(name, Continuum.Runtime.Recovery),
       workflow_modules: Keyword.get(opts, :workflow_modules),
       drain_timeout_ms: Keyword.get(opts, :drain_timeout_ms, 5_000)

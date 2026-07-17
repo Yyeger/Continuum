@@ -1,11 +1,11 @@
 # Multi-Instance Continuum
 
 A Continuum *instance* is a named runtime — its own registry, run supervisor,
-dispatchers, timer wheel, signal router, lease heartbeater, snapshotter, and
-recovery process — bound to a single Ecto repo. Most applications only ever run
-one instance and never have to think about this. Umbrella apps and library
-hosts that genuinely have more than one repo can run more than one Continuum
-instance in the same BEAM.
+dispatchers, timer wheel, signal router, lease heartbeater, snapshotter,
+optional partition maintainer, and recovery process — bound to a single Ecto
+repo. Most applications only ever run one instance and never have to think
+about this. Umbrella apps and library hosts that genuinely have more than one
+repo can run more than one Continuum instance in the same BEAM.
 
 ## The Default Instance
 
@@ -72,9 +72,11 @@ children =
 
 Per-child options are accepted for fine-grained tuning: `:heartbeater`,
 `:run_supervisor`, `:activity_supervisor`, `:recovery`, `:dispatcher`,
-`:activity_dispatcher`, `:timer_wheel`, `:signal_router`, `:snapshotter`. Pass
-`false` for any child to omit it from the list (for example, omit
-`:activity_dispatcher` if the host wants its own custom worker pool).
+`:activity_dispatcher`, `:timer_wheel`, `:signal_router`, `:snapshotter`, and
+`:partition_maintainer`. Pass `false` for any child to omit it from the list
+(for example, omit `:activity_dispatcher` if the host wants its own custom
+worker pool). Partition maintenance is `false` by default because it requires
+runtime DDL permissions; enable it with `true` or an option list.
 
 ## Calling Into a Named Instance
 

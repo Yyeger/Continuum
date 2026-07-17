@@ -24,37 +24,46 @@ defmodule Mix.Tasks.Continuum.Partitions.Create do
     Mix.Task.run("app.start")
 
     repo = parse_repo(opts)
-    month = parse_month(List.first(rest))
+    start_month = parse_month(List.first(rest))
     months = parse_months(opts)
     dry_run? = not Keyword.get(opts, :execute, false)
 
-    partitions = Enum.map(0..(months - 1), &shift_month(month, &1))
+    common_opts = [repo: repo, months: months]
 
-    Enum.each(partitions, fn partition_month ->
+    common_opts =
+      if start_month, do: Keyword.put(common_opts, :start_month, start_month), else: common_opts
+
+    {partitions, existing, moved_row_count} =
       if dry_run? do
-        Mix.shell().info("Would create #{partition_name(partition_month)}")
+        plan = unwrap!(Continuum.Partitions.plan(common_opts))
+        Enum.each(plan.missing, &Mix.shell().info("Would create #{&1}"))
+        Enum.each(plan.present, &Mix.shell().info("Exists #{&1}"))
+        {plan.missing, plan.present, 0}
       else
-        create_partition(repo, partition_month)
-        Mix.shell().info("Created #{partition_name(partition_month)}")
+        summary = unwrap!(Continuum.Partitions.ensure(common_opts))
+        Enum.each(summary.created, &Mix.shell().info("Created #{&1}"))
+        Enum.each(summary.existing, &Mix.shell().info("Exists #{&1}"))
+
+        if summary.default_created? do
+          Mix.shell().info("Created #{summary.default_partition}")
+        end
+
+        if summary.moved_row_count > 0 do
+          Mix.shell().info(
+            "Moved #{summary.moved_row_count} overflow rows into monthly partitions"
+          )
+        end
+
+        {summary.created, summary.existing, summary.moved_row_count}
       end
-    end)
 
     :telemetry.execute([:continuum, :partition, :created], %{count: length(partitions)}, %{
       dry_run?: dry_run?,
       months: months,
-      partitions: Enum.map(partitions, &partition_name/1)
+      partitions: partitions,
+      existing: existing,
+      moved_row_count: moved_row_count
     })
-  end
-
-  defp create_partition(repo, month) do
-    next_month = month |> Date.add(32) |> Date.beginning_of_month()
-
-    repo.query!("""
-    CREATE TABLE IF NOT EXISTS #{quote_ident(partition_name(month))}
-    PARTITION OF continuum_events
-    FOR VALUES FROM ('#{Date.to_iso8601(month)} 00:00:00+00')
-    TO ('#{Date.to_iso8601(next_month)} 00:00:00+00')
-    """)
   end
 
   defp parse_repo(opts) do
@@ -91,10 +100,7 @@ defmodule Mix.Tasks.Continuum.Partitions.Create do
     end)
   end
 
-  defp parse_month(nil) do
-    today = Date.utc_today()
-    Date.new!(today.year, today.month, 1)
-  end
+  defp parse_month(nil), do: nil
 
   defp parse_month(<<year::binary-size(4), "-", month::binary-size(2)>>) do
     with {year, ""} <- Integer.parse(year),
@@ -108,17 +114,8 @@ defmodule Mix.Tasks.Continuum.Partitions.Create do
 
   defp parse_month(_), do: Mix.raise("month must be in YYYY-MM format")
 
-  defp shift_month(%Date{} = month, offset) do
-    absolute_month = month.year * 12 + month.month - 1 + offset
-    Date.new!(div(absolute_month, 12), rem(absolute_month, 12) + 1, 1)
-  end
+  defp unwrap!({:ok, value}), do: value
 
-  defp partition_name(%Date{year: year, month: month}) do
-    "continuum_events_y#{year}_m#{pad2(month)}"
-  end
-
-  defp quote_ident(name), do: ~s("#{String.replace(name, ~s("), ~s(""))}")
-
-  defp pad2(month) when month < 10, do: "0#{month}"
-  defp pad2(month), do: "#{month}"
+  defp unwrap!({:error, reason}),
+    do: Mix.raise("partition maintenance failed: #{inspect(reason)}")
 end

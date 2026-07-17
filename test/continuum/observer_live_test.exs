@@ -59,6 +59,7 @@ defmodule Continuum.ObserverLiveTest do
     assert html =~ "Operational health"
     assert html =~ "Runtime readiness"
     assert html =~ "Missing partitions"
+    assert html =~ "Default partition rows"
     assert html =~ "Active and suspended runs"
     assert html =~ "Run leases"
     assert html =~ "Activities and signals"

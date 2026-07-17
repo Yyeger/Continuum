@@ -38,7 +38,19 @@ CREATE TABLE continuum_health_reviews (
 );
 ```
 
-Fresh `mix continuum.gen.migration` output includes all three additions.
+Fresh `mix continuum.gen.migration` output includes all of these additions.
+
+Add the event overflow safety partition:
+
+```sql
+CREATE TABLE IF NOT EXISTS continuum_events_default
+PARTITION OF continuum_events DEFAULT;
+```
+
+This turns a missed monthly horizon into a visible degraded condition instead
+of rejecting new event inserts. After migration, `Continuum.Health.report/1`
+reports its row count and `Continuum.Partitions.ensure/1` transactionally moves
+overflow rows into newly-created monthly partitions.
 
 ## Operational rollout
 
@@ -50,3 +62,13 @@ mix continuum.health --repo MyApp.Repo
 
 Use `--format json` for monitoring and `--strict` for a deployment health gate.
 Repairs are dry runs until `--execute` is passed.
+
+If the runtime database role is allowed to create partitions, enable scheduled
+horizon maintenance under `Continuum.children/1`:
+
+```elixir
+partition_maintainer: [months: 6, interval_ms: :timer.hours(6)]
+```
+
+Otherwise run `Continuum.Partitions.ensure/1` from a release task with the
+migration role. Runtime retention drops remain disabled and operator-controlled.

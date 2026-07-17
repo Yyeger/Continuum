@@ -193,8 +193,39 @@ activity tasks, and activity results before deleting the run rows.
 
 ## Event Partitions
 
-The partition tasks remain the primary maintenance surface for
-`continuum_events`:
+Fresh migrations create four monthly partitions plus
+`continuum_events_default`. The default partition prevents an exhausted
+horizon from turning event appends into an outage, but it is an emergency
+buffer rather than permanent storage. Health is degraded whenever it contains
+rows.
+
+Maintain a horizon explicitly from a release task or operator job:
+
+```elixir
+{:ok, summary} = Continuum.Partitions.ensure(instance: Continuum, months: 6)
+```
+
+The operation uses the PostgreSQL database clock, takes a database-scoped
+advisory transaction lock, and is safe to invoke concurrently from cluster
+nodes. When a missing month already has overflow rows, it locks the event
+parent, moves those rows aside transactionally, creates the partition, and
+routes them back into it. A failure rolls the entire rollover back.
+
+Applications whose runtime database role has DDL permission can opt into a
+scheduled pass:
+
+```elixir
+Continuum.children(
+  repo: MyApp.Repo,
+  partition_maintainer: [months: 6, interval_ms: :timer.hours(6)]
+)
+```
+
+The maintainer is disabled by default because many production applications
+separate migration and runtime roles. In that setup, invoke
+`Continuum.Partitions.ensure/1` from a release task using the migration role.
+
+The Mix tasks provide the equivalent dry-run-first operator surface:
 
 ```bash
 mix continuum.partitions.create --repo MyApp.Repo --months 3 --execute
@@ -202,6 +233,13 @@ mix continuum.partitions.list --repo MyApp.Repo
 mix continuum.partitions.drop_old --repo MyApp.Repo --older-than 180d --execute
 ```
 
-Keep partition creation ahead of traffic. Treat `drop_old` like any destructive
-retention operation: run without `--execute` first, review the output, then run
-with `--execute` from an operator-controlled job.
+`continuum.partitions.create` delegates execution to the same cluster-safe API.
+Treat `drop_old` like any destructive retention operation: run without
+`--execute` first, review the output, then run with `--execute` from an
+operator-controlled job. Retention deletion is intentionally never performed
+by the scheduled maintainer.
+
+Alert on `[:continuum, :partition, :maintenance_failed]`, missing horizon
+months, or a non-zero default-partition row count. Successful/skipped passes
+emit `[:continuum, :partition, :maintained]` with created, moved, and overflow
+row counts.

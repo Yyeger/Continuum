@@ -63,7 +63,9 @@ defmodule Continuum do
   Child-specific options may be passed with `:workflow_modules`,
   `:activity_executor`, `:activity_max_concurrency`, `:heartbeater`, `:run_supervisor`,
   `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
-  `:timer_wheel`, `:signal_router`, and `:snapshotter`.
+  `:timer_wheel`, `:signal_router`, `:snapshotter`, and `:partition_maintainer`.
+  Partition maintenance is disabled unless `:partition_maintainer` is `true`
+  or an option list because it requires runtime DDL privileges.
   Passing `false` for a child omits it from the returned list.
   """
   @spec children(keyword()) :: [Supervisor.child_spec()]
@@ -138,6 +140,7 @@ defmodule Continuum do
           child(Continuum.Runtime.Snapshotter, Keyword.get(opts, :snapshotter, []), instance),
           child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, []), instance),
           child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance),
+          partition_maintainer_child(opts, instance),
           child(Continuum.VersionRegistry, Keyword.get(opts, :version_registry, []), instance)
         ]
       end
@@ -481,6 +484,13 @@ defmodule Continuum do
   end
 
   defp activity_supervisor_child(_opts, _instance), do: nil
+
+  defp partition_maintainer_child(opts, instance) do
+    case Keyword.get(opts, :partition_maintainer, false) do
+      false -> nil
+      value -> child(Continuum.Runtime.PartitionMaintainer, value, instance)
+    end
+  end
 
   defp configured_drain_timeout(opts) do
     case Keyword.get(opts, :heartbeater, []) do

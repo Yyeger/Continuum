@@ -101,6 +101,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             <div class="co-grid">
               <div><span>Partition horizon</span><code><%= @report.partitions.horizon_end %></code></div>
               <div><span>Missing partitions</span><code><%= Enum.join(@report.partitions.missing, ", ") |> blank_dash() %></code></div>
+              <div><span>Default partition rows</span><%= @report.partitions.default_partition.row_count %></div>
               <div><span>Loaded versions</span><%= @report.workflow_versions.loaded_count %></div>
               <div><span>Durable versions</span><%= @report.workflow_versions.durable_count %></div>
             </div>

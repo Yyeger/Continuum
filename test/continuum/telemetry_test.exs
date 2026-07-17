@@ -13,6 +13,8 @@ defmodule Continuum.TelemetryTest do
     assert [:continuum, :run, :completed] in Continuum.Telemetry.events()
     assert [:continuum, :activity, :scheduled] in Continuum.Telemetry.events()
     assert [:continuum, :dispatcher, :claimed] in Continuum.Telemetry.events()
+    assert [:continuum, :partition, :maintained] in Continuum.Telemetry.events()
+    assert [:continuum, :partition, :maintenance_failed] in Continuum.Telemetry.events()
   end
 
   test "emits run lifecycle events" do

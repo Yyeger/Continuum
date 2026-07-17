@@ -28,6 +28,7 @@ defmodule Mix.Tasks.ContinuumHealthTest do
     assert output =~ "Continuum health:"
     assert output =~ "runtime: ready ready=true"
     assert output =~ "partitions:"
+    assert output =~ "overflow=0"
     assert output =~ "workflow_versions:"
     assert output =~ "activities:"
     assert output =~ "signals:"

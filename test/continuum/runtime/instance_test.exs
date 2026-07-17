@@ -37,6 +37,11 @@ defmodule Continuum.Runtime.InstanceTest do
     assert Enum.any?(children, &match?(%{id: {Continuum.Runtime.TimerWheel, Continuum}}, &1))
     assert Enum.any?(children, &match?(%{id: {Continuum.VersionRegistry, Continuum}}, &1))
 
+    refute Enum.any?(
+             children,
+             &match?(%{id: {Continuum.Runtime.PartitionMaintainer, Continuum}}, &1)
+           )
+
     refute Enum.any?(children, &match?(%{id: {Phoenix.PubSub, Continuum}}, &1))
     refute Enum.any?(children, &match?(%{id: {Registry, Continuum}}, &1))
 
@@ -61,7 +66,8 @@ defmodule Continuum.Runtime.InstanceTest do
       Continuum.Runtime.ActivityWorker.Dispatcher,
       Continuum.Runtime.ActivityWorker.Supervisor,
       Continuum.Runtime.TimerWheel,
-      Continuum.Runtime.SignalRouter
+      Continuum.Runtime.SignalRouter,
+      Continuum.Runtime.PartitionMaintainer
     ]
 
     refute Enum.any?(children, fn
@@ -97,6 +103,25 @@ defmodule Continuum.Runtime.InstanceTest do
     assert Enum.any?(children, &match?(%{id: {Phoenix.PubSub, ^name}}, &1))
     assert Enum.any?(children, &match?(%{id: {Registry, ^name}}, &1))
     assert Enum.any?(children, &match?(%{id: {Continuum.Runtime.RunSupervisor, ^name}}, &1))
+  end
+
+  test "partition maintenance is an explicit Postgres runtime child" do
+    original_instance = Instance.default()
+    on_exit(fn -> Instance.register(original_instance) end)
+
+    children =
+      Continuum.children(
+        name: Continuum,
+        repo: Continuum.Test.Repo,
+        partition_maintainer: [months: 6]
+      )
+
+    assert Enum.any?(
+             children,
+             &match?(%{id: {Continuum.Runtime.PartitionMaintainer, Continuum}}, &1)
+           )
+
+    assert Instance.default().partition_maintainer == Continuum.Runtime.PartitionMaintainer
   end
 
   test "lookup/1 rejects unregistered named instances" do

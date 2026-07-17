@@ -20,8 +20,8 @@ defmodule Continuum.HealthTest do
   end
 
   test "reports every F1 operational health category" do
-    past = timestamp(-120)
-    future = timestamp(120)
+    past = database_timestamp(-120)
+    future = database_timestamp(120)
 
     live_run =
       insert_run!(
@@ -300,5 +300,15 @@ defmodule Continuum.HealthTest do
     DateTime.utc_now()
     |> DateTime.add(offset_seconds, :second)
     |> DateTime.truncate(:microsecond)
+  end
+
+  defp database_timestamp(offset_seconds) do
+    %{rows: [[timestamp]]} =
+      Repo.query!(
+        "SELECT clock_timestamp() + ($1::integer * interval '1 second')",
+        [offset_seconds]
+      )
+
+    timestamp
   end
 end

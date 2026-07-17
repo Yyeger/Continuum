@@ -63,6 +63,13 @@ stolen a run lease. Graceful shutdown emits `[:continuum, :lease,
 :drain_started]` and `[:continuum, :lease, :drain_completed]`; alert when the
 completed event reports a non-zero `unreleased_count`.
 
+Partition maintenance uses a database-scoped advisory transaction lock, so
+multiple nodes may schedule the same horizon safely while only the lock holder
+performs DDL. Pass `partition_maintainer: [...]` to `Continuum.children/1` only
+when the runtime database role has DDL permission. Maintenance emits
+`[:continuum, :partition, :maintained]` or
+`[:continuum, :partition, :maintenance_failed]`.
+
 ## Test Harness
 
 The repository includes `mix test.cluster`, which runs `test/cluster` with real

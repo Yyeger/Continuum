@@ -122,26 +122,61 @@ defmodule Continuum.Health do
     first = Date.new!(now.year, now.month, 1)
     required = Enum.map(0..(months - 1), &partition_name(shift_month(first, &1)))
 
-    present =
+    attached =
       query_rows(repo, """
-      SELECT c.relname
+      SELECT c.relname, pg_get_expr(c.relpartbound, c.oid)
       FROM pg_inherits i
       JOIN pg_class c ON c.oid = i.inhrelid
-      JOIN pg_class p ON p.oid = i.inhparent
-      WHERE p.relname = 'continuum_events'
+      WHERE i.inhparent = to_regclass('continuum_events')
       ORDER BY c.relname
       """)
+
+    default = Enum.find(attached, fn [_name, bound] -> bound == "DEFAULT" end)
+
+    present =
+      attached
+      |> Enum.reject(fn [_name, bound] -> bound == "DEFAULT" end)
       |> Enum.map(&hd/1)
 
     missing = required -- present
+    default_partition = default_partition_health(repo, default)
 
     %{
-      status: if(missing == [], do: :ok, else: :degraded),
+      status:
+        if(missing == [] and default_partition.present? and default_partition.row_count == 0,
+          do: :ok,
+          else: :degraded
+        ),
       required_months: required,
       present: present,
       missing: missing,
       horizon_months: months,
-      horizon_end: required |> List.last() |> partition_month_label()
+      horizon_end: required |> List.last() |> partition_month_label(),
+      default_partition: default_partition
+    }
+  end
+
+  defp default_partition_health(_repo, nil) do
+    %{
+      name: Continuum.Partitions.default_partition_name(),
+      present?: false,
+      row_count: 0,
+      oldest_inserted_at: nil
+    }
+  end
+
+  defp default_partition_health(repo, [name, "DEFAULT"]) do
+    [[count, oldest_inserted_at]] =
+      query_rows(
+        repo,
+        "SELECT count(*), min(inserted_at) FROM ONLY #{quote_ident(name)}"
+      )
+
+    %{
+      name: name,
+      present?: true,
+      row_count: count,
+      oldest_inserted_at: oldest_inserted_at
     }
   end
 
@@ -865,6 +900,8 @@ defmodule Continuum.Health do
 
   defp partition_month_label("continuum_events_y" <> rest), do: String.replace(rest, "_m", "-")
   defp partition_month_label(other), do: other
+
+  defp quote_ident(name), do: ~s("#{String.replace(name, ~s("), ~s(""))}")
 
   defp shift_month(%Date{} = month, offset) do
     absolute_month = month.year * 12 + month.month - 1 + offset

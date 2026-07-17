@@ -4,6 +4,11 @@
 
 ### Features
 
+- Added cluster-safe automated event partition maintenance through
+  `Continuum.Partitions.ensure/1` and the opt-in per-instance partition
+  maintainer. Fresh migrations include a default overflow partition; monthly
+  rollover transactionally evacuates matching overflow rows, while health,
+  Observer, Mix output, and telemetry expose missing horizons and overflow.
 - Added public, per-instance graceful lifecycle APIs: `Continuum.drain/1`,
   `readiness/1`, `ready?/1`, and `drained?/1`. Drain marks readiness false
   before pausing claims, closes the claim/drain race with reservations, remains

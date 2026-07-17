@@ -82,7 +82,8 @@ defmodule Mix.Tasks.Continuum.Health do
 
     Mix.shell().info(
       "partitions: present=#{length(report.partitions.present)} " <>
-        "missing=#{length(report.partitions.missing)} horizon=#{report.partitions.horizon_end}"
+        "missing=#{length(report.partitions.missing)} horizon=#{report.partitions.horizon_end} " <>
+        "overflow=#{report.partitions.default_partition.row_count}"
     )
 
     Enum.each(report.partitions.missing, &Mix.shell().info("  missing #{&1}"))
