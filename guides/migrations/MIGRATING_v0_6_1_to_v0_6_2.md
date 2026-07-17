@@ -40,6 +40,13 @@ CREATE TABLE continuum_health_reviews (
 
 Fresh `mix continuum.gen.migration` output includes all of these additions.
 
+Activity operations add nullable `lineage_id` and `parent_task_id` columns to
+`continuum_activity_tasks`, backfill existing lineage ids from each task id,
+and create `continuum_activity_attempts` plus
+`continuum_activity_operations`. Apply the generated migration before using
+`Continuum.ActivityOperations` or `mix continuum.activities`; workers record
+terminal attempt outcomes in the new attempts table.
+
 Add the event overflow safety partition:
 
 ```sql

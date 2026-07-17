@@ -35,6 +35,25 @@ defmodule Continuum.SnapshotFormatTest do
     end
   end
 
+  test "compacts an append-only manual activity retry lineage into one replay step" do
+    command_id = {:activity, __MODULE__, :run, 12, <<1>>, 0}
+    mfa = {__MODULE__, :activity, [1]}
+
+    events = [
+      %{type: :activity_scheduled, seq: 0, mfa: mfa, command_id: command_id},
+      %{type: :activity_failed, seq: 1, mfa: mfa, error: :down, command_id: command_id},
+      %{type: :activity_retry_scheduled, seq: 2, mfa: mfa, command_id: command_id},
+      %{type: :activity_completed, seq: 3, mfa: mfa, payload: {:ok, 1}, command_id: command_id}
+    ]
+
+    assert {:ok, %Snapshot{through_seq: 3, steps_by_seq: %{0 => step}}} =
+             Snapshot.compact("retry-run", <<1>>, events)
+
+    assert step.effect_type == :activity
+    assert step.result == {:ok, 1}
+    assert step.advance_by == 4
+  end
+
   defp snapshot do
     %Snapshot{
       run_id: "snapshot-format-test",

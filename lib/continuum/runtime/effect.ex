@@ -1496,19 +1496,7 @@ defmodule Continuum.Runtime.Effect do
          command_id
        )
        when emod == lmod and efun == lfun do
-    case history_event(ctx, ctx.cursor + 1) do
-      %{type: :activity_completed, mfa: {^emod, ^efun, _}, payload: payload} = event ->
-        if command_matches?(event, command_id), do: {:ok, payload, 2}, else: :mismatch
-
-      %{type: :activity_failed, mfa: {^emod, ^efun, _}, error: error} = event ->
-        if command_matches?(event, command_id), do: {:ok, {:error, error}, 2}, else: :mismatch
-
-      nil ->
-        :pending
-
-      _other ->
-        :mismatch
-    end
+    replay_activity_terminal(ctx, ctx.cursor + 1, emod, efun, command_id)
   end
 
   defp match_event(
@@ -1680,6 +1668,36 @@ defmodule Continuum.Runtime.Effect do
        do: {:ok, {:error, :child_cancelled}}
 
   defp match_event(_ctx, _, _, _), do: :mismatch
+
+  defp replay_activity_terminal(ctx, cursor, emod, efun, command_id) do
+    case history_event(ctx, cursor) do
+      %{type: :activity_completed, mfa: {^emod, ^efun, _}, payload: payload} = event ->
+        if command_matches?(event, command_id),
+          do: {:ok, payload, cursor - ctx.cursor + 1},
+          else: :mismatch
+
+      %{type: :activity_failed, mfa: {^emod, ^efun, _}, error: error} = event ->
+        if command_matches?(event, command_id) do
+          case history_event(ctx, cursor + 1) do
+            %{type: :activity_retry_scheduled, mfa: {^emod, ^efun, _}} = retry ->
+              if command_matches?(retry, command_id),
+                do: replay_activity_terminal(ctx, cursor + 2, emod, efun, command_id),
+                else: :mismatch
+
+            _ ->
+              {:ok, {:error, error}, cursor - ctx.cursor + 1}
+          end
+        else
+          :mismatch
+        end
+
+      nil ->
+        :pending
+
+      _other ->
+        :mismatch
+    end
+  end
 
   defp assign_command_id(ctx, base) do
     counts = ctx.command_counts || %{}

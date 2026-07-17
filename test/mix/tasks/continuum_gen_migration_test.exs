@@ -38,6 +38,10 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "add :lease_heartbeat_at, :utc_datetime_usec"
       assert source =~ "create table(:continuum_health_reviews"
       assert source =~ "PRIMARY KEY (finding_type, subject_id, fingerprint)"
+      assert source =~ "add :lineage_id, :uuid"
+      assert source =~ "add :parent_task_id, :uuid"
+      assert source =~ "create table(:continuum_activity_attempts"
+      assert source =~ "create table(:continuum_activity_operations"
     end)
   end
 

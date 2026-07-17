@@ -1,13 +1,25 @@
 defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
   use Continuum.Test.DataCase, async: false
 
-  alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Snapshot, Timer}
+  alias Continuum.Schema.{
+    ActivityAttempt,
+    ActivityOperation,
+    ActivityResult,
+    ActivityTask,
+    Event,
+    Run,
+    Signal,
+    Snapshot,
+    Timer
+  }
 
   setup do
     previous_shell = Mix.shell()
     Mix.shell(Mix.Shell.Process)
 
     Repo.delete_all(ActivityResult)
+    Repo.delete_all(ActivityOperation)
+    Repo.delete_all(ActivityAttempt)
     Repo.delete_all(ActivityTask)
     Repo.delete_all(Timer)
     Repo.delete_all(Signal)
@@ -61,6 +73,8 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
     assert only_run_ids(Snapshot) == [run3]
     assert only_run_ids(Timer) == [run3]
     assert only_run_ids(Signal) == [run3]
+    assert only_run_ids(ActivityAttempt) == [run3]
+    assert only_run_ids(ActivityOperation) == [run3]
     assert only_run_ids(ActivityTask) == [run3]
     assert only_run_ids(ActivityResult) == [run3]
   end
@@ -138,6 +152,7 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
 
   defp insert_dependent_rows(run_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+    task_id = Ecto.UUID.generate()
 
     %Event{}
     |> Ecto.Changeset.change(%{
@@ -181,13 +196,39 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
 
     %ActivityTask{}
     |> Ecto.Changeset.change(%{
-      id: Ecto.UUID.generate(),
+      id: task_id,
       run_id: run_id,
+      lineage_id: task_id,
       seq: 0,
       mfa: :erlang.term_to_binary({__MODULE__, :activity, []}),
       state: "completed",
       scheduled_at: now,
       available_at: now
+    })
+    |> Repo.insert!()
+
+    %ActivityAttempt{}
+    |> Ecto.Changeset.change(%{
+      task_id: task_id,
+      run_id: run_id,
+      lineage_id: task_id,
+      attempt: 1,
+      outcome: "completed",
+      recorded_at: now
+    })
+    |> Repo.insert!()
+
+    %ActivityOperation{}
+    |> Ecto.Changeset.change(%{
+      id: Ecto.UUID.generate(),
+      task_id: task_id,
+      run_id: run_id,
+      lineage_id: task_id,
+      action: "classify",
+      classification: "retryable",
+      operator: "archive-test",
+      reason: "coverage",
+      inserted_at: now
     })
     |> Repo.insert!()
 

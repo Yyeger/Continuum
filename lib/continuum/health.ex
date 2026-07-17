@@ -487,7 +487,7 @@ defmodule Continuum.Health do
         """
         SELECT id::text, run_id::text, attempt, scheduled_at, error
         FROM continuum_activity_tasks
-        WHERE state = 'discarded'
+        WHERE state IN ('discarded', 'dead_lettered')
         ORDER BY scheduled_at
         LIMIT $1
         """,
@@ -526,9 +526,14 @@ defmodule Continuum.Health do
           repo,
           """
           SELECT count(*)::bigint FROM continuum_activity_tasks
-          WHERE state = 'discarded' AND (error IS NULL OR error <> $1)
+          WHERE state IN ('discarded', 'dead_lettered') AND (error IS NULL OR error <> $1)
           """,
           [:erlang.term_to_binary(:cancelled)]
+        ),
+      explicit_dead_letter_count:
+        scalar(
+          repo,
+          "SELECT count(*)::bigint FROM continuum_activity_tasks WHERE state = 'dead_lettered'"
         ),
       dead_letter_candidates: dead_letters,
       counts_by_state: counts

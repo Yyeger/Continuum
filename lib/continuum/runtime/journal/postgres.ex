@@ -19,7 +19,18 @@ defmodule Continuum.Runtime.Journal.Postgres do
   require Logger
 
   alias Continuum.Runtime.{Instance, JournalError, Snapshotter}
-  alias Continuum.Schema.{ActivityResult, ActivityTask, Event, Run, Signal, Snapshot, Timer}
+
+  alias Continuum.Schema.{
+    ActivityAttempt,
+    ActivityResult,
+    ActivityTask,
+    Event,
+    Run,
+    Signal,
+    Snapshot,
+    Timer
+  }
+
   alias Continuum.{DurableTerm, Telemetry}
 
   @impl true
@@ -251,6 +262,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp schedule_activity_with_repo!(run_id, event, task, lease_token) do
     {event_type, payload} = encode_event(event)
+    lineage_id = Map.get(task, :lineage_id, task.id)
+    task = Map.put_new(task, :lineage_id, lineage_id)
 
     result =
       repo().transaction(fn ->
@@ -272,6 +285,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
           |> Ecto.Changeset.change(%{
             id: task.id,
             run_id: run_id,
+            lineage_id: lineage_id,
+            parent_task_id: Map.get(task, :parent_task_id),
             seq: task.seq,
             mfa: encode_term(task),
             attempt: 1,
@@ -695,6 +710,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
         Enum.each(scheduled, fn %{event: event, task: task} ->
           {event_type, payload} = encode_event(event)
+          lineage_id = Map.get(task, :lineage_id, task.id)
+          task = Map.put_new(task, :lineage_id, lineage_id)
 
           event_changeset =
             %Event{}
@@ -711,6 +728,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
             |> Ecto.Changeset.change(%{
               id: task.id,
               run_id: run_id,
+              lineage_id: lineage_id,
+              parent_task_id: Map.get(task, :parent_task_id),
               seq: task.seq,
               mfa: encode_term(task),
               attempt: 1,
@@ -757,6 +776,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         event = compensation_completed_event(task, committed_result)
 
         with %{} <- insert_event!(task.run_id, event),
+             :ok <- record_activity_attempt!(task, "completed", nil),
              {1, _} <-
                repo().update_all(
                  from(t in ActivityTask,
@@ -850,6 +870,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         event = activity_completed_event(task, committed_result)
 
         with %{} <- insert_event!(task.run_id, event),
+             :ok <- record_activity_attempt!(task, "completed", nil),
              {1, _} <-
                repo().update_all(
                  from(t in ActivityTask,
@@ -914,6 +935,149 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end)
   end
 
+  @doc false
+  def retry_discarded_activity!(%Instance{} = instance, task_id, policy, operator, reason) do
+    with_repo(instance, fn ->
+      retry_discarded_activity_with_repo!(task_id, policy, operator, reason)
+    end)
+  end
+
+  defp retry_discarded_activity_with_repo!(task_id, policy, operator, reason) do
+    result =
+      repo().transaction(fn ->
+        task = repo().one(from(t in ActivityTask, where: t.id == ^task_id, lock: "FOR UPDATE"))
+
+        if is_nil(task), do: repo().rollback(:activity_task_not_found)
+        if task.state not in ["discarded", "dead_lettered"], do: repo().rollback(:not_discarded)
+
+        lineage_id = task.lineage_id || task.id
+
+        if repo().exists?(from(t in ActivityTask, where: t.parent_task_id == ^task.id)) do
+          repo().rollback(:already_retried)
+        end
+
+        lock_parent_first(task.run_id)
+        run = repo().one(from(r in Run, where: r.id == ^task.run_id, lock: "FOR UPDATE"))
+
+        cond do
+          is_nil(run) -> repo().rollback(:run_not_found)
+          run.state != "failed" -> repo().rollback({:run_not_failed, run.state})
+          not is_nil(run.parent_run_id) -> repo().rollback(:child_run_retry_not_supported)
+          true -> :ok
+        end
+
+        terminal =
+          repo().one(
+            from(e in Event,
+              where: e.run_id == ^task.run_id and e.seq == ^(task.seq + 1),
+              lock: "FOR UPDATE"
+            )
+          )
+
+        max_seq =
+          repo().one(from(e in Event, where: e.run_id == ^task.run_id, select: max(e.seq)))
+
+        unless terminal && terminal.event_type == "activity_failed" && max_seq == terminal.seq do
+          repo().rollback(:failure_not_replay_tail)
+        end
+
+        source = decode_term(task.mfa)
+
+        if Map.get(source, :kind) == :compensation do
+          repo().rollback(:compensation_retry_not_supported)
+        end
+
+        successor_id = Ecto.UUID.generate()
+        retry_seq = terminal.seq + 1
+
+        successor =
+          source
+          |> Map.merge(%{
+            id: successor_id,
+            seq: retry_seq,
+            lineage_id: lineage_id,
+            parent_task_id: task.id,
+            retry: Continuum.Activity.Policy.retry_options(policy),
+            timeout_ms: policy.timeout_ms,
+            idempotency_key: policy.idempotency_key
+          })
+
+        retry_event = %{
+          type: :activity_retry_scheduled,
+          task_id: successor_id,
+          parent_task_id: task.id,
+          lineage_id: lineage_id,
+          mfa: Map.fetch!(source, :mfa),
+          retry_policy: policy,
+          operator: operator,
+          reason: reason,
+          command_id: Map.get(source, :command_id),
+          seq: retry_seq
+        }
+
+        {event_type, payload} = encode_event(retry_event)
+        now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+        repo().insert!(%Event{
+          run_id: task.run_id,
+          seq: retry_seq,
+          event_type: event_type,
+          payload: payload,
+          inserted_at: now
+        })
+
+        repo().insert!(%ActivityTask{
+          id: successor_id,
+          run_id: task.run_id,
+          lineage_id: lineage_id,
+          parent_task_id: task.id,
+          seq: retry_seq,
+          mfa: encode_term(successor),
+          attempt: 1,
+          state: "available",
+          scheduled_at: now,
+          available_at: now
+        })
+
+        repo().insert!(%Continuum.Schema.ActivityOperation{
+          id: Ecto.UUID.generate(),
+          task_id: task.id,
+          successor_task_id: successor_id,
+          run_id: task.run_id,
+          lineage_id: lineage_id,
+          action: "manual_retry",
+          classification: "retryable",
+          operator: operator,
+          reason: reason,
+          retry_policy: encode_term(policy),
+          inserted_at: now
+        })
+
+        repo().delete_all(
+          from(s in Snapshot, where: s.run_id == ^task.run_id and s.through_seq >= ^task.seq)
+        )
+
+        {:ok, %{num_rows: 1}} =
+          repo().query(
+            """
+            UPDATE continuum_runs
+            SET state = 'suspended', result = NULL, error = NULL, error_stacktrace = NULL,
+                completed_at = NULL, lease_owner = NULL, lease_token = NULL,
+                lease_expires_at = NULL, next_wakeup_at = NULL
+            WHERE id = $1::text::uuid AND state = 'failed'
+            """,
+            [task.run_id]
+          )
+
+        %{successor_task_id: successor_id, lineage_id: lineage_id, run_id: task.run_id}
+      end)
+
+    case result do
+      {:ok, retry} -> {:ok, retry}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp retry_activity_task_with_repo!(task, error, backoff_ms, lease_token) do
     backoff_seconds = backoff_ms / 1_000
     next_attempt = task.attempt + 1
@@ -923,6 +1087,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       repo().transaction(fn ->
         lock_and_validate_active_run!(task.run_id, lease_token)
         lock_and_validate_activity_task!(task)
+        :ok = record_activity_attempt!(task, "retrying", error)
 
         # available_at is computed on the database clock so the claim
         # comparison (also DB time) measures the intended backoff regardless
@@ -1572,6 +1737,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
         lock_and_validate_activity_task!(task)
 
         with %{} <- insert_event!(task.run_id, event),
+             :ok <-
+               record_activity_attempt!(
+                 task,
+                 terminal_attempt_outcome(event),
+                 Map.get(event, :error)
+               ),
              {1, _} <-
                repo().update_all(
                  from(t in ActivityTask,
@@ -1596,6 +1767,35 @@ defmodule Continuum.Runtime.Journal.Postgres do
       {:error, reason} ->
         raise JournalError, op: :activity_task_result!, reason: reason
     end
+  end
+
+  defp terminal_attempt_outcome(%{type: type})
+       when type in [:activity_failed, :compensation_failed],
+       do: "discarded"
+
+  defp terminal_attempt_outcome(_event), do: "completed"
+
+  defp record_activity_attempt!(task, outcome, error) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    repo().insert_all(
+      ActivityAttempt,
+      [
+        %{
+          task_id: task.id,
+          run_id: task.run_id,
+          lineage_id: Map.get(task, :lineage_id, task.id),
+          attempt: task.attempt,
+          outcome: outcome,
+          error: if(is_nil(error), do: nil, else: encode_term(error)),
+          recorded_at: now
+        }
+      ],
+      on_conflict: :nothing,
+      conflict_target: [:task_id, :attempt]
+    )
+
+    :ok
   end
 
   defp maybe_commit_idempotency_result(_task, result, nil), do: result

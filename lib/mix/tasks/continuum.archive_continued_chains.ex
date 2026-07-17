@@ -15,6 +15,8 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
   import Ecto.Query
 
   alias Continuum.Schema.{
+    ActivityAttempt,
+    ActivityOperation,
     ActivityResult,
     ActivityTask,
     Event,
@@ -91,6 +93,8 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
       {"continuum_snapshots", count(repo, Snapshot, run_ids)},
       {"continuum_timers", count(repo, Timer, run_ids)},
       {"continuum_signals", count(repo, Signal, run_ids)},
+      {"continuum_activity_attempts", count(repo, ActivityAttempt, run_ids)},
+      {"continuum_activity_operations", count(repo, ActivityOperation, run_ids)},
       {"continuum_activity_tasks", count(repo, ActivityTask, run_ids)},
       {"continuum_activity_results", count(repo, ActivityResult, run_ids)}
     ]
@@ -102,6 +106,8 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
       continuum_snapshots
       continuum_timers
       continuum_signals
+      continuum_activity_attempts
+      continuum_activity_operations
       continuum_activity_tasks
       continuum_activity_results
     )
@@ -119,6 +125,8 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
       delete_all(repo, Snapshot, run_ids)
       delete_all(repo, Timer, run_ids)
       delete_all(repo, Signal, run_ids)
+      delete_all(repo, ActivityAttempt, run_ids)
+      delete_all(repo, ActivityOperation, run_ids)
       delete_all(repo, ActivityTask, run_ids)
       delete_all(repo, ActivityResult, run_ids)
       delete_runs(repo, run_ids)

@@ -64,6 +64,40 @@ The `retry` action re-attempts durable registration for a loaded workflow. The
 epoch, attempt, timestamp, or error becomes unreviewed again. Applied repairs
 emit `[:continuum, :health, :repaired]` telemetry.
 
+## Activity Dead Letters and Manual Retry
+
+`Continuum.ActivityOperations` exposes durable task lineage, every recorded
+attempt outcome, and operator actions without requiring direct table edits.
+The matching Mix task supports text or JSON inspection:
+
+```bash
+mix continuum.activities --repo MyApp.Repo --action inspect --target TASK_ID
+mix continuum.activities --repo MyApp.Repo --action inspect --target TASK_ID --format json
+```
+
+Classification, dead-lettering, and retry require both an operator identity
+and reason. They are dry runs until repeated with `--execute`:
+
+```bash
+mix continuum.activities --repo MyApp.Repo --action classify --target TASK_ID \
+  --classification retryable --operator oncall --reason "upstream recovered"
+
+mix continuum.activities --repo MyApp.Repo --action dead-letter --target TASK_ID \
+  --operator oncall --reason "invalid account" --execute
+
+mix continuum.activities --repo MyApp.Repo --action retry --target TASK_ID \
+  --operator oncall --reason "upstream recovered" --max-attempts 3 \
+  --backoff exponential --base-ms 500 --timeout 30000 --execute
+```
+
+A manual retry preserves the original `activity_failed` event and appends an
+`activity_retry_scheduled` marker. Its successor task carries the same lineage
+id and the replacement policy. To avoid rewriting established workflow
+meaning, retry is accepted only when the failed activity is the replay tail of
+a failed root run. Completed runs, child runs, compensations, and histories
+that advanced past the failure are rejected explicitly. Executed actions emit
+`[:continuum, :activity, :operated]` telemetry.
+
 ## Graceful Shutdown
 
 Stopping the supervisor that owns `Continuum.children/1` performs a bounded

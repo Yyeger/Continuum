@@ -214,20 +214,7 @@ defmodule Continuum.Snapshot do
   end
 
   defp step_from(%{type: :activity_scheduled} = event, rest) do
-    with {:ok, next} <- next_event(event, rest),
-         :ok <- same_command?(event, next),
-         :ok <- same_activity?(event, next) do
-      case next.type do
-        :activity_completed ->
-          paired_step(event, next, :activity, activity_shape(event.mfa), next.payload)
-
-        :activity_failed ->
-          paired_step(event, next, :activity, activity_shape(event.mfa), {:error, next.error})
-
-        other ->
-          {:error, {:activity_winner_mismatch, event.seq, other}}
-      end
-    end
+    activity_step(event, event, rest, 1)
   end
 
   defp step_from(%{type: :signal_awaited} = event, rest) do
@@ -259,6 +246,45 @@ defmodule Continuum.Snapshot do
   end
 
   defp step_from(%{type: type, seq: seq}, _rest), do: {:error, {:unsupported_event, type, seq}}
+
+  defp activity_step(root, previous, rest, consumed) do
+    with {:ok, next} <- next_event(previous, rest),
+         :ok <- same_command?(root, next),
+         :ok <- same_activity?(root, next) do
+      case next.type do
+        :activity_completed ->
+          activity_chain_step(root, next.payload, consumed + 1)
+
+        :activity_failed ->
+          case Enum.drop(rest, 1) do
+            [%{type: :activity_retry_scheduled} = retry | tail] ->
+              with :ok <- same_command?(root, retry),
+                   :ok <- same_activity?(root, retry) do
+                activity_step(root, retry, tail, consumed + 2)
+              end
+
+            _ ->
+              activity_chain_step(root, {:error, next.error}, consumed + 1)
+          end
+
+        other ->
+          {:error, {:activity_winner_mismatch, root.seq, other}}
+      end
+    end
+  end
+
+  defp activity_chain_step(event, result, advance_by) do
+    with {:ok, command_id} <- command_id(event) do
+      {:ok,
+       %{
+         effect_type: :activity,
+         command_id: command_id,
+         shape: activity_shape(event.mfa),
+         result: result,
+         advance_by: advance_by
+       }, advance_by}
+    end
+  end
 
   defp not_parallel_compensation_batch?(%{type: :compensation_scheduled}),
     do: {:incomplete, :parallel_compensation_batch}

@@ -7,6 +7,8 @@ defmodule Continuum.Schema.ActivityTask do
 
   schema "continuum_activity_tasks" do
     field(:run_id, :binary_id)
+    field(:lineage_id, :binary_id)
+    field(:parent_task_id, :binary_id)
     field(:seq, :integer)
     field(:mfa, :binary)
     field(:attempt, :integer, default: 1)

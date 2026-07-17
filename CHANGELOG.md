@@ -4,6 +4,12 @@
 
 ### Features
 
+- Added audited activity operations through `Continuum.ActivityOperations` and
+  `mix continuum.activities`: complete attempt inspection, retryability
+  classification, explicit dead-lettering, and dry-run-first manual retries
+  with replacement policies. Retries preserve failed events, append a retry
+  marker, create linked successor tasks, invalidate affected snapshot caches,
+  and resume only replay-safe failed root runs.
 - Added cluster-safe automated event partition maintenance through
   `Continuum.Partitions.ensure/1` and the opt-in per-instance partition
   maintainer. Fresh migrations include a default overflow partition; monthly

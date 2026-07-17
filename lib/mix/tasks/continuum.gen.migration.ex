@@ -200,6 +200,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         create table(:continuum_activity_tasks, primary_key: false) do
           add :id, :uuid, primary_key: true
           add :run_id, :uuid, null: false
+          add :lineage_id, :uuid
+          add :parent_task_id, :uuid
           add :seq, :bigint, null: false
           add :mfa, :bytea, null: false
           add :attempt, :integer, null: false, default: 1
@@ -217,6 +219,38 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           ON continuum_activity_tasks (available_at)
           WHERE state = 'available'
         \"\"\"
+
+        create index(:continuum_activity_tasks, [:lineage_id, :scheduled_at])
+
+        create table(:continuum_activity_attempts) do
+          add :task_id, :uuid, null: false
+          add :run_id, :uuid, null: false
+          add :lineage_id, :uuid, null: false
+          add :attempt, :integer, null: false
+          add :outcome, :text, null: false
+          add :error, :bytea
+          add :recorded_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        create unique_index(:continuum_activity_attempts, [:task_id, :attempt])
+        create index(:continuum_activity_attempts, [:lineage_id, :recorded_at])
+
+        create table(:continuum_activity_operations, primary_key: false) do
+          add :id, :uuid, primary_key: true
+          add :task_id, :uuid, null: false
+          add :successor_task_id, :uuid
+          add :run_id, :uuid, null: false
+          add :lineage_id, :uuid, null: false
+          add :action, :text, null: false
+          add :classification, :text
+          add :operator, :text, null: false
+          add :reason, :text, null: false
+          add :retry_policy, :bytea
+          add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        create index(:continuum_activity_operations, [:lineage_id, :inserted_at])
+        create unique_index(:continuum_activity_operations, [:successor_task_id])
 
         create table(:continuum_activity_results, primary_key: false) do
           add :activity_module, :text, null: false
@@ -282,6 +316,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         drop_if_exists table(:continuum_workflow_versions)
         drop_if_exists table(:continuum_snapshots)
         drop_if_exists table(:continuum_activity_results)
+        drop_if_exists table(:continuum_activity_operations)
+        drop_if_exists table(:continuum_activity_attempts)
         drop_if_exists table(:continuum_activity_tasks)
         drop_if_exists table(:continuum_timers)
         drop_if_exists table(:continuum_signals)
