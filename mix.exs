@@ -1,7 +1,7 @@
 defmodule Continuum.MixProject do
   use Mix.Project
 
-  @version "0.6.1"
+  @version "0.6.2"
   @source_url "https://github.com/Yyeger/Continuum"
 
   def project do
@@ -59,6 +59,15 @@ defmodule Continuum.MixProject do
   defp docs do
     [
       main: "Continuum",
+      skip_undefined_reference_warnings_on: [
+        "README.md",
+        "guides/multi-instance.md",
+        "guides/observer.md",
+        "Continuum",
+        "Continuum.Runtime.Context",
+        "Continuum.Runtime.Journal",
+        "Continuum.VersionRegistry"
+      ],
       extras: [
         "README.md",
         "guides/your-first-workflow.md",

@@ -3,6 +3,8 @@ defmodule Continuum.DurableTermError do
 
   defexception [:path, :kind]
 
+  @type t :: %__MODULE__{path: [term()], kind: atom()}
+
   @impl true
   def message(%__MODULE__{path: path, kind: kind}) do
     "non-durable #{kind} at #{Continuum.DurableTerm.format_path(path)}; " <>

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.6.2 — Unreleased — "Operational health"
+## v0.6.2 — 2026-07-18 — "Operational health"
 
 ### Features
 

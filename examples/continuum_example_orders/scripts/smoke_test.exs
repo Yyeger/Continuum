@@ -205,20 +205,17 @@ defmodule ContinuumExampleOrders.SmokeTest do
     {:ok, run_id} = Continuum.start(ContinuumExampleOrders.SubscriptionFlow, input, workflow_opts)
     IO.puts("started subscription #{run_id}")
 
-    {:ok, %{state: :completed, result: {:continued, next_run_id}}} =
+    {:ok, %{state: :completed, result: {:ok, result}, run_id: final_run_id}} =
       Continuum.await(run_id, 15_000, workflow_opts)
-
-    {:ok, %{state: :completed, result: {:ok, result}}} =
-      Continuum.await(next_run_id, 15_000, workflow_opts)
 
     root_events =
       instance
       |> Continuum.Runtime.Journal.Postgres.load(run_id)
       |> Enum.map(& &1.type)
 
-    next_events =
+    final_events =
       instance
-      |> Continuum.Runtime.Journal.Postgres.load(next_run_id)
+      |> Continuum.Runtime.Journal.Postgres.load(final_run_id)
       |> Enum.map(& &1.type)
 
     unless :run_continued_as_new in root_events do
@@ -231,10 +228,10 @@ defmodule ContinuumExampleOrders.SmokeTest do
 
     %{
       root_run_id: run_id,
-      next_run_id: next_run_id,
+      final_run_id: final_run_id,
       result: result,
       root_events: root_events,
-      next_events: next_events
+      final_events: final_events
     }
   end
 end

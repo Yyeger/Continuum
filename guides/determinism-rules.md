@@ -34,7 +34,7 @@ Workflow code must not directly call non-deterministic APIs such as:
 * `:rand.*`
 * `System.*`
 * `IO.*`
-* `Process.send/2`
+* `Process.send/3`
 * ETS or `:persistent_term` reads
 * cluster topology and remote call APIs such as `Node.list/0`, `:pg.*`,
   `:rpc.*`, and `:erpc.*`
