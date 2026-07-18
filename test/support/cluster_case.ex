@@ -126,7 +126,9 @@ defmodule Continuum.Test.ClusterCase do
 
   def truncate_continuum_tables do
     Continuum.Test.Repo.query!("""
-    TRUNCATE continuum_activity_results,
+    TRUNCATE continuum_activity_operations,
+             continuum_activity_attempts,
+             continuum_activity_results,
              continuum_activity_tasks,
              continuum_events,
              continuum_runs,
@@ -221,6 +223,19 @@ defmodule Continuum.Test.ClusterNode do
     Continuum.VersionRegistry.ensure_registered(Continuum.Test.ClusterFlows.ActivityFlow)
 
     :ok
+  end
+
+  def disconnect_repo do
+    Supervisor.terminate_child(Continuum.Supervisor, Continuum.Test.Repo)
+  end
+
+  def reconnect_repo do
+    case Supervisor.restart_child(Continuum.Supervisor, Continuum.Test.Repo) do
+      {:ok, _pid} -> :ok
+      {:ok, _pid, _info} -> :ok
+      {:error, :running} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp start_repo_child do

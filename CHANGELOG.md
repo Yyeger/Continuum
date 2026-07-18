@@ -4,6 +4,11 @@
 
 ### Features
 
+- Added scheduled compatibility and failure-injection CI lanes covering the
+  minimum and latest supported Elixir, OTP, and PostgreSQL endpoints;
+  commit-before-wake crashes for activities, timers, and signals; rolling node
+  handoff and transient database partitions; documented host cold boot;
+  future-clock partition rollover; and strict optional-integration builds.
 - Added audited activity operations through `Continuum.ActivityOperations` and
   `mix continuum.activities`: complete attempt inspection, retryability
   classification, explicit dead-lettering, and dry-run-first manual retries

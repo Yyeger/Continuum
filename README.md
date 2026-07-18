@@ -77,6 +77,10 @@ end
 
 ## Installation
 
+Continuum supports Elixir 1.19 and 1.20. CI exercises the compatibility
+endpoints on Elixir 1.19 / OTP 27 / PostgreSQL 14 and Elixir 1.20 / OTP 29 /
+PostgreSQL 18, in addition to scheduled failure-injection lanes.
+
 Add Continuum and a Postgres driver to your dependencies:
 
 ```elixir

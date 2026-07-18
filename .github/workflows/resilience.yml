@@ -1,0 +1,72 @@
+name: Scheduled resilience
+
+on:
+  schedule:
+    - cron: "43 4 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resilience-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  failure-injection:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: continuum
+          POSTGRES_PASSWORD: continuum
+          POSTGRES_DB: continuum_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+      - run: mix deps.get
+      - name: Kill-after-commit and future-clock rollover
+        run: mix test test/continuum/failure_injection --seed 0 --max-cases 1
+      - name: Rolling restart and transient database partition
+        run: mix test.cluster
+      - name: Documented host cold boot
+        run: MIX_ENV=test mix run --no-start ci/cold_boot.exs
+
+  optional-integrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: continuum
+          POSTGRES_PASSWORD: continuum
+          POSTGRES_DB: continuum_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+      - run: mix deps.get
+      - name: Strict compile with optional integrations
+        run: MIX_ENV=test mix compile --force --warnings-as-errors
+      - name: Oban and Phoenix Observer integrations
+        run: mix test test/continuum/oban_test.exs test/continuum/observer_test.exs test/continuum/observer_live_test.exs

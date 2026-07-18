@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -12,13 +15,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - elixir: "1.19"
+          - name: minimum
+            elixir: "1.19"
             otp: "27"
-          - elixir: "1.20"
-            otp: "28"
+            postgres: "14"
+          - name: latest
+            elixir: "1.20"
+            otp: "29"
+            postgres: "18"
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres }}
         env:
           POSTGRES_USER: continuum
           POSTGRES_PASSWORD: continuum
