@@ -54,7 +54,9 @@ defmodule Continuum.Runtime.SignalRouter do
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
     with {:ok, run_id} <-
-           Continuum.Runtime.NamespacePrecondition.resolve(instance, journal, run_id, opts) do
+           Continuum.Runtime.NamespacePrecondition.resolve(instance, journal, run_id, opts),
+         :ok <-
+           Continuum.SignalContract.validate_delivery(instance, journal, run_id, name, payload) do
       case journal do
         Journal.Postgres -> deliver_durable(instance, run_id, name, payload, opts)
         Journal.InMemory -> deliver_local(instance, run_id, name, payload, opts)

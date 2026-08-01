@@ -216,6 +216,19 @@ defmodule Continuum.Observer do
     end
   end
 
+  @doc "Returns the signal contracts declared by the run's workflow version."
+  @spec signal_contracts(binary(), keyword()) ::
+          {:ok, Continuum.SignalContract.contracts()} | {:error, term()}
+  def signal_contracts(run_id, opts \\ []) do
+    with {:ok, instance} <- repo_instance(opts) do
+      Continuum.SignalContract.contracts_for_run(
+        instance,
+        Continuum.Runtime.Journal.Postgres,
+        run_id
+      )
+    end
+  end
+
   @doc """
   Decodes a JSON payload from the Observer signal form.
   """

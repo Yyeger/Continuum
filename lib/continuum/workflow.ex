@@ -317,6 +317,11 @@ defmodule Continuum.Workflow do
   defmacro __using__(opts) do
     version = Keyword.get(opts, :version, 1)
 
+    signal_contracts =
+      opts
+      |> Keyword.get(:signals)
+      |> Continuum.SignalContract.normalize_declarations!(__CALLER__)
+
     retention =
       opts
       |> Keyword.get(:retention, {:days, 30})
@@ -362,6 +367,7 @@ defmodule Continuum.Workflow do
       @continuum_workflow_retention unquote(retention)
       @continuum_logical_workflow unquote(logical_workflow)
       @continuum_snapshot_threshold unquote(snapshot_threshold)
+      @continuum_signal_contracts unquote(Macro.escape(signal_contracts))
       Module.register_attribute(__MODULE__, :continuum_patch_sites, accumulate: true)
       Module.register_attribute(__MODULE__, :continuum_activity_sites, accumulate: true)
       Module.register_attribute(__MODULE__, :continuum_compensate_all_sites, accumulate: true)
@@ -420,6 +426,13 @@ defmodule Continuum.Workflow.OnDef do
     end
 
     Continuum.AstCheck.check_helper_calls(definition_ast, env, name, length(args || []))
+
+    Continuum.SignalContract.check_literal_awaits!(
+      body,
+      Module.get_attribute(env.module, :continuum_signal_contracts),
+      env
+    )
+
     Continuum.AstCheck.collect_compensation_sites(body, env, name, length(args || []))
     Continuum.AstCheck.check_catch_warnings(definition_ast, env, name, length(args || []))
 
@@ -450,8 +463,9 @@ defmodule Continuum.Workflow.BeforeCompile do
     retention = Module.get_attribute(env.module, :continuum_workflow_retention)
     logical_workflow = Module.get_attribute(env.module, :continuum_logical_workflow) || env.module
     snapshot_threshold = Module.get_attribute(env.module, :continuum_snapshot_threshold)
+    signal_contracts = Module.get_attribute(env.module, :continuum_signal_contracts)
     patch_sites = Module.get_attribute(env.module, :continuum_patch_sites) |> Enum.reverse()
-    hash = compute_version_hash(env.module)
+    hash = compute_version_hash(env.module, signal_contracts)
     generated_module = Module.concat(env.module, :"V_#{hash}")
     generated_definitions = generated_definitions(env.module, generated_module)
 
@@ -461,6 +475,7 @@ defmodule Continuum.Workflow.BeforeCompile do
       version: version,
       retention: retention,
       snapshot_threshold: snapshot_threshold,
+      signals: signal_contracts,
       patch_sites: patch_sites,
       version_hash: hash
     }
@@ -479,6 +494,7 @@ defmodule Continuum.Workflow.BeforeCompile do
             version: unquote(metadata.version),
             retention: unquote(Macro.escape(metadata.retention)),
             snapshot_threshold: unquote(metadata.snapshot_threshold),
+            signals: unquote(Macro.escape(metadata.signals)),
             patch_sites: unquote(Macro.escape(metadata.patch_sites)),
             version_hash: unquote(metadata.version_hash)
           }
@@ -496,6 +512,7 @@ defmodule Continuum.Workflow.BeforeCompile do
           version: unquote(metadata.version),
           retention: unquote(Macro.escape(metadata.retention)),
           snapshot_threshold: unquote(metadata.snapshot_threshold),
+          signals: unquote(Macro.escape(metadata.signals)),
           patch_sites: unquote(Macro.escape(metadata.patch_sites)),
           version_hash: unquote(metadata.version_hash)
         }
@@ -541,7 +558,7 @@ defmodule Continuum.Workflow.BeforeCompile do
     end)
   end
 
-  defp compute_version_hash(module) do
+  defp compute_version_hash(module, signal_contracts) do
     bodies =
       module
       |> Module.definitions_in()
@@ -558,7 +575,9 @@ defmodule Continuum.Workflow.BeforeCompile do
         end
       end)
 
-    bodies
+    hash_input = if is_nil(signal_contracts), do: bodies, else: {bodies, signal_contracts}
+
+    hash_input
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)

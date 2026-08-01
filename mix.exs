@@ -83,6 +83,7 @@ defmodule Continuum.MixProject do
         "guides/multi-instance.md",
         "guides/clustering.md",
         "guides/namespaces.md",
+        "guides/signal-contracts.md",
         "guides/search-and-query.md",
         "guides/sagas.md",
         "guides/child-workflows.md",

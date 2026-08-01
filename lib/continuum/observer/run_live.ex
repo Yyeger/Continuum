@@ -22,6 +22,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         |> assign(:observer_path, observer_path)
         |> assign(:run_id, run_id)
         |> assign(:signal_name, "")
+        |> assign(:signal_contracts, nil)
         |> assign(:signal_payload, "{}")
         |> assign(:event_cursor, nil)
         |> load_run()
@@ -131,7 +132,13 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             <button id="co-cancel-run" phx-click="cancel" disabled={@run.state in [:completed, :failed, :cancelled]}>Cancel</button>
 
             <form id="co-signal-form" phx-submit="signal" class="co-signal-form">
-              <input name="signal[name]" value={@signal_name} placeholder="signal name" />
+              <select :if={is_map(@signal_contracts)} name="signal[name]">
+                <option value="">Select signal</option>
+                <option :for={{name, validator} <- @signal_contracts} value={name}>
+                  <%= name %> (<%= inspect(validator) %>)
+                </option>
+              </select>
+              <input :if={is_nil(@signal_contracts)} name="signal[name]" value={@signal_name} placeholder="signal name" />
               <textarea name="signal[payload]" rows="3"><%= @signal_payload %></textarea>
               <button type="submit">Send Signal</button>
             </form>
@@ -187,12 +194,15 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       with {:ok, run} <- Continuum.Observer.get_run(run_id, instance: instance),
            {:ok, event_page} <- Continuum.Observer.list_events(run_id, instance: instance),
            {:ok, activities} <-
-             Continuum.Observer.list_activity_tasks(run_id, instance: instance) do
+             Continuum.Observer.list_activity_tasks(run_id, instance: instance),
+           {:ok, signal_contracts} <-
+             Continuum.Observer.signal_contracts(run_id, instance: instance) do
         socket
         |> assign(:run, run)
         |> assign(:events, event_page.entries)
         |> assign(:event_cursor, event_page.next_cursor)
         |> assign(:activities, activities)
+        |> assign(:signal_contracts, signal_contracts)
         |> assign(:continues_to, Continuum.Observer.successor_run_id(run_id, instance: instance))
       else
         {:error, :not_found} ->
@@ -201,6 +211,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           |> assign(:events, [])
           |> assign(:event_cursor, nil)
           |> assign(:activities, [])
+          |> assign(:signal_contracts, nil)
           |> assign(:continues_to, nil)
 
         {:error, reason} ->
@@ -209,6 +220,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           |> assign(:events, [])
           |> assign(:event_cursor, nil)
           |> assign(:activities, [])
+          |> assign(:signal_contracts, nil)
           |> assign(:continues_to, nil)
           |> put_flash(:error, "Observer query failed: #{inspect(reason)}")
       end
