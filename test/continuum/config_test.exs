@@ -38,5 +38,6 @@ defmodule Continuum.ConfigTest do
   test "committed configuration reference matches the schema generator" do
     path = Path.expand("../../guides/configuration.md", __DIR__)
     assert File.read!(path) == Continuum.Config.reference_markdown()
+    assert Continuum.Config.reference_markdown() =~ "`:builtin \\| {:oban, keyword}`"
   end
 end

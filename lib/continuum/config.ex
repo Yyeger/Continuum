@@ -145,7 +145,7 @@ defmodule Continuum.Config do
   def reference_markdown do
     rows =
       Enum.map_join(@top_schema, "\n", fn {key, type, default, description} ->
-        "| `#{key}` | `#{type}` | `#{default}` | #{description} |"
+        "| `#{key}` | `#{markdown_table_cell(type)}` | `#{markdown_table_cell(default)}` | #{description} |"
       end)
 
     components =
@@ -177,6 +177,8 @@ defmodule Continuum.Config do
     with `mix continuum.config.docs --check`.
     """
   end
+
+  defp markdown_table_cell(value), do: String.replace(value, "|", "\\|")
 
   defp validate_child!(_key, value) when is_boolean(value), do: :ok
 

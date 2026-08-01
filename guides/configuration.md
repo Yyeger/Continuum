@@ -7,24 +7,24 @@ before child specs are returned.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `name` | `atom` | `Continuum` | Runtime instance name. |
-| `repo` | `module | nil` | `configured repo` | Ecto repo used by durable components. |
-| `journal` | `module | nil` | `derived` | Journal adapter override. |
-| `workflow_modules` | `[module] | nil` | `discovered` | Workflow modules registered at boot. |
-| `activity_executor` | `:builtin | {:oban, keyword}` | `:builtin` | Activity execution backend. |
+| `repo` | `module \| nil` | `configured repo` | Ecto repo used by durable components. |
+| `journal` | `module \| nil` | `derived` | Journal adapter override. |
+| `workflow_modules` | `[module] \| nil` | `discovered` | Workflow modules registered at boot. |
+| `activity_executor` | `:builtin \| {:oban, keyword}` | `:builtin` | Activity execution backend. |
 | `activity_max_concurrency` | `positive_integer` | `10` | Instance-wide built-in worker limit. |
-| `activity_queues` | `map | keyword` | `%{}` | Per-queue positive concurrency limits. |
-| `heartbeater` | `boolean | keyword` | `[]` | Lease heartbeater child options. |
-| `run_supervisor` | `boolean | keyword` | `[]` | Run supervisor child options. |
-| `activity_supervisor` | `boolean | keyword` | `[]` | Activity supervisor child options. |
-| `recovery` | `boolean | keyword` | `[]` | Startup recovery child options. |
-| `dispatcher` | `boolean | keyword` | `[]` | Run dispatcher child options. |
-| `activity_dispatcher` | `boolean | keyword` | `[]` | Activity dispatcher child options. |
-| `timer_wheel` | `boolean | keyword` | `[]` | Timer wheel child options. |
-| `schedule_runner` | `boolean | keyword` | `[]` | One-shot schedule runner child options. |
-| `signal_router` | `boolean | keyword` | `[]` | Signal router child options. |
-| `snapshotter` | `boolean | keyword` | `[]` | Snapshotter child options. |
-| `partition_maintainer` | `boolean | keyword` | `false` | Optional partition DDL child options. |
-| `version_registry` | `boolean | keyword` | `[]` | Workflow version registrar child options. |
+| `activity_queues` | `map \| keyword` | `%{}` | Per-queue positive concurrency limits. |
+| `heartbeater` | `boolean \| keyword` | `[]` | Lease heartbeater child options. |
+| `run_supervisor` | `boolean \| keyword` | `[]` | Run supervisor child options. |
+| `activity_supervisor` | `boolean \| keyword` | `[]` | Activity supervisor child options. |
+| `recovery` | `boolean \| keyword` | `[]` | Startup recovery child options. |
+| `dispatcher` | `boolean \| keyword` | `[]` | Run dispatcher child options. |
+| `activity_dispatcher` | `boolean \| keyword` | `[]` | Activity dispatcher child options. |
+| `timer_wheel` | `boolean \| keyword` | `[]` | Timer wheel child options. |
+| `schedule_runner` | `boolean \| keyword` | `[]` | One-shot schedule runner child options. |
+| `signal_router` | `boolean \| keyword` | `[]` | Signal router child options. |
+| `snapshotter` | `boolean \| keyword` | `[]` | Snapshotter child options. |
+| `partition_maintainer` | `boolean \| keyword` | `false` | Optional partition DDL child options. |
+| `version_registry` | `boolean \| keyword` | `[]` | Workflow version registrar child options. |
 
 ## Child option keys
 
