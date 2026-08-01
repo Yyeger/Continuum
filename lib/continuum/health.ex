@@ -285,7 +285,7 @@ defmodule Continuum.Health do
     threshold =
       non_negative_integer(Keyword.get(opts, :lost_wake_after_ms, @default_lost_wake_after_ms))
 
-    limit = result_limit(opts)
+    limit = candidate_query_limit(opts, reviews)
 
     query_rows(
       repo,
@@ -312,6 +312,7 @@ defmodule Continuum.Health do
         lag_ms: age_ms(now, wake_at)
       })
     end)
+    |> limit_findings(result_limit(opts))
   end
 
   defp lost_wake_count(repo, opts) do
@@ -334,7 +335,7 @@ defmodule Continuum.Health do
   end
 
   defp timer_health(repo, now, opts, reviews) do
-    limit = result_limit(opts)
+    limit = candidate_query_limit(opts, reviews)
 
     overdue =
       query_rows(
@@ -360,6 +361,7 @@ defmodule Continuum.Health do
           overdue_ms: age_ms(now, fires_at)
         })
       end)
+      |> limit_findings(result_limit(opts))
 
     count =
       scalar(repo, """
@@ -374,7 +376,7 @@ defmodule Continuum.Health do
   end
 
   defp lease_health(repo, now, opts, reviews) do
-    limit = result_limit(opts)
+    limit = candidate_query_limit(opts, reviews)
 
     entries =
       query_rows(
@@ -409,6 +411,7 @@ defmodule Continuum.Health do
           Map.merge(base, %{fingerprint: nil, reviewed: false})
         end
       end)
+      |> limit_lease_entries(result_limit(opts))
 
     %{
       active_count:
@@ -468,7 +471,7 @@ defmodule Continuum.Health do
         ORDER BY lease_expires_at
         LIMIT $1
         """,
-        [result_limit(opts)]
+        [candidate_query_limit(opts, reviews)]
       )
       |> Enum.map(fn [task_id, run_id, attempt, owner, expires_at] ->
         finding(:expired_activity_lease, task_id, [attempt, owner, expires_at], reviews, %{
@@ -480,6 +483,7 @@ defmodule Continuum.Health do
           overdue_ms: age_ms(now, expires_at)
         })
       end)
+      |> limit_findings(result_limit(opts))
 
     dead_letters =
       query_rows(
@@ -491,7 +495,7 @@ defmodule Continuum.Health do
         ORDER BY scheduled_at
         LIMIT $1
         """,
-        [result_limit(opts)]
+        [candidate_query_limit(opts, reviews)]
       )
       |> Enum.map(fn [task_id, run_id, attempt, scheduled_at, error] ->
         decoded_error = decode_term(error)
@@ -508,6 +512,7 @@ defmodule Continuum.Health do
       end)
       |> Enum.reject(& &1.cancelled)
       |> Enum.map(&Map.delete(&1, :cancelled))
+      |> limit_findings(result_limit(opts))
 
     %{
       pending_count: Map.get(counts, "available", 0),
@@ -914,6 +919,25 @@ defmodule Continuum.Health do
   end
 
   defp result_limit(opts), do: positive_integer(Keyword.get(opts, :limit, @default_limit))
+
+  defp candidate_query_limit(opts, reviews), do: result_limit(opts) + MapSet.size(reviews)
+
+  defp limit_findings(findings, limit) do
+    {unreviewed, reviewed} = Enum.split_with(findings, &(not &1.reviewed))
+    Enum.take(unreviewed ++ reviewed, limit)
+  end
+
+  defp limit_lease_entries(entries, limit) do
+    entries
+    |> Enum.sort_by(fn entry ->
+      cond do
+        entry.expired and not entry.reviewed -> 0
+        not entry.expired -> 1
+        true -> 2
+      end
+    end)
+    |> Enum.take(limit)
+  end
 
   defp positive_integer(value) when is_integer(value) and value > 0, do: value
 

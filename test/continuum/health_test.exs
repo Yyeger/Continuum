@@ -204,6 +204,40 @@ defmodule Continuum.HealthTest do
              Repo.one!(HealthReview)
   end
 
+  test "reviewed findings do not hide later actionable candidates" do
+    run_id = insert_run!([])
+
+    first =
+      insert_task!(run_id,
+        state: "discarded",
+        error: :erlang.term_to_binary(:first_failure),
+        scheduled_at: timestamp(-120)
+      )
+
+    second =
+      insert_task!(run_id,
+        state: "discarded",
+        error: :erlang.term_to_binary(:second_failure),
+        scheduled_at: timestamp(-60)
+      )
+
+    assert {:ok, initial} = Continuum.Health.report(repo: Repo, partition_months: 1, limit: 1)
+    assert [%{task_id: ^first} = finding] = initial.activities.dead_letter_candidates
+
+    assert {:ok, %{status: :executed}} =
+             Continuum.Health.repair(:mark_reviewed, finding.subject_id,
+               repo: Repo,
+               finding_type: finding.finding_type,
+               fingerprint: finding.fingerprint,
+               reviewed_by: "ops",
+               execute: true
+             )
+
+    assert {:ok, report} = Continuum.Health.report(repo: Repo, partition_months: 1, limit: 1)
+    assert [%{task_id: ^second, reviewed: false}] = report.activities.dead_letter_candidates
+    assert report.activities.dead_letter_count == 2
+  end
+
   test "a degraded runtime makes the aggregate health report degraded" do
     heartbeater = Process.whereis(Continuum.Runtime.Lease.Heartbeater)
     original_lifecycle = :sys.get_state(heartbeater).lifecycle
