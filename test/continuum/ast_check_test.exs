@@ -90,7 +90,7 @@ defmodule Continuum.AstCheckTest do
       assert Enum.map(violations, & &1.mfa) == [{Process, :send_after}, {Kernel, :self}]
 
       assert Enum.find(violations, &(&1.mfa == {Process, :send_after})).hint =~
-               "Continuum.timer/1"
+               "timer(milliseconds)"
     end
 
     test "rejects process dictionaries and node-local process inspection" do
@@ -194,6 +194,54 @@ defmodule Continuum.AstCheckTest do
 
       signal_violation = Enum.find(violations, &(&1.mfa == {Continuum, :signal}))
       assert signal_violation.hint =~ "signal/3 is a side effect"
+    end
+
+    test "remediation hints reference only current workflow APIs" do
+      hints = AstCheck.forbidden_calls() |> Map.values() |> Enum.join("\n")
+
+      refute hints =~ "Continuum.activity"
+      refute hints =~ "Continuum.log"
+      refute hints =~ "Continuum.signal_child"
+      refute hints =~ "planned post"
+      refute hints =~ "Continuum.workflow_info"
+      refute hints =~ "Continuum.timer"
+    end
+
+    test "the remediation forms compile as a workflow" do
+      suffix = System.unique_integer([:positive])
+
+      source = """
+      defmodule Continuum.RemediationActivity#{suffix} do
+        use Continuum.Activity, retry: [max_attempts: 1]
+        def log(message), do: message
+      end
+
+      defmodule Continuum.RemediationChild#{suffix} do
+        use Continuum.Workflow, version: 1
+        def run(input), do: {:ok, input}
+      end
+
+      defmodule Continuum.RemediationFlow#{suffix} do
+        use Continuum.Workflow, version: 1
+
+        def run(input) do
+          now = Continuum.now()
+          today = Continuum.today()
+          uuid = Continuum.uuid4()
+          random = Continuum.random()
+          timer(1)
+          logged = activity(Continuum.RemediationActivity#{suffix}.log(input))
+          child = await(child(Continuum.RemediationChild#{suffix}.run(input)))
+          {now, today, uuid, random, logged, child}
+        end
+      end
+      """
+
+      compiled_modules = source |> Code.compile_string() |> Enum.map(&elem(&1, 0))
+
+      assert Module.concat(Continuum, "RemediationActivity#{suffix}") in compiled_modules
+      assert Module.concat(Continuum, "RemediationChild#{suffix}") in compiled_modules
+      assert Module.concat(Continuum, "RemediationFlow#{suffix}") in compiled_modules
     end
 
     test "rejects cluster topology and remote call APIs" do
