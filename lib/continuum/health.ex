@@ -450,6 +450,19 @@ defmodule Continuum.Health do
       """)
       |> Enum.map(fn [attempt, count] -> %{attempt: attempt, count: count} end)
 
+    counts_by_queue =
+      query_rows(repo, """
+      SELECT queue, state, count(*)::bigint
+      FROM continuum_activity_tasks
+      GROUP BY queue, state
+      ORDER BY queue, state
+      """)
+      |> Enum.group_by(
+        fn [queue, _state, _count] -> queue end,
+        fn [_queue, state, count] -> {state, count} end
+      )
+      |> Map.new(fn {queue, state_counts} -> {queue, Map.new(state_counts)} end)
+
     oldest =
       query_rows(repo, """
       SELECT min(scheduled_at)
@@ -572,7 +585,8 @@ defmodule Continuum.Health do
           "SELECT count(*)::bigint FROM continuum_activity_tasks WHERE last_heartbeat_at IS NOT NULL"
         ),
       heartbeats: heartbeats,
-      counts_by_state: counts
+      counts_by_state: counts,
+      counts_by_queue: counts_by_queue
     }
   end
 

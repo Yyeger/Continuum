@@ -11,6 +11,7 @@ defmodule Continuum.Runtime.Instance do
     :activity_supervisor,
     :activity_executor,
     :activity_max_concurrency,
+    :activity_queues,
     :heartbeater,
     :dispatcher,
     :activity_dispatcher,
@@ -73,6 +74,12 @@ defmodule Continuum.Runtime.Instance do
     name = Keyword.get(opts, :name, @default)
     repo = Keyword.get(opts, :repo) || default_repo(name)
 
+    activity_max_concurrency =
+      Keyword.get_lazy(opts, :activity_max_concurrency, fn ->
+        default_activity_max_concurrency(name)
+      end)
+      |> positive_integer!(:activity_max_concurrency)
+
     %Instance{
       name: name,
       repo: repo,
@@ -84,11 +91,11 @@ defmodule Continuum.Runtime.Instance do
       activity_executor:
         Keyword.get_lazy(opts, :activity_executor, fn -> default_activity_executor(name) end)
         |> normalize_activity_executor!(),
-      activity_max_concurrency:
-        Keyword.get_lazy(opts, :activity_max_concurrency, fn ->
-          default_activity_max_concurrency(name)
-        end)
-        |> positive_integer!(:activity_max_concurrency),
+      activity_max_concurrency: activity_max_concurrency,
+      activity_queues:
+        opts
+        |> Keyword.get(:activity_queues, %{})
+        |> normalize_activity_queues!(activity_max_concurrency),
       heartbeater: process_name(name, Continuum.Runtime.Lease.Heartbeater),
       dispatcher: process_name(name, Continuum.Runtime.Dispatcher),
       activity_dispatcher: process_name(name, Continuum.Runtime.ActivityWorker.Dispatcher),
@@ -178,6 +185,26 @@ defmodule Continuum.Runtime.Instance do
 
   defp positive_integer!(value, option) do
     raise ArgumentError, "#{option} must be a positive integer, got: #{inspect(value)}"
+  end
+
+  defp normalize_activity_queues!(queues, default_limit) when is_list(queues) do
+    queues |> Map.new() |> normalize_activity_queues!(default_limit)
+  end
+
+  defp normalize_activity_queues!(queues, _default_limit) when is_map(queues) do
+    Enum.into(queues, %{}, fn {queue, limit} ->
+      queue = if is_atom(queue), do: Atom.to_string(queue), else: queue
+
+      unless is_binary(queue) and byte_size(queue) > 0 and byte_size(queue) <= 128 do
+        raise ArgumentError, "activity queue names must be non-empty atoms or strings"
+      end
+
+      {queue, positive_integer!(limit, {:activity_queue, queue})}
+    end)
+  end
+
+  defp normalize_activity_queues!(queues, _default_limit) do
+    raise ArgumentError, "activity_queues must be a map or keyword list, got: #{inspect(queues)}"
   end
 
   defp inspect_name(name) do

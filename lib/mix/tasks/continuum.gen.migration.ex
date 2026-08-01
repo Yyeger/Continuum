@@ -282,6 +282,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :parent_task_id,
               references(:continuum_activity_tasks, type: :uuid, on_delete: :nilify_all)
           add :seq, :bigint, null: false
+          add :queue, :text, null: false, default: "default"
+          add :priority, :integer, null: false, default: 0
           add :mfa, :bytea, null: false
           add :attempt, :integer, null: false, default: 1
           add :state, :text, null: false
@@ -297,7 +299,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
 
         execute \"\"\"
         CREATE INDEX continuum_activity_tasks_pickup_idx
-          ON continuum_activity_tasks (available_at)
+          ON continuum_activity_tasks (queue, priority DESC, available_at, scheduled_at)
           WHERE state = 'available'
         \"\"\"
 

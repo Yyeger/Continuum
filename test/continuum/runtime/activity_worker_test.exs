@@ -24,6 +24,23 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule QueuedActivity do
+    use Continuum.Activity,
+      retry: [max_attempts: 1],
+      queue: :bulk,
+      priority: 5
+
+    def run(value), do: {:ok, value}
+  end
+
+  defmodule QueuedActivityFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      activity(QueuedActivity.run(input.value), queue: :critical, priority: 40)
+    end
+  end
+
   defmodule LocalIdentityActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
 
@@ -290,6 +307,7 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              max_attempts: 1,
              backoff: :constant,
              base_ms: 1_000,
+             jitter_ms: 0,
              max_backoff_ms: 60_000,
              max_retry_horizon_ms: 86_400_000
            ]
@@ -300,6 +318,25 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
 
     assert Repo.one!(ActivityTask).state == "completed"
+  end
+
+  test "persists call-site queue and priority overrides" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(QueuedActivityFlow, %{value: 7}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+
+    task = Repo.one!(ActivityTask)
+    decoded = decode_term(task.mfa)
+
+    assert task.run_id == run_id
+    assert task.queue == "critical"
+    assert task.priority == 40
+    assert decoded.queue == "critical"
+    assert decoded.priority == 40
+
+    assert {:ok, [%{queue: "critical", priority: 40}]} =
+             Continuum.Observer.list_activity_tasks(run_id)
   end
 
   test "turns a node-local activity result into a non-retryable durable failure" do

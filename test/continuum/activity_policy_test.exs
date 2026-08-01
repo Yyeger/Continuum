@@ -55,6 +55,7 @@ defmodule Continuum.ActivityPolicyTest do
              max_attempts: 3,
              backoff: :exponential,
              base_ms: 50,
+             jitter_ms: 0,
              max_backoff_ms: 200,
              max_retry_horizon_ms: 10_000,
              timeout_ms: 1_000,
@@ -71,6 +72,7 @@ defmodule Continuum.ActivityPolicyTest do
       "retry: [max_attempts: 0]",
       "retry: [backoff: :random]",
       "retry: [base_ms: -1]",
+      "retry: [jitter_ms: -1]",
       "retry: [max_backoff_ms: -1]",
       "retry: [unknown: true]",
       "timeout: 0",
@@ -134,12 +136,21 @@ defmodule Continuum.ActivityPolicyTest do
                :max_attempts,
                :backoff,
                :base_ms,
+               :jitter_ms,
                :max_backoff_ms,
                :max_retry_horizon_ms
              ]
 
       assert Policy.backoff_ms(Policy.retry_options(policy), max_attempts) <= max_backoff_ms
     end
+  end
+
+  test "retry jitter stays within the configured bounded window" do
+    retry = [base_ms: 100, jitter_ms: 25, max_backoff_ms: 1_000]
+    delays = Enum.map(1..100, fn _ -> Policy.backoff_ms(retry, 1) end)
+
+    assert Enum.all?(delays, &(&1 in 100..125))
+    assert Enum.uniq(delays) |> length() > 1
   end
 
   defp assert_policy_failure_without_task(workflow, input, field) do

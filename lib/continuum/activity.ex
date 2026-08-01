@@ -52,6 +52,8 @@ defmodule Continuum.Activity do
     retry = Keyword.get(opts, :retry, max_attempts: 1)
     timeout = Keyword.get(opts, :timeout, {:seconds, 30})
     context? = Keyword.get(opts, :context, false)
+    queue = normalize_queue!(Keyword.get(opts, :queue, "default"))
+    priority = normalize_priority!(Keyword.get(opts, :priority, 0))
 
     unless is_boolean(context?) do
       raise ArgumentError, "Continuum.Activity :context must be a boolean"
@@ -66,6 +68,8 @@ defmodule Continuum.Activity do
       @continuum_activity_timeout unquote(timeout)
       @continuum_activity_policy unquote(Macro.escape(policy))
       @continuum_activity_context unquote(context?)
+      @continuum_activity_queue unquote(queue)
+      @continuum_activity_priority unquote(priority)
 
       def __continuum_activity__ do
         %{
@@ -73,9 +77,30 @@ defmodule Continuum.Activity do
           retry: @continuum_activity_retry,
           timeout: @continuum_activity_timeout,
           policy: @continuum_activity_policy,
-          context?: @continuum_activity_context
+          context?: @continuum_activity_context,
+          queue: @continuum_activity_queue,
+          priority: @continuum_activity_priority
         }
       end
     end
+  end
+
+  defp normalize_queue!(queue) when is_atom(queue),
+    do: queue |> Atom.to_string() |> normalize_queue!()
+
+  defp normalize_queue!(queue)
+       when is_binary(queue) and byte_size(queue) > 0 and byte_size(queue) <= 128,
+       do: queue
+
+  defp normalize_queue!(queue) do
+    raise ArgumentError,
+          "Continuum.Activity :queue must be a non-empty atom/string of at most 128 bytes, got: #{inspect(queue)}"
+  end
+
+  defp normalize_priority!(priority) when is_integer(priority), do: priority
+
+  defp normalize_priority!(priority) do
+    raise ArgumentError,
+          "Continuum.Activity :priority must be an integer, got: #{inspect(priority)}"
   end
 end

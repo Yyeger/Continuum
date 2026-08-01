@@ -14,6 +14,7 @@ defmodule Continuum.Activity.Policy do
     :max_attempts,
     :backoff,
     :base_ms,
+    :jitter_ms,
     :max_backoff_ms,
     :max_retry_horizon_ms
   ]
@@ -22,6 +23,7 @@ defmodule Continuum.Activity.Policy do
     :max_attempts,
     :backoff,
     :base_ms,
+    :jitter_ms,
     :max_backoff_ms,
     :max_retry_horizon_ms,
     :timeout_ms,
@@ -33,6 +35,7 @@ defmodule Continuum.Activity.Policy do
           max_attempts: pos_integer(),
           backoff: :constant | :exponential,
           base_ms: non_neg_integer(),
+          jitter_ms: non_neg_integer(),
           max_backoff_ms: non_neg_integer(),
           max_retry_horizon_ms: pos_integer(),
           timeout_ms: pos_integer(),
@@ -73,6 +76,7 @@ defmodule Continuum.Activity.Policy do
       max_attempts: policy.max_attempts,
       backoff: policy.backoff,
       base_ms: policy.base_ms,
+      jitter_ms: policy.jitter_ms,
       max_backoff_ms: policy.max_backoff_ms,
       max_retry_horizon_ms: policy.max_retry_horizon_ms
     ]
@@ -90,7 +94,10 @@ defmodule Continuum.Activity.Policy do
         _legacy_or_constant -> base_ms
       end
 
-    min(delay, max_backoff_ms)
+    jitter_ms = Keyword.get(retry || [], :jitter_ms, 0)
+    jitter = if jitter_ms > 0, do: :rand.uniform(jitter_ms + 1) - 1, else: 0
+
+    min(delay + jitter, max_backoff_ms)
   end
 
   defp normalize_retry!(retry) when is_list(retry) do
@@ -107,6 +114,7 @@ defmodule Continuum.Activity.Policy do
     max_attempts = Keyword.get(retry, :max_attempts, 1)
     backoff = Keyword.get(retry, :backoff, :constant)
     base_ms = Keyword.get(retry, :base_ms, 1_000)
+    jitter_ms = Keyword.get(retry, :jitter_ms, 0)
     max_backoff_ms = Keyword.get(retry, :max_backoff_ms, @default_max_backoff_ms)
 
     max_retry_horizon_ms =
@@ -119,6 +127,7 @@ defmodule Continuum.Activity.Policy do
     end
 
     non_negative_integer!(:base_ms, base_ms)
+    non_negative_integer!(:jitter_ms, jitter_ms)
     non_negative_integer!(:max_backoff_ms, max_backoff_ms)
     positive_integer!(:max_retry_horizon_ms, max_retry_horizon_ms)
 
@@ -130,6 +139,7 @@ defmodule Continuum.Activity.Policy do
       max_attempts: max_attempts,
       backoff: backoff,
       base_ms: base_ms,
+      jitter_ms: jitter_ms,
       max_backoff_ms: max_backoff_ms,
       max_retry_horizon_ms: max_retry_horizon_ms
     }
@@ -187,12 +197,18 @@ defmodule Continuum.Activity.Policy do
 
   defp retry_horizon_ms(%__MODULE__{} = policy, execution_ms) do
     Enum.reduce_while(1..(policy.max_attempts - 1), execution_ms, fn attempt, total ->
-      next = total + backoff_ms(retry_options(policy), attempt)
+      next = total + backoff_ceiling_ms(policy, attempt)
 
       if next > policy.max_retry_horizon_ms,
         do: {:halt, next},
         else: {:cont, next}
     end)
+  end
+
+  defp backoff_ceiling_ms(policy, attempt) do
+    retry = retry_options(policy)
+    base = Keyword.put(retry, :jitter_ms, 0) |> backoff_ms(attempt)
+    min(base + policy.jitter_ms, policy.max_backoff_ms)
   end
 
   defp exponential_delay(0, _attempt, _max_backoff_ms), do: 0

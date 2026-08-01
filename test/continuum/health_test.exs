@@ -100,6 +100,12 @@ defmodule Continuum.HealthTest do
              %{attempt: 3, count: 1}
            ]
 
+    assert report.activities.counts_by_queue["default"] == %{
+             "available" => 1,
+             "discarded" => 1,
+             "leased" => 1
+           }
+
     assert report.signals.pending_count == 1
     assert report.signals.catch_up_lag_ms >= 120_000
   end

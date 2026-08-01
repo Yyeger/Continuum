@@ -37,7 +37,9 @@ heartbeat through the configured payload redactor.
 ```elixir
 defmodule MyApp.Activities.ChargeCard do
   use Continuum.Activity,
-    retry: [max_attempts: 5, backoff: :exponential, base_ms: 500],
+    retry: [max_attempts: 5, backoff: :exponential, base_ms: 500, jitter_ms: 250],
+    queue: :payments,
+    priority: 10,
     timeout: {:seconds, 30}
 
   @impl true
@@ -58,6 +60,8 @@ Call an activity from a workflow with the `activity` macro:
 {:ok, charge} =
   activity MyApp.Activities.ChargeCard.run(%{order_id: order_id, amount: total}),
     retry: [max_attempts: 5, backoff: :exponential, base_ms: 500],
+    queue: :payments,
+    priority: 50,
     idempotency_key: "charge:#{order_id}"
 ```
 
@@ -75,13 +79,21 @@ config :continuum, activity_max_concurrency: 25
 Continuum.children(
   name: :billing,
   repo: MyApp.Repo,
-  activity_max_concurrency: 8
+  activity_max_concurrency: 8,
+  activity_queues: [payments: 3, exports: 1]
 )
 ```
 
+An activity's module defaults can be overridden at each call site. Higher
+integer priorities are leased first within available capacity. The built-in
+executor enforces each configured queue limit as well as the instance-wide
+limit, so slow export work cannot consume payment capacity. Queue and priority
+are durable and appear in Observer output and activity telemetry. Oban-backed
+instances continue to use their Oban queue limits.
+
 The dispatcher claims only currently available capacity. Saturated polls use
 jittered backpressure and emit queue-age, saturation, and rejected-claim
-telemetry. Oban-backed instances continue to use their Oban queue limits.
+telemetry.
 
 Retry policy is resolved in this order:
 
@@ -91,10 +103,12 @@ Retry policy is resolved in this order:
 
 Activity policy is validated before durable work is scheduled. `max_attempts`
 must be positive, `backoff` must be `:constant` or `:exponential`, and
-`base_ms` must be non-negative. `max_backoff_ms` defaults to one minute and
-caps each delay. `max_retry_horizon_ms` defaults to 24 hours and must cover the
-worst-case execution time plus every delay. Per-attempt timeouts must be
-positive and cannot exceed 24 hours.
+`base_ms` and `jitter_ms` must be non-negative. `jitter_ms` adds a uniformly
+random delay from zero through the configured value to each retry.
+`max_backoff_ms` defaults to one minute and caps the combined backoff and
+jitter. `max_retry_horizon_ms` defaults to 24 hours and must cover the
+worst-case execution time plus every maximum delay. Per-attempt timeouts must
+be positive and cannot exceed 24 hours.
 
 `backoff: :exponential` uses `base_ms * 2 ^ (attempt - 1)`, capped by
 `max_backoff_ms`. Use an explicit policy for longer horizons:
@@ -104,6 +118,7 @@ retry: [
   max_attempts: 8,
   backoff: :exponential,
   base_ms: 500,
+  jitter_ms: 250,
   max_backoff_ms: 60_000,
   max_retry_horizon_ms: 3_600_000
 ]

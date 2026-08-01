@@ -416,6 +416,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
             lineage_id: lineage_id,
             parent_task_id: Map.get(task, :parent_task_id),
             seq: task.seq,
+            queue: Map.get(task, :queue, "default"),
+            priority: Map.get(task, :priority, 0),
             mfa: encode_term(task),
             attempt: 1,
             state: "available"
@@ -874,6 +876,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
               lineage_id: lineage_id,
               parent_task_id: Map.get(task, :parent_task_id),
               seq: task.seq,
+              queue: Map.get(task, :queue, "default"),
+              priority: Map.get(task, :priority, 0),
               mfa: encode_term(task),
               attempt: 1,
               state: "available"
@@ -1175,6 +1179,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
           lineage_id: lineage_id,
           parent_task_id: task.id,
           seq: retry_seq,
+          queue: Map.get(source, :queue, "default"),
+          priority: Map.get(source, :priority, 0),
           mfa: encode_term(successor),
           attempt: 1,
           state: "available",

@@ -10,6 +10,8 @@ defmodule Continuum.Schema.ActivityTask do
     field(:lineage_id, :binary_id)
     field(:parent_task_id, :binary_id)
     field(:seq, :integer)
+    field(:queue, :string, default: "default")
+    field(:priority, :integer, default: 0)
     field(:mfa, :binary)
     field(:attempt, :integer, default: 1)
     field(:state, :string)

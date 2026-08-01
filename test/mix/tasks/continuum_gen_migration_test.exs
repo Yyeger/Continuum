@@ -15,6 +15,10 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "PARTITION OF continuum_events DEFAULT"
       assert source =~ "create table(:continuum_activity_results"
       assert source =~ "PRIMARY KEY (activity_module, idempotency_key)"
+      assert source =~ ~s(add :queue, :text, null: false, default: "default")
+      assert source =~ "add :priority, :integer, null: false, default: 0"
+      assert source =~ "continuum_activity_tasks_pickup_idx"
+      assert source =~ "(queue, priority DESC, available_at, scheduled_at)"
       assert source =~ "add :trace_context, :bytea"
       assert source =~ "create table(:continuum_snapshots"
       assert source =~ "add :format_version, :smallint, null: false, default: 1"

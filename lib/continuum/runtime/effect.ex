@@ -450,6 +450,8 @@ defmodule Continuum.Runtime.Effect do
       timeout_ms: policy.timeout_ms,
       idempotency_key: policy.idempotency_key,
       context?: activity_context?(mod),
+      queue: activity_queue(mod, opts),
+      priority: activity_priority(mod, opts),
       command_id: command_id
     }
 
@@ -856,6 +858,8 @@ defmodule Continuum.Runtime.Effect do
           timeout_ms: policy.timeout_ms,
           idempotency_key: policy.idempotency_key,
           context?: activity_context?(mod),
+          queue: activity_queue(mod, []),
+          priority: activity_priority(mod, []),
           command_id: item.command_id,
           parallel_batch?: true
         }
@@ -1015,6 +1019,8 @@ defmodule Continuum.Runtime.Effect do
       timeout_ms: policy.timeout_ms,
       idempotency_key: policy.idempotency_key,
       context?: activity_context?(mod),
+      queue: activity_queue(mod, []),
+      priority: activity_priority(mod, []),
       command_id: command_id
     }
 
@@ -1867,6 +1873,34 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp activity_context?(mod), do: Map.get(activity_metadata(mod), :context?, false)
+
+  defp activity_queue(mod, opts) do
+    opts
+    |> Keyword.get(:queue, Map.get(activity_metadata(mod), :queue, "default"))
+    |> normalize_activity_queue!()
+  end
+
+  defp activity_priority(mod, opts) do
+    case Keyword.get(opts, :priority, Map.get(activity_metadata(mod), :priority, 0)) do
+      priority when is_integer(priority) ->
+        priority
+
+      priority ->
+        raise ArgumentError, "activity priority must be an integer, got: #{inspect(priority)}"
+    end
+  end
+
+  defp normalize_activity_queue!(queue) when is_atom(queue),
+    do: queue |> Atom.to_string() |> normalize_activity_queue!()
+
+  defp normalize_activity_queue!(queue)
+       when is_binary(queue) and byte_size(queue) > 0 and byte_size(queue) <= 128,
+       do: queue
+
+  defp normalize_activity_queue!(queue) do
+    raise ArgumentError,
+          "activity queue must be a non-empty atom/string of at most 128 bytes, got: #{inspect(queue)}"
+  end
 
   defp inline_activity_args(mod, args, ctx) do
     if activity_context?(mod),

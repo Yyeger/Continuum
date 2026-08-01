@@ -186,6 +186,8 @@ defmodule Continuum.Observer do
             seq: task.seq,
             state: String.to_atom(task.state),
             attempt: task.attempt,
+            queue: task.queue,
+            priority: task.priority,
             mfa: Map.get(decoded_task, :mfa, decoded_task),
             last_heartbeat_at: task.last_heartbeat_at,
             heartbeat_details: task.heartbeat_details |> decode_term() |> redact(opts)

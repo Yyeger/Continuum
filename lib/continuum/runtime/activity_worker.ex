@@ -625,7 +625,9 @@ defmodule Continuum.Runtime.ActivityWorker do
         task_id: metadata.task_id,
         mfa: task.mfa,
         attempt: metadata.attempt,
-        executor: metadata.executor
+        executor: metadata.executor,
+        queue: metadata.queue,
+        priority: metadata.priority
       })
     end
   end
@@ -636,7 +638,9 @@ defmodule Continuum.Runtime.ActivityWorker do
         run_id: task.run_id,
         task_id: task.id,
         attempt: task.attempt,
-        executor: executor(task)
+        executor: executor(task),
+        queue: Map.get(task, :queue, "default"),
+        priority: Map.get(task, :priority, 0)
       }
       |> maybe_put(:oban_job_id, Map.get(task, :oban_job_id))
 

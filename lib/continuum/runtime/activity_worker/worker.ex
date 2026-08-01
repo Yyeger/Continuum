@@ -24,6 +24,13 @@ defmodule Continuum.Runtime.ActivityWorker.Worker do
 
   @impl true
   def init(task) do
+    {:ok, _owner} =
+      Registry.register(
+        task.instance.registry,
+        {:activity_worker, task.id},
+        %{queue: Map.get(task, :queue, "default"), priority: Map.get(task, :priority, 0)}
+      )
+
     {:ok, task, {:continue, :run}}
   end
 

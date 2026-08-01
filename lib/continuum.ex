@@ -62,8 +62,8 @@ defmodule Continuum do
   override. The default instance follows `config :continuum, :journal`.
 
   Child-specific options may be passed with `:workflow_modules`,
-  `:activity_executor`, `:activity_max_concurrency`, `:heartbeater`, `:run_supervisor`,
-  `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
+  `:activity_executor`, `:activity_max_concurrency`, `:activity_queues`, `:heartbeater`,
+  `:run_supervisor`, `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
   `:timer_wheel`, `:schedule_runner`, `:signal_router`, `:snapshotter`, and
   `:partition_maintainer`.
   Partition maintenance is disabled unless `:partition_maintainer` is `true`
@@ -97,6 +97,7 @@ defmodule Continuum do
             :activity_max_concurrency,
             Application.get_env(:continuum, :activity_max_concurrency, 10)
           ),
+        activity_queues: Keyword.get(opts, :activity_queues, %{}),
         workflow_modules: opts[:workflow_modules],
         drain_timeout_ms: configured_drain_timeout(opts)
       )
