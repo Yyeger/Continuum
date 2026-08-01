@@ -32,10 +32,31 @@ defmodule Continuum.Runtime.InstanceTest do
     original_instance = Instance.default()
     on_exit(fn -> Instance.register(original_instance) end)
 
-    children = Continuum.children(name: Continuum, repo: Continuum.Test.Repo)
+    children =
+      Continuum.children(
+        name: Continuum,
+        repo: Continuum.Test.Repo,
+        journal: Continuum.Runtime.Journal.Postgres
+      )
 
-    assert Enum.any?(children, &match?(%{id: {Continuum.Runtime.TimerWheel, Continuum}}, &1))
-    assert Enum.any?(children, &match?(%{id: {Continuum.VersionRegistry, Continuum}}, &1))
+    host_owned = [
+      Continuum.Runtime.Lease.Heartbeater,
+      Continuum.Runtime.ActivityWorker.Supervisor,
+      Continuum.Runtime.Recovery,
+      Continuum.Runtime.Dispatcher,
+      Continuum.Runtime.ActivityWorker.Dispatcher,
+      Continuum.Runtime.Snapshotter,
+      Continuum.Runtime.TimerWheel,
+      Continuum.Runtime.SignalRouter,
+      Continuum.VersionRegistry
+    ]
+
+    for module <- host_owned do
+      assert Enum.any?(children, &match?(%{id: {^module, Continuum}}, &1)),
+             "expected the documented host supervisor to include #{inspect(module)}"
+    end
+
+    assert Instance.journal(Instance.default()) == Continuum.Runtime.Journal.Postgres
 
     refute Enum.any?(
              children,

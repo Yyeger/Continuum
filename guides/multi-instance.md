@@ -9,13 +9,46 @@ repo can run more than one Continuum instance in the same BEAM.
 
 ## The Default Instance
 
-Continuum ships with a default instance named `Continuum`. It is started by
-`Continuum.Application` whenever `config :continuum, :repo` is set:
+Continuum ships with a default instance named `Continuum`. The library
+application always starts only the repo-independent base processes: PubSub,
+Registry, the in-memory journal, and the default run supervisor. Configuring a
+repo does not start the durable runtime workers, because a dependency
+application starts before the host application's repo.
+
+Configure the Postgres journal and repo:
 
 ```elixir
 # config/config.exs
-config :continuum, repo: MyApp.Repo
+config :continuum,
+  repo: MyApp.Repo,
+  journal: Continuum.Runtime.Journal.Postgres
 ```
+
+Then supervise the repo-dependent children in the host application, after the
+repo:
+
+```elixir
+defmodule MyApp.Application do
+  use Application
+
+  def start(_type, _args) do
+    children =
+      [MyApp.Repo] ++
+        Continuum.children() ++
+        [MyAppWeb.Endpoint]
+
+    Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: MyApp.Supervisor
+    )
+  end
+end
+```
+
+`Continuum.children()` returns the lease heartbeater, recovery, workflow and
+activity dispatchers, activity supervisor, snapshotter, timer wheel, signal
+router, and version registry for the configured repo. Do not place these
+children before `MyApp.Repo`.
 
 All public calls operate on the default instance unless you say otherwise:
 
@@ -25,10 +58,9 @@ All public calls operate on the default instance unless you say otherwise:
 {:ok, _}      = Continuum.await(run_id, 5_000)
 ```
 
-If `:repo` is not configured, `Continuum.Application` still starts the
-in-memory journal and the local PubSub/registry, but no Postgres-backed
-runtime children. Host applications that wire their own instances should leave
-`:repo` unset and use `Continuum.children/1`.
+For an intentionally in-memory default instance, leave `:repo` unset;
+`Continuum.children()` then returns `[]` because the library application
+already owns every process that instance needs.
 
 ## Named Instances
 
@@ -57,9 +89,10 @@ of: PubSub, registry, run supervisor, activity worker supervisor, lease
 heartbeater, dispatcher, activity dispatcher, snapshotter, timer wheel, and
 signal router — all named under the instance.
 
-Calling `Continuum.children(name: Continuum)` returns `[]`. The default
-instance is owned by `Continuum.Application`; trying to start it twice would
-collide on registered names.
+Calling `Continuum.children(name: Continuum, repo: MyApp.Repo)` returns the
+repo-dependent default runtime children. It deliberately omits PubSub,
+Registry, and the run supervisor because `Continuum.Application` already owns
+those base processes.
 
 You can compose multiple `Continuum.children/1` calls into one tree:
 
@@ -138,5 +171,4 @@ Run more than one instance when:
 * a library embeds Continuum and the host already owns the Continuum repo,
   so the library should not start the default instance from app env
 
-Otherwise, keep the default. A single instance handles thousands of
-workflows per second on Postgres and is the simpler operational story.
+Otherwise, keep the default; it is the simpler operational story.
