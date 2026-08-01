@@ -191,7 +191,34 @@ defmodule Continuum.ObanTest do
     assert arg(job.args, "task_id") == task_id
     assert arg(job.args, "attempt") == 3
 
-    assert job.args |> arg("instance") |> Continuum.Oban.decode_instance() == instance_name
+    encoded_instance = arg(job.args, "instance")
+    assert encoded_instance == %{"kind" => "atom", "name" => Atom.to_string(instance_name)}
+    assert Continuum.Oban.decode_instance(encoded_instance) == instance_name
+  end
+
+  test "instance job identifiers reject forged and oversized legacy terms" do
+    legacy = instance_legacy_identifier(:continuum_legacy_instance)
+    assert Continuum.Oban.decode_instance(legacy) == :continuum_legacy_instance
+
+    forged = instance_legacy_identifier(fn -> :unsafe end)
+
+    assert_raise ArgumentError, ~r/invalid legacy Continuum instance/, fn ->
+      Continuum.Oban.decode_instance(forged)
+    end
+
+    assert_raise ArgumentError, ~r/invalid Continuum instance/, fn ->
+      Continuum.Oban.decode_instance(String.duplicate("A", 3_000))
+    end
+
+    assert Continuum.Oban.decode_instance(%{"kind" => "string", "name" => "tenant-a"}) ==
+             "tenant-a"
+
+    assert_raise ArgumentError, ~r/unknown Continuum instance atom/, fn ->
+      Continuum.Oban.decode_instance(%{
+        "kind" => "atom",
+        "name" => "continuum_unknown_#{System.unique_integer([:positive])}"
+      })
+    end
   end
 
   test "activity completes through Oban worker and replays like builtin execution" do
@@ -436,6 +463,12 @@ defmodule Continuum.ObanTest do
 
   defp arg(args, key) do
     Map.get(args, key, Map.get(args, String.to_atom(key)))
+  end
+
+  defp instance_legacy_identifier(term) do
+    term
+    |> :erlang.term_to_binary()
+    |> Base.encode64()
   end
 
   defp start_oban_continuum! do
