@@ -101,8 +101,15 @@ defmodule Continuum.Runtime.Engine do
   """
   def cancel(run_id, opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    run_id = resolve_chain_tip(instance, run_id, opts)
+    journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
+    with {:ok, run_id} <-
+           Continuum.Runtime.NamespacePrecondition.resolve(instance, journal, run_id, opts) do
+      cancel_resolved(instance, run_id, opts)
+    end
+  end
+
+  defp cancel_resolved(instance, run_id, opts) do
     case GenServer.whereis(via(instance, run_id)) do
       nil ->
         cancel_without_local_engine(instance, run_id, opts)
@@ -185,21 +192,6 @@ defmodule Continuum.Runtime.Engine do
     end)
   end
 
-  # Callers of a continued run hold the chain-root id; cancel must reach the
-  # live tip instead of failing with {:run_not_active, "completed"} on the
-  # dead root. Same hop signal delivery and await perform.
-  defp resolve_chain_tip(%Instance{repo: nil}, run_id, _opts), do: run_id
-
-  defp resolve_chain_tip(instance, run_id, opts) do
-    case Keyword.get(opts, :journal, Instance.journal(instance)) do
-      Continuum.Runtime.Journal.Postgres ->
-        Continuum.Runtime.Journal.Postgres.resolve_chain_tip(instance, run_id)
-
-      _other ->
-        run_id
-    end
-  end
-
   @doc """
   Block the caller until the run completes (or `timeout` ms elapses).
 
@@ -215,9 +207,11 @@ defmodule Continuum.Runtime.Engine do
     deadline = deadline(timeout)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
-    run_id = resolve_chain_tip(instance, run_id, opts)
 
-    await_chain(instance, run_id, deadline, journal)
+    with {:ok, run_id} <-
+           Continuum.Runtime.NamespacePrecondition.resolve(instance, journal, run_id, opts) do
+      await_chain(instance, run_id, deadline, journal)
+    end
   end
 
   def await(_run_id, timeout, _opts) do

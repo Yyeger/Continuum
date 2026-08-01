@@ -53,10 +53,13 @@ defmodule Continuum.Runtime.SignalRouter do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
-    case journal do
-      Journal.Postgres -> deliver_durable(instance, run_id, name, payload, opts)
-      Journal.InMemory -> deliver_local(instance, run_id, name, payload, opts)
-      custom_journal -> deliver_custom(custom_journal, instance, run_id, name, payload, opts)
+    with {:ok, run_id} <-
+           Continuum.Runtime.NamespacePrecondition.resolve(instance, journal, run_id, opts) do
+      case journal do
+        Journal.Postgres -> deliver_durable(instance, run_id, name, payload, opts)
+        Journal.InMemory -> deliver_local(instance, run_id, name, payload, opts)
+        custom_journal -> deliver_custom(custom_journal, instance, run_id, name, payload, opts)
+      end
     end
   end
 
@@ -141,12 +144,12 @@ defmodule Continuum.Runtime.SignalRouter do
   # the journal tail (where replay would later read them as drift).
   defp deliver_local(instance, run_id, name, payload, opts) do
     case Journal.InMemory.deliver_signal!(instance, run_id, name, payload, opts) do
-      {:ok, _delivered_run_id, :delivered} ->
-        Engine.wake(instance, run_id)
+      {:ok, delivered_run_id, :delivered} ->
+        Engine.wake(instance, delivered_run_id)
 
         Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
           instance: instance.name,
-          run_id: run_id,
+          run_id: delivered_run_id,
           signal_name: name,
           durable?: false
         })

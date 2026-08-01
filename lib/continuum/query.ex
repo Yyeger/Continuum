@@ -82,9 +82,14 @@ defmodule Continuum.Query do
   @spec get_run(binary(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_run(run_id, opts \\ []) do
     with {:ok, instance} <- repo_instance(opts) do
-      case instance.repo.one(from(r in Run, where: r.id == ^run_id)) do
+      query = from(r in Run, where: r.id == ^run_id)
+
+      with {:ok, query} <- apply_namespace_precondition(query, opts),
+           run when not is_nil(run) <- instance.repo.one(query) do
+        {:ok, decode_run(run)}
+      else
         nil -> {:error, :not_found}
-        run -> {:ok, decode_run(run)}
+        {:error, _reason} = error -> error
       end
     end
   end
@@ -100,17 +105,14 @@ defmodule Continuum.Query do
 
   def set_attributes(run_id, attributes, opts) when is_map(attributes) do
     with {:ok, instance} <- repo_instance(opts),
-         {:ok, attributes} <- normalize_attributes(attributes) do
+         {:ok, attributes} <- normalize_attributes(attributes),
+         {:ok, namespace} <- namespace_precondition(opts) do
       # Merge in SQL: jsonb concatenation is atomic per statement, so two
       # concurrent callers cannot interleave a read-merge-write and silently
       # drop each other's keys.
-      sql = """
-      UPDATE continuum_runs
-      SET attributes = COALESCE(attributes, '{}'::jsonb) || $2::jsonb
-      WHERE id = $1::text::uuid
-      """
+      {sql, params} = set_attributes_query(run_id, attributes, namespace)
 
-      case instance.repo.query(sql, [run_id, attributes]) do
+      case instance.repo.query(sql, params) do
         {:ok, %{num_rows: 1}} -> :ok
         {:ok, %{num_rows: 0}} -> {:error, :not_found}
         {:error, reason} -> {:error, reason}
@@ -119,6 +121,37 @@ defmodule Continuum.Query do
   end
 
   def set_attributes(_run_id, attributes, _opts), do: {:error, {:invalid_attributes, attributes}}
+
+  defp apply_namespace_precondition(query, opts) do
+    case namespace_precondition(opts) do
+      {:ok, nil} -> {:ok, query}
+      {:ok, namespace} -> {:ok, from(r in query, where: r.namespace == ^namespace)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp namespace_precondition(opts) do
+    case Keyword.fetch(opts, :namespace) do
+      :error -> {:ok, nil}
+      {:ok, namespace} -> Continuum.Runtime.NamespacePrecondition.normalize(namespace)
+    end
+  end
+
+  defp set_attributes_query(run_id, attributes, nil) do
+    {"""
+     UPDATE continuum_runs
+     SET attributes = COALESCE(attributes, '{}'::jsonb) || $2::jsonb
+     WHERE id = $1::text::uuid
+     """, [run_id, attributes]}
+  end
+
+  defp set_attributes_query(run_id, attributes, namespace) do
+    {"""
+     UPDATE continuum_runs
+     SET attributes = COALESCE(attributes, '{}'::jsonb) || $2::jsonb
+     WHERE id = $1::text::uuid AND namespace = $3
+     """, [run_id, attributes, namespace]}
+  end
 
   @doc false
   def decode_run(%Run{} = run) do

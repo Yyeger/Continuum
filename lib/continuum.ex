@@ -198,7 +198,8 @@ defmodule Continuum do
 
   Options include `:instance` for selecting a named Continuum instance,
   `:idempotency_key` for atomically rejecting a duplicate root start,
-  `:namespace` for soft tenant scoping of list/query paths, `:trace_context` for
+  `:namespace` for soft tenant scoping and optional expected-value guards,
+  `:trace_context` for
   persisting an opaque W3C traceparent binary that
   observability integrations can use to link resumed run attempts, and
   `:attributes` for JSON-encodable search metadata stored on the run row.
@@ -261,7 +262,8 @@ defmodule Continuum do
 
   @doc """
   Deliver a signal to a running workflow, selecting a Continuum instance with
-  `:instance`. Signal payloads follow the same durable-term restrictions as
+  `:instance`. Pass `namespace: expected_namespace` to reject a mismatched run
+  as not found. Signal payloads follow the same durable-term restrictions as
   workflow inputs.
   """
   @spec signal(run_id(), atom(), term(), keyword()) :: :ok | {:error, term()}
@@ -282,7 +284,8 @@ defmodule Continuum do
   end
 
   @doc """
-  Cancel a running workflow.
+  Cancel a running workflow. Pass `namespace: expected_namespace` to reject a
+  mismatched run as not found.
 
   Cancelling the root of a `continue_as_new` chain cancels the live tip. When
   the run's engine is alive on another reachable node, the cancel is forwarded
@@ -298,7 +301,8 @@ defmodule Continuum do
   end
 
   @doc """
-  Block until the run completes. Test/synchronous use only.
+  Block until the run completes. Test/synchronous use only. Pass
+  `namespace: expected_namespace` to reject a mismatched run as not found.
 
   Failed workflows return a `%Continuum.RunFailure{}` in the result map's
   `:error` field. Diagnostic stacktraces are intentionally omitted; use
@@ -330,7 +334,8 @@ defmodule Continuum do
   end
 
   @doc """
-  Load one durable run by id.
+  Load one durable run by id. Pass `namespace: expected_namespace` to reject a
+  mismatched run as not found.
   """
   @spec get_run(run_id(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_run(run_id, opts \\ []) do
@@ -338,7 +343,8 @@ defmodule Continuum do
   end
 
   @doc """
-  Merge JSON-encodable search attributes into a durable run row.
+  Merge JSON-encodable search attributes into a durable run row. Pass
+  `namespace: expected_namespace` to reject a mismatched run as not found.
 
   This is external metadata. It is not journaled and workflow code cannot read
   it during replay.
