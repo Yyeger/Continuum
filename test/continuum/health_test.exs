@@ -9,6 +9,12 @@ defmodule Continuum.HealthTest do
     def run(input), do: input
   end
 
+  defmodule UnrelatedFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input), do: input
+  end
+
   setup do
     Repo.delete_all(HealthReview)
     Repo.delete_all(ActivityTask)
@@ -307,6 +313,48 @@ defmodule Continuum.HealthTest do
 
     assert {:ok, %{status: :executed}} =
              Continuum.Health.repair(:retry, entry.workflow_string, repo: Repo, execute: true)
+  end
+
+  test "workflow version health is scoped to the target instance" do
+    {:ok, configured} = Continuum.VersionRegistry.ensure_registered(RegistrationFlow)
+    {:ok, unrelated} = Continuum.VersionRegistry.ensure_registered(UnrelatedFlow)
+
+    now = timestamp(0)
+
+    Repo.insert_all(
+      WorkflowVersion,
+      [
+        %{
+          workflow: configured.workflow_string,
+          version_hash: configured.version_hash,
+          entrypoint: inspect(configured.entrypoint),
+          registered_at: now
+        },
+        %{
+          workflow: unrelated.workflow_string,
+          version_hash: unrelated.version_hash,
+          entrypoint: inspect(unrelated.entrypoint),
+          registered_at: now
+        }
+      ],
+      on_conflict: :nothing,
+      conflict_target: [:workflow, :version_hash]
+    )
+
+    instance =
+      Continuum.Runtime.Instance.new(
+        name: :health_scoped,
+        repo: Repo,
+        workflow_modules: [RegistrationFlow]
+      )
+
+    assert {:ok, report} =
+             Continuum.Health.report(repo: Repo, instance: instance, partition_months: 1)
+
+    assert report.workflow_versions.loaded_count == 1
+    assert report.workflow_versions.durable_count == 1
+    assert report.workflow_versions.missing_in_database == []
+    assert report.workflow_versions.registered_without_loaded_code == []
   end
 
   defp insert_run!(opts) do

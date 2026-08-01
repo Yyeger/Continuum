@@ -182,7 +182,7 @@ defmodule Continuum.Health do
 
   defp workflow_version_health(instance, repo) do
     loaded =
-      Continuum.VersionRegistry.entries()
+      Continuum.VersionRegistry.entries(instance)
       |> Enum.map(fn entry ->
         %{
           workflow: entry.workflow_string,
@@ -201,6 +201,7 @@ defmodule Continuum.Health do
           entrypoint: row.entrypoint
         }
       end)
+      |> filter_durable_versions(instance, loaded)
 
     durable_keys = MapSet.new(durable, &{&1.workflow, &1.version_hash})
     loaded_keys = MapSet.new(loaded, &{&1.workflow, &1.version_hash})
@@ -608,7 +609,11 @@ defmodule Continuum.Health do
   end
 
   defp do_repair(:retry, workflow, instance, execute?, _opts) do
-    entries = Enum.filter(Continuum.VersionRegistry.entries(), &(&1.workflow_string == workflow))
+    entries =
+      instance
+      |> Continuum.VersionRegistry.entries()
+      |> Enum.filter(&(&1.workflow_string == workflow))
+
     plan = %{action: :retry, subject_id: workflow, versions: length(entries)}
 
     cond do
@@ -827,6 +832,13 @@ defmodule Continuum.Health do
   defp review_keys(repo) do
     repo.all(HealthReview)
     |> MapSet.new(&{&1.finding_type, &1.subject_id, &1.fingerprint})
+  end
+
+  defp filter_durable_versions(durable, %Instance{workflow_modules: nil}, _loaded), do: durable
+
+  defp filter_durable_versions(durable, %Instance{}, loaded) do
+    configured_workflows = MapSet.new(loaded, & &1.workflow)
+    Enum.filter(durable, &MapSet.member?(configured_workflows, &1.workflow))
   end
 
   defp fingerprint(parts) do

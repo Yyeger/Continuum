@@ -144,6 +144,12 @@ defmodule Continuum.VersionRegistry do
     |> Map.values()
   end
 
+  @doc false
+  @spec entries(Instance.t()) :: [entry()]
+  def entries(%Instance{workflow_modules: workflow_modules}) do
+    configured_entries(workflow_modules)
+  end
+
   @doc since: "0.3.0"
   @doc """
   Backwards-compatible registration helper for tests and old callers.
