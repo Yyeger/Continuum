@@ -9,6 +9,7 @@ defmodule Continuum.Schema.Run do
     field(:workflow, :string)
     field(:version_hash, :binary)
     field(:namespace, :string, default: "default")
+    field(:idempotency_key, :string)
     field(:state, :string)
     field(:input, :binary)
     field(:attributes, :map, default: %{})

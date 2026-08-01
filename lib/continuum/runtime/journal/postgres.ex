@@ -40,6 +40,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp start_run_with_repo(run_id, workflow, input, opts) do
     metadata = workflow_metadata(workflow)
+    namespace = normalize_namespace(Keyword.get(opts, :namespace, "default"))
+    idempotency_key = normalize_ingress_key(Keyword.get(opts, :idempotency_key))
 
     changeset =
       %Run{}
@@ -47,7 +49,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
         id: run_id,
         workflow: metadata.workflow,
         version_hash: metadata.version_hash,
-        namespace: normalize_namespace(Keyword.get(opts, :namespace, "default")),
+        namespace: namespace,
+        idempotency_key: idempotency_key,
         state: "running",
         input: encode_term(input, :input),
         attributes: normalize_attributes(Keyword.get(opts, :attributes, %{})),
@@ -55,16 +58,29 @@ defmodule Continuum.Runtime.Journal.Postgres do
         trace_context: Keyword.get(opts, :trace_context)
       })
       |> Ecto.Changeset.unique_constraint(:id, name: :continuum_runs_pkey)
+      |> Ecto.Changeset.unique_constraint(:idempotency_key,
+        name: :continuum_runs_ingress_key_idx
+      )
 
     case Keyword.get(opts, :lease) do
       nil ->
         case repo().insert(changeset) do
-          {:ok, _} -> :ok
-          {:error, changeset} -> {:error, changeset}
+          {:ok, _} ->
+            :ok
+
+          {:error, changeset} ->
+            classify_start_error(changeset, metadata.workflow, namespace, idempotency_key)
         end
 
       lease_opts ->
-        insert_run_with_lease(changeset, run_id, lease_opts)
+        insert_run_with_lease(
+          changeset,
+          run_id,
+          lease_opts,
+          metadata.workflow,
+          namespace,
+          idempotency_key
+        )
     end
   end
 
@@ -72,7 +88,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
   # dispatcher can claim the fresh row before the starting engine acquires its
   # lease (the fresh-start steal race). The row only becomes visible with the
   # lease fully set.
-  defp insert_run_with_lease(changeset, run_id, lease_opts) do
+  defp insert_run_with_lease(
+         changeset,
+         run_id,
+         lease_opts,
+         workflow,
+         namespace,
+         idempotency_key
+       ) do
     owner = Keyword.fetch!(lease_opts, :owner)
     ttl_seconds = Keyword.get(lease_opts, :ttl_seconds, 30)
 
@@ -110,8 +133,45 @@ defmodule Continuum.Runtime.Journal.Postgres do
         {:ok, %Continuum.Runtime.Lease{run_id: run_id, owner: owner, token: token}}
 
       {:error, reason} ->
-        {:error, reason}
+        classify_start_error(reason, workflow, namespace, idempotency_key)
     end
+  end
+
+  defp classify_start_error(
+         %Ecto.Changeset{} = changeset,
+         workflow,
+         namespace,
+         idempotency_key
+       )
+       when is_binary(idempotency_key) do
+    if ingress_key_conflict?(changeset) do
+      existing_id =
+        repo().one!(
+          from(r in Run,
+            where:
+              r.namespace == ^namespace and r.workflow == ^workflow and
+                r.idempotency_key == ^idempotency_key,
+            select: r.id
+          )
+        )
+
+      {:error, {:already_started, existing_id}}
+    else
+      {:error, changeset}
+    end
+  end
+
+  defp classify_start_error(reason, _workflow, _namespace, _idempotency_key),
+    do: {:error, reason}
+
+  defp ingress_key_conflict?(changeset) do
+    Enum.any?(changeset.errors, fn
+      {:idempotency_key, {_message, metadata}} ->
+        metadata[:constraint_name] == "continuum_runs_ingress_key_idx"
+
+      _other ->
+        false
+    end)
   end
 
   defp workflow_metadata(workflow) do
@@ -149,6 +209,17 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp normalize_namespace(other) do
     raise ArgumentError, "expected :namespace to be a non-empty binary, got: #{inspect(other)}"
+  end
+
+  defp normalize_ingress_key(nil), do: nil
+
+  defp normalize_ingress_key(key)
+       when is_binary(key) and byte_size(key) > 0 and byte_size(key) <= 255,
+       do: key
+
+  defp normalize_ingress_key(other) do
+    raise ArgumentError,
+          "expected :idempotency_key to be a non-empty binary of at most 255 bytes, got: #{inspect(other)}"
   end
 
   @impl true
@@ -1539,12 +1610,21 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   @impl true
   def deliver_signal!(%Instance{} = instance, run_id, name, payload) do
-    with_repo(instance, fn -> deliver_signal_with_repo!(run_id, name, payload) end)
+    case deliver_signal!(instance, run_id, name, payload, []) do
+      {:ok, delivered_run_id, _status} -> {:ok, delivered_run_id}
+      {:error, _reason} = error -> error
+    end
   end
 
-  defp deliver_signal_with_repo!(run_id, name, payload) do
+  @impl true
+  def deliver_signal!(%Instance{} = instance, run_id, name, payload, opts) do
+    with_repo(instance, fn -> deliver_signal_with_repo!(run_id, name, payload, opts) end)
+  end
+
+  defp deliver_signal_with_repo!(run_id, name, payload, opts) do
     DurableTerm.validate!(payload, :signal)
     signal_name = Atom.to_string(name)
+    delivery_id = normalize_delivery_id(Keyword.get(opts, :delivery_id))
     now = DateTime.utc_now()
 
     result =
@@ -1556,41 +1636,52 @@ defmodule Continuum.Runtime.Journal.Postgres do
           %Run{state: state} when state not in ["running", "suspended"] ->
             repo().rollback(:run_terminal)
 
-          %Run{id: delivered_run_id} ->
-            changeset =
-              %Signal{}
-              |> Ecto.Changeset.change(%{
-                run_id: delivered_run_id,
-                name: signal_name,
-                payload: encode_term(payload),
-                delivered: false,
-                inserted_at: now
-              })
+          %Run{id: delivered_run_id} = run ->
+            {inserted_count, _signals} =
+              repo().insert_all(
+                Signal,
+                [
+                  %{
+                    run_id: delivered_run_id,
+                    correlation_id: run.correlation_id || run.id,
+                    name: signal_name,
+                    delivery_id: delivery_id,
+                    payload: encode_term(payload),
+                    delivered: false,
+                    inserted_at: now
+                  }
+                ],
+                on_conflict: :nothing
+              )
 
-            with {:ok, _signal} <- repo().insert(changeset),
-                 {_count, _} <-
-                   repo().update_all(
-                     from(r in Run, where: r.id == ^delivered_run_id),
-                     set: [next_wakeup_at: now]
-                   ),
-                 {:ok, _} <-
-                   repo().query("SELECT pg_notify('continuum_signal', $1)", [delivered_run_id]) do
-              delivered_run_id
+            if inserted_count == 0 and is_binary(delivery_id) do
+              {delivered_run_id, :duplicate}
             else
-              {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
+              with {_count, _} <-
+                     repo().update_all(
+                       from(r in Run, where: r.id == ^delivered_run_id),
+                       set: [next_wakeup_at: now]
+                     ),
+                   {:ok, _} <-
+                     repo().query("SELECT pg_notify('continuum_signal', $1)", [delivered_run_id]) do
+                {delivered_run_id, :delivered}
+              else
+                {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
+              end
             end
         end
       end)
 
     case result do
-      {:ok, delivered_run_id} ->
+      {:ok, {delivered_run_id, status}} ->
         Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
           run_id: delivered_run_id,
           signal_name: name,
+          delivery_status: status,
           durable?: true
         })
 
-        {:ok, delivered_run_id}
+        {:ok, delivered_run_id, status}
 
       {:error, :not_found} ->
         {:error, :not_found}
@@ -1601,6 +1692,17 @@ defmodule Continuum.Runtime.Journal.Postgres do
       {:error, reason} ->
         raise JournalError, op: :deliver_signal!, reason: reason
     end
+  end
+
+  defp normalize_delivery_id(nil), do: nil
+
+  defp normalize_delivery_id(id)
+       when is_binary(id) and byte_size(id) > 0 and byte_size(id) <= 255,
+       do: id
+
+  defp normalize_delivery_id(other) do
+    raise ArgumentError,
+          "expected :delivery_id to be a non-empty binary of at most 255 bytes, got: #{inspect(other)}"
   end
 
   defp lock_signal_delivery_tip(run_id) do

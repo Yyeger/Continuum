@@ -132,6 +132,7 @@ defmodule Continuum.Query do
       input: decode_term(run.input),
       attributes: run.attributes || %{},
       namespace: run.namespace || "default",
+      idempotency_key: run.idempotency_key,
       result: decode_term(run.result),
       error: error,
       error_stacktrace: decode_term(run.error_stacktrace) || legacy_stacktrace,

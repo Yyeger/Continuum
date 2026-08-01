@@ -22,6 +22,14 @@ defmodule Continuum.Runtime.Journal do
               input :: term()
             ) :: :ok | {:error, term()}
 
+  @callback start_run(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              workflow :: module(),
+              input :: term(),
+              opts :: keyword()
+            ) :: :ok | {:ok, Continuum.Runtime.Lease.t()} | {:error, term()}
+
   @callback append!(
               instance :: Continuum.Runtime.Instance.t(),
               run_id :: binary(),
@@ -69,13 +77,21 @@ defmodule Continuum.Runtime.Journal do
               payload :: term()
             ) :: :ok | {:ok, binary()} | {:error, term()}
 
+  @callback deliver_signal!(
+              instance :: Continuum.Runtime.Instance.t(),
+              run_id :: binary(),
+              name :: atom(),
+              payload :: term(),
+              opts :: keyword()
+            ) :: {:ok, binary(), :delivered | :duplicate} | {:error, term()}
+
   @doc """
   Look up the run record. Returns `nil` if no such run, or a map with at
   least `:state`, `:result`, `:error` keys (atoms / terms — already decoded).
   """
   @callback get_run(instance :: Continuum.Runtime.Instance.t(), run_id :: binary()) :: nil | map()
 
-  @optional_callbacks deliver_signal!: 4
+  @optional_callbacks start_run: 5, deliver_signal!: 4, deliver_signal!: 5
 
   @doc "Returns the configured default journal adapter."
   def default do

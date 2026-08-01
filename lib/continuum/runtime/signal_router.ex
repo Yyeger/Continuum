@@ -36,13 +36,27 @@ defmodule Continuum.Runtime.SignalRouter do
 
   @spec deliver(binary(), atom(), term(), keyword()) :: :ok | {:error, term()}
   def deliver(run_id, name, payload, opts) do
+    case deliver_with_status(run_id, name, payload, opts) do
+      {:ok, _status} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc false
+  @spec deliver_unique(binary(), atom(), term(), binary(), keyword()) ::
+          {:ok, :delivered | :duplicate} | {:error, term()}
+  def deliver_unique(run_id, name, payload, delivery_id, opts \\ []) do
+    deliver_with_status(run_id, name, payload, Keyword.put(opts, :delivery_id, delivery_id))
+  end
+
+  defp deliver_with_status(run_id, name, payload, opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
     case journal do
-      Journal.Postgres -> deliver_durable(instance, run_id, name, payload)
-      Journal.InMemory -> deliver_local(instance, run_id, name, payload)
-      custom_journal -> deliver_custom(custom_journal, instance, run_id, name, payload)
+      Journal.Postgres -> deliver_durable(instance, run_id, name, payload, opts)
+      Journal.InMemory -> deliver_local(instance, run_id, name, payload, opts)
+      custom_journal -> deliver_custom(custom_journal, instance, run_id, name, payload, opts)
     end
   end
 
@@ -105,13 +119,16 @@ defmodule Continuum.Runtime.SignalRouter do
     {:noreply, state}
   end
 
-  defp deliver_durable(instance, run_id, name, payload) do
+  defp deliver_durable(instance, run_id, name, payload, opts) do
     # Delivery resolves continue_as_new chains to the live tip; wake that run,
     # not the (possibly dead) chain root the caller addressed.
-    case Journal.Postgres.deliver_signal!(instance, run_id, name, payload) do
-      {:ok, delivered_run_id} ->
+    case Journal.Postgres.deliver_signal!(instance, run_id, name, payload, opts) do
+      {:ok, delivered_run_id, :delivered} ->
         route(instance, delivered_run_id)
-        :ok
+        {:ok, :delivered}
+
+      {:ok, _delivered_run_id, :duplicate} ->
+        {:ok, :duplicate}
 
       {:error, _reason} = error ->
         error
@@ -122,9 +139,9 @@ defmodule Continuum.Runtime.SignalRouter do
   # buffered payload when its replay reaches the matching `await signal`, so
   # early or out-of-order signals wait for their await instead of landing at
   # the journal tail (where replay would later read them as drift).
-  defp deliver_local(instance, run_id, name, payload) do
-    case Journal.InMemory.deliver_signal!(instance, run_id, name, payload) do
-      :ok ->
+  defp deliver_local(instance, run_id, name, payload, opts) do
+    case Journal.InMemory.deliver_signal!(instance, run_id, name, payload, opts) do
+      {:ok, _delivered_run_id, :delivered} ->
         Engine.wake(instance, run_id)
 
         Telemetry.execute([:continuum, :signal, :delivered], %{}, %{
@@ -134,21 +151,38 @@ defmodule Continuum.Runtime.SignalRouter do
           durable?: false
         })
 
-        :ok
+        {:ok, :delivered}
+
+      {:ok, _delivered_run_id, :duplicate} ->
+        {:ok, :duplicate}
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  defp deliver_custom(journal, instance, run_id, name, payload) do
-    if Code.ensure_loaded?(journal) and function_exported?(journal, :deliver_signal!, 4) do
-      case apply(journal, :deliver_signal!, [instance, run_id, name, payload]) do
+  defp deliver_custom(journal, instance, run_id, name, payload, opts) do
+    Code.ensure_loaded(journal)
+    arity = if function_exported?(journal, :deliver_signal!, 5), do: 5, else: 4
+
+    if function_exported?(journal, :deliver_signal!, arity) do
+      args = [instance, run_id, name, payload] ++ if(arity == 5, do: [opts], else: [])
+
+      case apply(journal, :deliver_signal!, args) do
         :ok ->
           route(instance, run_id)
+          {:ok, :delivered}
 
         {:ok, delivered_run_id} ->
           route(instance, delivered_run_id)
+          {:ok, :delivered}
+
+        {:ok, delivered_run_id, :delivered} ->
+          route(instance, delivered_run_id)
+          {:ok, :delivered}
+
+        {:ok, _delivered_run_id, :duplicate} ->
+          {:ok, :duplicate}
 
         {:error, _reason} = error ->
           error

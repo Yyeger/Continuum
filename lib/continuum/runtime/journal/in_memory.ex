@@ -23,8 +23,19 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def start_run(%Instance{} = instance, run_id, workflow, input) do
+    start_run(instance, run_id, workflow, input, [])
+  end
+
+  @impl true
+  def start_run(%Instance{} = instance, run_id, workflow, input, opts) do
     DurableTerm.validate!(input, :input)
-    GenServer.call(__MODULE__, {:start_run, instance, run_id, workflow, input})
+    idempotency_key = normalize_ingress_key(Keyword.get(opts, :idempotency_key))
+
+    GenServer.call(
+      __MODULE__,
+      {:start_run, instance, run_id, workflow, input, Keyword.get(opts, :namespace, "default"),
+       idempotency_key}
+    )
   end
 
   @impl true
@@ -91,8 +102,21 @@ defmodule Continuum.Runtime.Journal.InMemory do
   """
   @impl true
   def deliver_signal!(%Instance{} = instance, run_id, name, payload) do
+    case deliver_signal!(instance, run_id, name, payload, []) do
+      {:ok, _run_id, _status} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @impl true
+  def deliver_signal!(%Instance{} = instance, run_id, name, payload, opts) do
     DurableTerm.validate!(payload, :signal)
-    GenServer.call(__MODULE__, {:deliver_signal, instance.name, run_id, name, payload})
+    delivery_id = normalize_delivery_id(Keyword.get(opts, :delivery_id))
+
+    GenServer.call(
+      __MODULE__,
+      {:deliver_signal, instance.name, run_id, name, payload, delivery_id}
+    )
   end
 
   @doc """
@@ -126,17 +150,24 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   @impl true
-  def handle_call({:start_run, instance, run_id, workflow, input}, _from, state) do
-    case get_run_state(state, instance.name, run_id) do
+  def handle_call(
+        {:start_run, instance, run_id, workflow, input, namespace, idempotency_key},
+        _from,
+        state
+      ) do
+    case find_start_conflict(state, instance.name, run_id, workflow, namespace, idempotency_key) do
       nil ->
         run = %{
           run_id: run_id,
           workflow: workflow,
           version_hash: version_hash(workflow),
+          namespace: namespace,
+          idempotency_key: idempotency_key,
           input: input,
           events: [],
           snapshots: [],
           signal_buffer: %{},
+          signal_delivery_ids: MapSet.new(),
           state: :running,
           result: nil,
           error: nil,
@@ -145,8 +176,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
         {:reply, :ok, put_run(state, instance.name, run_id, run)}
 
-      _run ->
+      {:run_id, _existing_id} ->
         {:reply, {:error, :already_exists}, state}
+
+      {:idempotency_key, existing_id} ->
+        {:reply, {:error, {:already_started, existing_id}}, state}
     end
   end
 
@@ -237,7 +271,11 @@ defmodule Continuum.Runtime.Journal.InMemory do
     end
   end
 
-  def handle_call({:deliver_signal, instance_name, run_id, name, payload}, _from, state) do
+  def handle_call(
+        {:deliver_signal, instance_name, run_id, name, payload, delivery_id},
+        _from,
+        state
+      ) do
     case get_run_state(state, instance_name, run_id) do
       nil ->
         {:reply, {:error, :not_found}, state}
@@ -247,15 +285,21 @@ defmodule Continuum.Runtime.Journal.InMemory do
       %{state: run_state} when run_state not in [:running, :suspended] ->
         {:reply, {:error, :run_terminal}, state}
 
-      _run ->
-        state =
-          update_run(state, instance_name, run_id, fn run ->
-            Map.update(run, :signal_buffer, %{name => [payload]}, fn buffer ->
-              Map.update(buffer, name, [payload], &(&1 ++ [payload]))
+      run ->
+        if duplicate_signal?(run, name, delivery_id) do
+          {:reply, {:ok, run_id, :duplicate}, state}
+        else
+          state =
+            update_run(state, instance_name, run_id, fn run ->
+              run
+              |> Map.update(:signal_buffer, %{name => [payload]}, fn buffer ->
+                Map.update(buffer, name, [payload], &(&1 ++ [payload]))
+              end)
+              |> record_signal_delivery(name, delivery_id)
             end)
-          end)
 
-        {:reply, :ok, state}
+          {:reply, {:ok, run_id, :delivered}, state}
+        end
     end
   end
 
@@ -331,6 +375,64 @@ defmodule Continuum.Runtime.Journal.InMemory do
       %{state: run_state} ->
         {:error, {:run_not_active, run_state}}
     end
+  end
+
+  defp find_start_conflict(state, instance_name, run_id, workflow, namespace, idempotency_key) do
+    runs = Map.get(state, instance_name, %{})
+
+    cond do
+      Map.has_key?(runs, run_id) ->
+        {:run_id, run_id}
+
+      is_binary(idempotency_key) ->
+        Enum.find_value(runs, fn {existing_id, run} ->
+          if run.workflow == workflow and Map.get(run, :namespace, "default") == namespace and
+               Map.get(run, :idempotency_key) == idempotency_key do
+            {:idempotency_key, existing_id}
+          end
+        end)
+
+      true ->
+        nil
+    end
+  end
+
+  defp duplicate_signal?(_run, _name, nil), do: false
+
+  defp duplicate_signal?(run, name, delivery_id) do
+    run
+    |> Map.get(:signal_delivery_ids, MapSet.new())
+    |> MapSet.member?({name, delivery_id})
+  end
+
+  defp record_signal_delivery(run, _name, nil), do: run
+
+  defp record_signal_delivery(run, name, delivery_id) do
+    Map.update(run, :signal_delivery_ids, MapSet.new([{name, delivery_id}]), fn ids ->
+      MapSet.put(ids, {name, delivery_id})
+    end)
+  end
+
+  defp normalize_ingress_key(nil), do: nil
+
+  defp normalize_ingress_key(key)
+       when is_binary(key) and byte_size(key) > 0 and byte_size(key) <= 255,
+       do: key
+
+  defp normalize_ingress_key(other) do
+    raise ArgumentError,
+          "expected :idempotency_key to be a non-empty binary of at most 255 bytes, got: #{inspect(other)}"
+  end
+
+  defp normalize_delivery_id(nil), do: nil
+
+  defp normalize_delivery_id(id)
+       when is_binary(id) and byte_size(id) > 0 and byte_size(id) <= 255,
+       do: id
+
+  defp normalize_delivery_id(other) do
+    raise ArgumentError,
+          "expected :delivery_id to be a non-empty binary of at most 255 bytes, got: #{inspect(other)}"
   end
 
   defp update_existing_run(state, instance_name, run_id, fun) do

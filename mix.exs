@@ -77,6 +77,7 @@ defmodule Continuum.MixProject do
         "guides/your-first-workflow.md",
         "guides/activities-retries-idempotency.md",
         "guides/idempotency.md",
+        "guides/idempotent-ingress.md",
         "guides/multi-instance.md",
         "guides/clustering.md",
         "guides/namespaces.md",

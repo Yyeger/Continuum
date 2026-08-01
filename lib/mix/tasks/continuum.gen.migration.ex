@@ -100,6 +100,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :workflow, :text, null: false
           add :version_hash, :bytea, null: false
           add :namespace, :text, null: false, default: "default"
+          add :idempotency_key, :text
           add :state, :text, null: false
           add :input, :bytea, null: false
           add :attributes, :map, null: false, default: %{}
@@ -179,6 +180,14 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         \"\"\"
 
         execute \"\"\"
+        CREATE UNIQUE INDEX continuum_runs_ingress_key_idx
+          ON continuum_runs (namespace, workflow, idempotency_key)
+          WHERE idempotency_key IS NOT NULL
+            AND parent_run_id IS NULL
+            AND continued_from_run_id IS NULL
+        \"\"\"
+
+        execute \"\"\"
         CREATE TABLE continuum_events (
           run_id uuid NOT NULL,
           seq bigint NOT NULL,
@@ -194,7 +203,9 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
 
         create table(:continuum_signals) do
           add :run_id, :uuid, null: false
+          add :correlation_id, :uuid
           add :name, :text, null: false
+          add :delivery_id, :text
           add :payload, :bytea, null: false
           add :delivered, :boolean, null: false, default: false
           add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
@@ -204,6 +215,12 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         CREATE INDEX continuum_signals_pending_idx
           ON continuum_signals (run_id, name)
           WHERE delivered = false
+        \"\"\"
+
+        execute \"\"\"
+        CREATE UNIQUE INDEX continuum_signals_delivery_key_idx
+          ON continuum_signals (correlation_id, name, delivery_id)
+          WHERE delivery_id IS NOT NULL
         \"\"\"
 
         create table(:continuum_timers, primary_key: false) do

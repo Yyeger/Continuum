@@ -438,16 +438,45 @@ defmodule Continuum.Runtime.Engine do
     Code.ensure_loaded(journal)
     trace_context = initial_trace_context(opts)
 
-    start_lease =
+    start_result =
       if Keyword.get(opts, :resume, false) do
-        nil
+        {:ok, nil}
       else
         case start_run(journal, instance, run_id, workflow_module, input, trace_context, opts) do
-          :ok -> nil
-          {:ok, %Lease{} = lease} -> lease
+          :ok -> {:ok, nil}
+          {:ok, %Lease{} = lease} -> {:ok, lease}
+          {:error, reason} -> {:error, reason}
         end
       end
 
+    case start_result do
+      {:ok, start_lease} ->
+        init_started_run(
+          workflow_module,
+          input,
+          run_id,
+          opts,
+          instance,
+          journal,
+          trace_context,
+          start_lease
+        )
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
+  end
+
+  defp init_started_run(
+         workflow_module,
+         input,
+         run_id,
+         opts,
+         instance,
+         journal,
+         trace_context,
+         start_lease
+       ) do
     {lease_owner, lease_token, cancel_requested_at} =
       acquire_lease(instance, journal, run_id, opts, start_lease)
 
@@ -1085,6 +1114,7 @@ defmodule Continuum.Runtime.Engine do
         trace_context: trace_context,
         namespace: Keyword.get(opts, :namespace, "default"),
         attributes: Keyword.get(opts, :attributes, %{}),
+        idempotency_key: Keyword.get(opts, :idempotency_key),
         lease: start_lease_opts(journal, instance, opts)
       )
     else

@@ -193,6 +193,7 @@ defmodule Continuum do
   Start a new workflow run.
 
   Options include `:instance` for selecting a named Continuum instance,
+  `:idempotency_key` for atomically rejecting a duplicate root start,
   `:namespace` for soft tenant scoping of list/query paths, `:trace_context` for
   persisting an opaque W3C traceparent binary that
   observability integrations can use to link resumed run attempts, and
@@ -205,6 +206,31 @@ defmodule Continuum do
   @spec start(workflow_module(), input(), keyword()) :: {:ok, run_id()} | {:error, term()}
   def start(workflow_module, input, opts \\ []) do
     Continuum.Runtime.Engine.start_run(workflow_module, input, opts)
+  end
+
+  @doc """
+  Idempotently starts a workflow using the required `:idempotency_key` option.
+
+  Keys are scoped by namespace and workflow. Concurrent callers atomically
+  converge on one root run and receive either `:started` or `:existing`:
+
+      Continuum.start_unique(MyFlow, input, idempotency_key: request_id)
+      #=> {:ok, run_id, :started | :existing}
+  """
+  @spec start_unique(workflow_module(), input(), keyword()) ::
+          {:ok, run_id(), :started | :existing} | {:error, term()}
+  def start_unique(workflow_module, input, opts) do
+    case Keyword.fetch(opts, :idempotency_key) do
+      {:ok, _key} ->
+        case start(workflow_module, input, opts) do
+          {:ok, run_id} -> {:ok, run_id, :started}
+          {:error, {:already_started, run_id}} -> {:ok, run_id, :existing}
+          {:error, _reason} = error -> error
+        end
+
+      :error ->
+        {:error, :idempotency_key_required}
+    end
   end
 
   @doc """
@@ -224,6 +250,18 @@ defmodule Continuum do
   @spec signal(run_id(), atom(), term(), keyword()) :: :ok | {:error, term()}
   def signal(run_id, name, payload, opts) do
     Continuum.Runtime.SignalRouter.deliver(run_id, name, payload, opts)
+  end
+
+  @doc """
+  Idempotently delivers a signal using a caller-supplied delivery ID.
+
+  Delivery IDs are scoped to the logical `continue_as_new` chain and signal
+  name, so a retried broker or HTTP message creates at most one mailbox entry.
+  """
+  @spec signal_unique(run_id(), atom(), term(), binary(), keyword()) ::
+          {:ok, :delivered | :duplicate} | {:error, term()}
+  def signal_unique(run_id, name, payload, delivery_id, opts \\ []) do
+    Continuum.Runtime.SignalRouter.deliver_unique(run_id, name, payload, delivery_id, opts)
   end
 
   @doc """
