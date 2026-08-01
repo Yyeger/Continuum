@@ -2,7 +2,10 @@
 
 Continuum's runtime tables are intentionally append-heavy. v0.4 adds two
 dry-run-by-default cleanup tasks for data that is safe to prune after operators
-decide their retention policy.
+decide their retention policy. Workflow retention starts when a run reaches a
+terminal state, so long-running workflows never expire while they are live.
+Use `retention: :infinity` to disable automatic eligibility; each
+`continue_as_new` incarnation receives its own terminal-relative deadline.
 
 ## Operational Health and Repair
 

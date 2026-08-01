@@ -25,6 +25,20 @@ defmodule Continuum.Journal.PostgresTest do
     end
   end
 
+  defmodule RetainedWorkflow do
+    @moduledoc false
+    use Continuum.Workflow, retention: {:milliseconds, 5_000}
+
+    def run(input), do: input
+  end
+
+  defmodule InfiniteWorkflow do
+    @moduledoc false
+    use Continuum.Workflow, retention: :infinity
+
+    def run(input), do: input
+  end
+
   describe "start_run/3 and get_run/1" do
     test "creates a run row and retrieves it" do
       run_id = generate_uuid()
@@ -225,6 +239,70 @@ defmodule Continuum.Journal.PostgresTest do
                 error: %Continuum.RunFailure{kind: :exit, reason: :boom},
                 error_stacktrace: ^stacktrace
               }} = Continuum.get_run(run_id)
+    end
+
+    test "sets terminal-relative retention for completed and failed runs" do
+      for terminal <- [:complete, :fail] do
+        run_id = generate_uuid()
+
+        :ok =
+          Postgres.start_run(
+            Continuum.Runtime.Instance.default(),
+            run_id,
+            RetainedWorkflow,
+            %{}
+          )
+
+        Repo.update_all(from(r in Run, where: r.id == ^run_id),
+          set: [started_at: ~U[2000-01-01 00:00:00Z]]
+        )
+
+        case terminal do
+          :complete ->
+            :ok = Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, :ok, nil)
+
+          :fail ->
+            :ok = Postgres.fail!(Continuum.Runtime.Instance.default(), run_id, :boom, nil)
+        end
+
+        run = Repo.get!(Run, run_id)
+        assert DateTime.diff(run.retention_until, run.completed_at, :millisecond) in 4_000..6_000
+        assert DateTime.compare(run.retention_until, DateTime.utc_now()) == :gt
+      end
+    end
+
+    test "leaves retention disabled for infinity" do
+      run_id = generate_uuid()
+
+      :ok =
+        Postgres.start_run(
+          Continuum.Runtime.Instance.default(),
+          run_id,
+          InfiniteWorkflow,
+          %{}
+        )
+
+      :ok = Postgres.complete!(Continuum.Runtime.Instance.default(), run_id, :ok, nil)
+
+      assert Repo.get!(Run, run_id).retention_until == nil
+    end
+
+    test "sets retention when a run is cancelled" do
+      run_id = generate_uuid()
+
+      :ok =
+        Postgres.start_run(
+          Continuum.Runtime.Instance.default(),
+          run_id,
+          RetainedWorkflow,
+          %{}
+        )
+
+      :ok = Postgres.cancel_run!(Continuum.Runtime.Instance.default(), run_id, nil)
+
+      run = Repo.get!(Run, run_id)
+      assert run.state == "cancelled"
+      assert DateTime.diff(run.retention_until, run.completed_at, :millisecond) in 4_000..6_000
     end
   end
 

@@ -28,7 +28,8 @@ defmodule Continuum.VersionRegistry do
           version: term(),
           hash: binary(),
           version_hash: binary(),
-          entrypoint: module()
+          entrypoint: module(),
+          retention: non_neg_integer() | :infinity
         }
 
   @doc false
@@ -164,7 +165,8 @@ defmodule Continuum.VersionRegistry do
       version: version,
       hash: hash,
       version_hash: hash,
-      entrypoint: entrypoint
+      entrypoint: entrypoint,
+      retention: :infinity
     })
 
     :ok
@@ -452,7 +454,8 @@ defmodule Continuum.VersionRegistry do
          version: Map.get(metadata, :version),
          hash: Map.fetch!(metadata, :version_hash),
          version_hash: Map.fetch!(metadata, :version_hash),
-         entrypoint: entrypoint
+         entrypoint: entrypoint,
+         retention: Map.get(metadata, :retention, :infinity)
        }}
     else
       {:error, :not_a_workflow}

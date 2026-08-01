@@ -284,11 +284,44 @@ defmodule Continuum.Workflow do
   defmacro hours(n), do: quote(do: unquote(n) * 60 * 60 * 1_000)
   defmacro days(n), do: quote(do: unquote(n) * 24 * 60 * 60 * 1_000)
 
+  @doc false
+  def normalize_retention!(:infinity), do: :infinity
+
+  def normalize_retention!({unit, amount})
+      when unit in [:milliseconds, :seconds, :minutes, :hours, :days] and
+             is_integer(amount) and amount >= 0 do
+    multiplier =
+      case unit do
+        :milliseconds -> 1
+        :seconds -> 1_000
+        :minutes -> 60_000
+        :hours -> 3_600_000
+        :days -> 86_400_000
+      end
+
+    amount * multiplier
+  end
+
+  def normalize_retention!(milliseconds) when is_integer(milliseconds) and milliseconds >= 0,
+    do: milliseconds
+
+  def normalize_retention!(retention) do
+    raise ArgumentError,
+          "expected workflow :retention to be :infinity, a non-negative millisecond " <>
+            "integer, or {:days | :hours | :minutes | :seconds | :milliseconds, n}, got: " <>
+            inspect(retention)
+  end
+
   # ---------------------------------------------------------------------------
 
   defmacro __using__(opts) do
     version = Keyword.get(opts, :version, 1)
-    retention = Keyword.get(opts, :retention, {:days, 30})
+
+    retention =
+      opts
+      |> Keyword.get(:retention, {:days, 30})
+      |> normalize_retention!()
+
     logical_workflow = Keyword.get(opts, :workflow, Keyword.get(opts, :logical_workflow))
 
     snapshot_threshold =

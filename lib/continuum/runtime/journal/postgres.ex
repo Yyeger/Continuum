@@ -638,6 +638,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
                      correlation_id: correlation,
                      completed_at: now
                    }) do
+              set_terminal_retention!(run_id)
+
               # Re-parent unawaited live children to the successor: their
               # child_started events live in the dead run's history, so the
               # successor cannot await them, but cancelling the chain must
@@ -1063,7 +1065,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             UPDATE continuum_runs
             SET state = 'suspended', result = NULL, error = NULL, error_stacktrace = NULL,
                 completed_at = NULL, lease_owner = NULL, lease_token = NULL,
-                lease_expires_at = NULL, next_wakeup_at = NULL
+                lease_expires_at = NULL, next_wakeup_at = NULL, retention_until = NULL
             WHERE id = $1::text::uuid AND state = 'failed'
             """,
             [task.run_id]
@@ -1170,8 +1172,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
                  lease_expires_at: nil
                ]
              ) do
-          {1, _} -> {maybe_wake_parent(run_id), cancelled_descendants}
-          {0, _} -> repo().rollback({:cancel_failed, :lease_mismatch})
+          {1, _} ->
+            set_terminal_retention!(run_id)
+            {maybe_wake_parent(run_id), cancelled_descendants}
+
+          {0, _} ->
+            repo().rollback({:cancel_failed, :lease_mismatch})
         end
       end)
 
@@ -1241,7 +1247,9 @@ defmodule Continuum.Runtime.Journal.Postgres do
             ]
           )
 
-        flipped || []
+        flipped = flipped || []
+        Enum.each(flipped, &set_terminal_retention!/1)
+        flipped
     end
   end
 
@@ -2266,6 +2274,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
                 completed_at: DateTime.utc_now()
               })
 
+            set_terminal_retention!(run_id)
+
             maybe_wake_parent(run_id)
           end)
 
@@ -2295,6 +2305,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
                 error_stacktrace: encode_term(stacktrace),
                 completed_at: DateTime.utc_now()
               })
+
+            set_terminal_retention!(run_id)
 
             maybe_wake_parent(run_id)
           end)
@@ -2369,6 +2381,40 @@ defmodule Continuum.Runtime.Journal.Postgres do
       {0, _} ->
         raise JournalError, op: :cas_update_run, reason: {:cas_failed, run_id}
     end
+  end
+
+  defp set_terminal_retention!(run_id) do
+    %{rows: [[workflow, version_hash]]} =
+      repo().query!(
+        "SELECT workflow, version_hash FROM continuum_runs WHERE id = $1::text::uuid",
+        [run_id]
+      )
+
+    retention_ms =
+      case Continuum.VersionRegistry.resolve(workflow, version_hash) do
+        {:ok, entry} ->
+          case Map.get(entry, :retention, :infinity) do
+            :infinity -> nil
+            milliseconds when is_integer(milliseconds) -> milliseconds
+          end
+
+        {:error, :unknown_version} ->
+          nil
+      end
+
+    repo().query!(
+      """
+      UPDATE continuum_runs
+      SET retention_until = CASE
+        WHEN $2::bigint IS NULL THEN NULL
+        ELSE clock_timestamp() + ($2::bigint * interval '1 millisecond')
+      END
+      WHERE id = $1::text::uuid
+      """,
+      [run_id, retention_ms]
+    )
+
+    :ok
   end
 
   # Terminal and suspension transitions additionally require the run to still

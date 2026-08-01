@@ -177,8 +177,10 @@ operator-driven partition maintenance — there is no runtime partition manager:
 * `mix continuum.partitions.drop_old [--execute]` — report partitions older
   than retention by default; drop them only with `--execute`.
 
-`retention_until` on `continuum_runs` is opt-in and remains `NULL` by default.
-`drop_old` is a no-op when no run has retention set.
+`retention_until` on `continuum_runs` remains `NULL` while a run is live. In
+current Continuum releases it is populated from the workflow's validated
+retention policy when the run completes, fails, or is cancelled. Use
+`retention: :infinity` to keep it `NULL` after termination.
 
 ## What Did Not Change
 
