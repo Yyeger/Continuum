@@ -65,7 +65,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       <main class="co-shell">
         <header class="co-header">
           <div>
-            <a href={@observer_path} class="co-back">Runs</a>
+            <a href={Continuum.Observer.Path.runs(@observer_path)} class="co-back">Runs</a>
             <h1>Operational health</h1>
             <p>Durable state for <code><%= inspect(@instance) %></code></p>
           </div>

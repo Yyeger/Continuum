@@ -76,7 +76,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       <main class="co-shell">
         <header class="co-header">
           <div>
-            <a href={@observer_path} class="co-back">Runs</a>
+            <a href={Continuum.Observer.Path.runs(@observer_path)} class="co-back">Runs</a>
             <h1><code><%= @run_id %></code></h1>
             <%= if @run do %>
               <p><%= @run.workflow %></p>
@@ -104,19 +104,19 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
               <%= if @run.parent_run_id do %>
                 <div>
                   <span>Parent</span>
-                  <a href={"#{@observer_path}/#{@run.parent_run_id}"}><code><%= @run.parent_run_id %></code></a>
+                  <a href={Continuum.Observer.Path.run(@observer_path, @run.parent_run_id)}><code><%= @run.parent_run_id %></code></a>
                 </div>
               <% end %>
               <%= if @run.continued_from_run_id do %>
                 <div>
                   <span>Continued from</span>
-                  <a href={"#{@observer_path}/#{@run.continued_from_run_id}"}><code><%= @run.continued_from_run_id %></code></a>
+                  <a href={Continuum.Observer.Path.run(@observer_path, @run.continued_from_run_id)}><code><%= @run.continued_from_run_id %></code></a>
                 </div>
               <% end %>
               <%= if @continues_to do %>
                 <div>
                   <span>Continues to</span>
-                  <a href={"#{@observer_path}/#{@continues_to}"}><code><%= @continues_to %></code></a>
+                  <a href={Continuum.Observer.Path.run(@observer_path, @continues_to)}><code><%= @continues_to %></code></a>
                 </div>
               <% end %>
             </section>

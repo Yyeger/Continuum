@@ -62,7 +62,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             <h1>Continuum</h1>
             <p>Workflow runs for <code><%= inspect(@instance) %></code></p>
           </div>
-          <a href={"#{@observer_path}/health"} class="co-back">Operational health</a>
+          <a href={Continuum.Observer.Path.health(@observer_path)} class="co-back">Operational health</a>
         </header>
 
         <form id="co-runs-filter" phx-change="filter" class="co-toolbar">
@@ -93,7 +93,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
               <% else %>
                 <%= for run <- @runs do %>
                   <tr>
-                    <td><a href={"#{@observer_path}/runs/#{run.run_id}"}><code><%= run.run_id %></code></a></td>
+                    <td><a href={Continuum.Observer.Path.run(@observer_path, run.run_id)}><code><%= run.run_id %></code></a></td>
                     <td><.state_badge state={run.state} /></td>
                     <td><%= run.workflow %></td>
                     <td><.timestamp value={run.started_at} /></td>

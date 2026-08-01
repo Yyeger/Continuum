@@ -104,6 +104,34 @@ defmodule Continuum.ObserverLiveTest do
     assert html =~ "payload"
   end
 
+  test "run detail renders valid lineage links" do
+    run_ids =
+      for value <- 1..4 do
+        {:ok, run_id} = Continuum.Test.start_postgres(SideEffectFlow, %{value: value})
+        assert {:ok, %{state: :completed}} = await_postgres(run_id)
+        run_id
+      end
+
+    [run_id, parent_id, previous_id, successor_id] = run_ids
+
+    Repo.update_all(
+      from(r in Continuum.Schema.Run, where: r.id == ^run_id),
+      set: [parent_run_id: parent_id, continued_from_run_id: previous_id]
+    )
+
+    Repo.update_all(
+      from(r in Continuum.Schema.Run, where: r.id == ^successor_id),
+      set: [continued_from_run_id: run_id]
+    )
+
+    {:ok, _view, html} = live(build_conn(), "/continuum/runs/#{run_id}")
+
+    for linked_id <- [parent_id, previous_id, successor_id] do
+      assert html =~ ~s(href="/continuum/runs/#{linked_id}")
+      refute html =~ ~s(href="/continuum/#{linked_id}")
+    end
+  end
+
   test "run detail sends a signal and refreshes the timeline" do
     {:ok, run_id} = Continuum.Test.start_postgres(SignalFlow, %{})
     wait_for_event(run_id, "signal_awaited")
