@@ -119,6 +119,27 @@ defmodule Continuum.Runtime.TimerWheelTest do
     assert Repo.one!(from(t in Timer, where: t.id == ^timer.id)).fired == true
   end
 
+  test "concurrent timer wheels claim a due timer only once" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(Timer, :count) == 1 end)
+    timer = Repo.one!(Timer)
+    force_due(timer.id)
+
+    results =
+      1..2
+      |> Enum.map(fn _ -> Task.async(fn -> TimerWheel.fire_due_once(batch_size: 1) end) end)
+      |> Enum.map(&Task.await(&1, 1_000))
+
+    assert Enum.sort(results) == [{:ok, 0}, {:ok, 1}]
+
+    assert {:ok, %{state: :completed, result: {:ok, :fired}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    assert Enum.count(event_types(run_id), &(&1 == "timer_fired")) == 1
+  end
+
   test "TimerWheel notification caches a newly armed timer without waiting for refresh" do
     pid = ensure_timer_wheel!()
 

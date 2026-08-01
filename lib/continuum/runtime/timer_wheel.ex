@@ -36,8 +36,8 @@ defmodule Continuum.Runtime.TimerWheel do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
 
-    with {:ok, timers} <- claim_due(instance, batch_size) do
-      Enum.each(timers, &fire_timer(instance, &1))
+    with {:ok, timers} <- claim_and_fire_due(instance, batch_size) do
+      Enum.each(timers, &announce_fired(instance, &1))
       {:ok, length(timers)}
     end
   end
@@ -132,72 +132,52 @@ defmodule Continuum.Runtime.TimerWheel do
     {:reply, :ok, %{state | tick_ref: nil}}
   end
 
-  defp claim_due(instance, batch_size) do
-    sql = """
-    SELECT t.id::text, t.run_id::text, r.lease_token
-    FROM continuum_timers AS t
-    JOIN continuum_runs AS r ON r.id = t.run_id
-    WHERE t.fired = false
-      AND t.fires_at <= now()
-      AND r.state = 'suspended'
-      AND r.lease_token IS NOT NULL
-      AND r.lease_expires_at > now()
-    ORDER BY t.fires_at
-    FOR UPDATE SKIP LOCKED
-    LIMIT $1
-    """
-
-    case instance.repo.query(sql, [batch_size]) do
-      {:ok, %{rows: rows}} ->
-        {:ok,
-         Enum.map(rows, fn [id, run_id, lease_token] ->
-           %{id: id, run_id: run_id, lease_token: lease_token}
-         end)}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp claim_and_fire_due(instance, batch_size) do
+    claim_and_fire(instance, "", [batch_size], "$1")
   end
 
-  defp claim_cached(_instance, [], _batch_size), do: {:ok, []}
+  defp claim_and_fire_cached(_instance, [], _batch_size), do: {:ok, []}
 
-  defp claim_cached(instance, timer_ids, batch_size) do
-    sql = """
-    SELECT t.id::text, t.run_id::text, r.lease_token
-    FROM continuum_timers AS t
-    JOIN continuum_runs AS r ON r.id = t.run_id
-    WHERE t.id::text = ANY($1::text[])
-      AND t.fired = false
-      AND t.fires_at <= now()
-      AND r.state = 'suspended'
-      AND r.lease_token IS NOT NULL
-      AND r.lease_expires_at > now()
-    ORDER BY t.fires_at
-    FOR UPDATE SKIP LOCKED
-    LIMIT $2
-    """
+  defp claim_and_fire_cached(instance, timer_ids, batch_size) do
+    claim_and_fire(instance, "AND t.id::text = ANY($1::text[])", [timer_ids, batch_size], "$2")
+  end
 
-    case instance.repo.query(sql, [timer_ids, batch_size]) do
-      {:ok, %{rows: rows}} ->
-        {:ok,
-         Enum.map(rows, fn [id, run_id, lease_token] ->
-           %{id: id, run_id: run_id, lease_token: lease_token}
-         end)}
+  defp claim_and_fire(instance, extra_where, params, limit_parameter) do
+    instance.repo.transaction(fn ->
+      sql = """
+      SELECT t.id::text, t.run_id::text, r.lease_token
+      FROM continuum_timers AS t
+      JOIN continuum_runs AS r ON r.id = t.run_id
+      WHERE t.fired = false
+        AND t.fires_at <= now()
+        AND r.state = 'suspended'
+        AND r.lease_token IS NOT NULL
+        AND r.lease_expires_at > now()
+        #{extra_where}
+      ORDER BY t.fires_at
+      FOR UPDATE OF t, r SKIP LOCKED
+      LIMIT #{limit_parameter}
+      """
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+      %{rows: rows} = instance.repo.query!(sql, params)
+
+      rows
+      |> Enum.map(fn [id, run_id, lease_token] ->
+        %{id: id, run_id: run_id, lease_token: lease_token}
+      end)
+      |> Enum.filter(fn timer -> fire_claimed_timer(instance, timer) == :ok end)
+    end)
   end
 
   defp fire_cached_due(state) do
     due = due_entries(state.table)
     due_ids = Enum.map(due, fn {timer_id, _run_id, _fires_at_ms} -> timer_id end)
 
-    case claim_cached(state.instance, due_ids, state.batch_size) do
+    case claim_and_fire_cached(state.instance, due_ids, state.batch_size) do
       {:ok, timers} ->
         Enum.each(timers, fn timer ->
           :ets.delete(state.table, timer.id)
-          fire_timer(state.instance, timer)
+          announce_fired(state.instance, timer)
         end)
 
         pending_ids = purge_resolved_cached_timers(state, due_ids)
@@ -210,15 +190,9 @@ defmodule Continuum.Runtime.TimerWheel do
     state
   end
 
-  defp fire_timer(instance, timer) do
+  defp fire_claimed_timer(instance, timer) do
     :ok = Journal.Postgres.fire_timer!(instance, timer.run_id, timer.id, timer.lease_token)
-    Engine.wake(instance, timer.run_id)
-
-    Telemetry.execute([:continuum, :timer, :fired], %{}, %{
-      instance: instance.name,
-      run_id: timer.run_id,
-      timer_id: timer.id
-    })
+    :ok
   rescue
     error in Continuum.Runtime.JournalError ->
       # Expected races, not wheel bugs: the run was cancelled/completed or its
@@ -229,9 +203,21 @@ defmodule Continuum.Runtime.TimerWheel do
           "TimerWheel dropped fire for timer #{timer.id} (run #{timer.run_id}): " <>
             Exception.message(error)
         )
+
+        :skipped
       else
         reraise(error, __STACKTRACE__)
       end
+  end
+
+  defp announce_fired(instance, timer) do
+    Engine.wake(instance, timer.run_id)
+
+    Telemetry.execute([:continuum, :timer, :fired], %{}, %{
+      instance: instance.name,
+      run_id: timer.run_id,
+      timer_id: timer.id
+    })
   end
 
   defp terminal_or_fenced?(%Continuum.Runtime.JournalError{reason: reason} = error) do
