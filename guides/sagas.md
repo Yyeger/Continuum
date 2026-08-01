@@ -26,12 +26,15 @@ defmodule MyApp.OrderFlow do
         compensate: {Payments, :refund, [id]}
 
     case await signal(:fraud_review, timeout: hours(24)) do
-      {:ok, :approved} ->
+      :approved ->
         activity Fulfillment.ship(id)
 
-      {:ok, :rejected} ->
+      :rejected ->
         compensate(charge)        # run just this one
         {:error, :rejected}
+
+      :timeout ->
+        activity Fulfillment.ship(id)
     end
   rescue
     e ->

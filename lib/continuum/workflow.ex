@@ -11,9 +11,9 @@ defmodule Continuum.Workflow do
                                       retry: [max_attempts: 5, backoff: :exponential]
 
           case await signal(:fraud_review, timeout: hours(24)) do
-            {:ok, :approved} -> activity Fulfillment.ship(id)
-            {:ok, :rejected} -> {:error, :rejected}
-            :timeout         -> activity Fulfillment.ship(id)
+            :approved -> activity Fulfillment.ship(id)
+            :rejected -> {:error, :rejected}
+            :timeout  -> activity Fulfillment.ship(id)
           end
         end
       end
