@@ -7,6 +7,6 @@ defmodule Continuum.DependencyContractTest do
              |> Keyword.fetch!(:deps)
              |> Enum.find(&match?({:postgrex, _}, &1))
 
-    assert requirement =~ "0.19"
+    assert requirement =~ "0.22.3"
   end
 end

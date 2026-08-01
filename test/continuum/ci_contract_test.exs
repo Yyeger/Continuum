@@ -33,5 +33,7 @@ defmodule Continuum.CIContractTest do
     assert release =~ "artifact-metadata: write"
     assert release =~ "actions/attest@v4"
     assert release =~ "subject-path: artifacts/*.tar"
+    assert release =~ "sed -nE"
+    refute release =~ "mix run --no-start"
   end
 end

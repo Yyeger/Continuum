@@ -27,7 +27,7 @@ jobs:
       - run: mix deps.get
       - name: Verify tag matches package version
         if: github.ref_type == 'tag'
-        run: test "v$(mix run --no-start -e 'IO.write(Mix.Project.config()[:version])')" = "$GITHUB_REF_NAME"
+        run: test "v$(sed -nE 's/^[[:space:]]*@version "([^"]+)"/\1/p' mix.exs)" = "$GITHUB_REF_NAME"
       - name: Build source package
         run: mkdir -p artifacts && mix hex.build -o "artifacts/continuum-${GITHUB_REF_NAME}.tar"
       - name: Upload source package
