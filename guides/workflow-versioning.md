@@ -66,6 +66,17 @@ If `workflow_modules:` is omitted, Continuum falls back to
 `mix continuum.audit --repo MyApp.Repo` reports the registrar state and lists
 any loaded workflow hashes missing from the durable table.
 
+Before deploying, check the inverse requirement: every version referenced by a
+live run must exist in the release being deployed.
+
+```console
+mix continuum.versions.check --repo MyApp.Repo --strict
+```
+
+The task joins distinct non-terminal run versions with the entrypoints loaded
+in the current BEAM. It exits non-zero in strict mode if a version is absent;
+use `--format json` when a deployment controller needs structured output.
+
 ## Unknown Versions
 
 If a node claims a Postgres run whose `(workflow, version_hash)` is not loaded
