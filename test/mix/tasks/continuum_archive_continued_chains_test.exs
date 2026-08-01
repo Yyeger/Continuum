@@ -13,6 +13,13 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
     Timer
   }
 
+  defmodule ArchivedFlow do
+    @moduledoc false
+    use Continuum.Workflow, retention: :infinity
+
+    def run(input), do: input
+  end
+
   setup do
     previous_shell = Mix.shell()
     Mix.shell(Mix.Shell.Process)
@@ -79,6 +86,39 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
     assert only_run_ids(ActivityResult) == [run3]
   end
 
+  test "the original root handle reaches a live tail after archival" do
+    [root, middle, tail] = insert_chain(3, workflow: ArchivedFlow)
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^tail),
+      set: [state: "running", result: nil, completed_at: nil, retention_until: nil]
+    )
+
+    Mix.Task.rerun("continuum.archive_continued_chains", [
+      "--repo",
+      "Continuum.Test.Repo",
+      "--older-than",
+      "30d",
+      "--execute"
+    ])
+
+    refute Repo.get(Run, root)
+    refute Repo.get(Run, middle)
+    assert Repo.get(Run, tail)
+
+    instance = Continuum.Runtime.Instance.default()
+    assert tail == Continuum.Runtime.Journal.Postgres.resolve_chain_tip(instance, root)
+
+    assert :ok =
+             Continuum.signal(root, :go, :payload, journal: Continuum.Runtime.Journal.Postgres)
+
+    assert Repo.one!(from(s in Signal, where: s.run_id == ^tail, select: s.name)) == "go"
+    assert :ok = Continuum.cancel(root, journal: Continuum.Runtime.Journal.Postgres)
+
+    assert {:error, %{state: :cancelled}} =
+             Continuum.await(root, 500, journal: Continuum.Runtime.Journal.Postgres)
+  end
+
   test "live parent and future retention block deletion" do
     parent_id = insert_run(state: "running")
     [child1, _child2] = insert_chain(2, parent_run_id: parent_id)
@@ -108,11 +148,10 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
   end
 
   defp insert_chain(count, opts \\ []) do
-    root = Ecto.UUID.generate()
+    run_ids = Enum.map(1..count, fn _ -> Ecto.UUID.generate() end)
+    root = hd(run_ids)
 
-    1..count
-    |> Enum.reduce([], fn _index, acc ->
-      run_id = Ecto.UUID.generate()
+    Enum.reduce(run_ids, [], fn run_id, acc ->
       predecessor = List.last(acc)
 
       insert_run(
@@ -131,11 +170,20 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
     run_id = Keyword.get(opts, :id, Ecto.UUID.generate())
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
+    workflow = Keyword.get(opts, :workflow, __MODULE__)
+
+    version_hash =
+      if function_exported?(workflow, :__continuum_workflow__, 0) do
+        workflow.__continuum_workflow__().version_hash
+      else
+        "archive-test"
+      end
+
     %Run{}
     |> Ecto.Changeset.change(%{
       id: run_id,
-      workflow: inspect(__MODULE__),
-      version_hash: "archive-test",
+      workflow: inspect(workflow),
+      version_hash: version_hash,
       state: Keyword.get(opts, :state, "completed"),
       input: :erlang.term_to_binary(%{}),
       result: :erlang.term_to_binary({:continued, "next"}),

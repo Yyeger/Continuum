@@ -536,8 +536,21 @@ defmodule Continuum.Runtime.Journal.Postgres do
       SELECT c.id, ch.depth + 1
       FROM continuum_runs c
       JOIN chain ch ON c.continued_from_run_id = ch.id
+    ), candidates AS (
+      SELECT id, depth, 1 AS rooted FROM chain
+      UNION ALL
+      SELECT r.id, 0 AS depth, 0 AS rooted
+      FROM continuum_runs r
+      WHERE r.correlation_id = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM continuum_runs successor
+          WHERE successor.continued_from_run_id = r.id
+        )
     )
-    SELECT id::text FROM chain ORDER BY depth DESC LIMIT 1
+    SELECT id::text
+    FROM candidates
+    ORDER BY rooted DESC, depth DESC, id DESC
+    LIMIT 1
     """
 
     case repo().query(sql, [Ecto.UUID.dump!(run_id)]) do
@@ -1592,7 +1605,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp lock_signal_delivery_tip(run_id) do
     case repo().one(from(r in Run, where: r.id == ^run_id, lock: "FOR UPDATE")) do
       nil ->
-        repo().rollback(:not_found)
+        case follow_continued_chain(run_id) do
+          ^run_id -> repo().rollback(:not_found)
+          archived_tip -> lock_signal_delivery_tip(archived_tip)
+        end
 
       %Run{state: "completed", result: result} = run ->
         case decode_term(result) do

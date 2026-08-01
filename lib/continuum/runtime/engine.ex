@@ -212,6 +212,7 @@ defmodule Continuum.Runtime.Engine do
     deadline = System.monotonic_time(:millisecond) + timeout
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
+    run_id = resolve_chain_tip(instance, run_id, opts)
 
     await_chain(instance, run_id, deadline, journal)
   end
