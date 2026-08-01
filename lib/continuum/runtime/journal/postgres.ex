@@ -26,6 +26,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     ActivityTask,
     Event,
     Run,
+    RunIngressKey,
     Signal,
     Snapshot,
     Timer
@@ -64,13 +65,13 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case Keyword.get(opts, :lease) do
       nil ->
-        case repo().insert(changeset) do
-          {:ok, _} ->
-            :ok
-
-          {:error, changeset} ->
-            classify_start_error(changeset, metadata.workflow, namespace, idempotency_key)
-        end
+        insert_run(
+          changeset,
+          run_id,
+          metadata.workflow,
+          namespace,
+          idempotency_key
+        )
 
       lease_opts ->
         insert_run_with_lease(
@@ -81,6 +82,23 @@ defmodule Continuum.Runtime.Journal.Postgres do
           namespace,
           idempotency_key
         )
+    end
+  end
+
+  defp insert_run(changeset, run_id, workflow, namespace, idempotency_key) do
+    result =
+      repo().transaction(fn ->
+        reserve_ingress_key!(namespace, workflow, idempotency_key, run_id)
+
+        case repo().insert(changeset) do
+          {:ok, _run} -> :ok
+          {:error, reason} -> repo().rollback(reason)
+        end
+      end)
+
+    case result do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> classify_start_error(reason, workflow, namespace, idempotency_key)
     end
   end
 
@@ -101,6 +119,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     result =
       repo().transaction(fn ->
+        reserve_ingress_key!(namespace, workflow, idempotency_key, run_id)
+
         with {:ok, _run} <-
                repo().insert(Ecto.Changeset.change(changeset, %{lease_owner: owner})),
              {:ok, %{rows: [[token]]}} <-
@@ -134,6 +154,42 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       {:error, reason} ->
         classify_start_error(reason, workflow, namespace, idempotency_key)
+    end
+  end
+
+  defp reserve_ingress_key!(_namespace, _workflow, nil, _run_id), do: :ok
+
+  defp reserve_ingress_key!(namespace, workflow, idempotency_key, run_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    case repo().insert_all(
+           RunIngressKey,
+           [
+             %{
+               namespace: namespace,
+               workflow: workflow,
+               idempotency_key: idempotency_key,
+               run_id: run_id,
+               created_at: now
+             }
+           ],
+           on_conflict: :nothing
+         ) do
+      {1, _rows} ->
+        :ok
+
+      {0, _rows} ->
+        existing_id =
+          repo().one!(
+            from(k in RunIngressKey,
+              where:
+                k.namespace == ^namespace and k.workflow == ^workflow and
+                  k.idempotency_key == ^idempotency_key,
+              select: k.run_id
+            )
+          )
+
+        repo().rollback({:already_started, existing_id})
     end
   end
 

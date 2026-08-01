@@ -187,6 +187,21 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
             AND continued_from_run_id IS NULL
         \"\"\"
 
+        create table(:continuum_run_ingress_keys, primary_key: false) do
+          add :namespace, :text, null: false
+          add :workflow, :text, null: false
+          add :idempotency_key, :text, null: false
+          add :run_id, :uuid, null: false
+          add :created_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        execute \"\"\"
+        ALTER TABLE continuum_run_ingress_keys
+          ADD PRIMARY KEY (namespace, workflow, idempotency_key)
+        \"\"\"
+
+        create index(:continuum_run_ingress_keys, [:run_id])
+
         execute \"\"\"
         CREATE TABLE continuum_events (
           run_id uuid NOT NULL,
@@ -362,6 +377,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         drop_if_exists table(:continuum_timers)
         drop_if_exists table(:continuum_signals)
         drop_if_exists table(:continuum_events)
+        drop_if_exists table(:continuum_run_ingress_keys)
         drop_if_exists table(:continuum_runs)
         execute "DROP SEQUENCE IF EXISTS continuum_lease_token_seq"
       end
