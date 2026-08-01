@@ -238,6 +238,27 @@ defmodule Continuum.HealthTest do
     assert report.activities.dead_letter_count == 2
   end
 
+  test "cancelled tasks do not consume the dead-letter candidate limit" do
+    run_id = insert_run!([])
+
+    insert_task!(run_id,
+      state: "discarded",
+      error: :erlang.term_to_binary(:cancelled),
+      scheduled_at: timestamp(-120)
+    )
+
+    actionable =
+      insert_task!(run_id,
+        state: "discarded",
+        error: :erlang.term_to_binary(:exhausted),
+        scheduled_at: timestamp(-60)
+      )
+
+    assert {:ok, report} = Continuum.Health.report(repo: Repo, partition_months: 1, limit: 1)
+    assert report.activities.dead_letter_count == 1
+    assert [%{task_id: ^actionable}] = report.activities.dead_letter_candidates
+  end
+
   test "a degraded runtime makes the aggregate health report degraded" do
     heartbeater = Process.whereis(Continuum.Runtime.Lease.Heartbeater)
     original_lifecycle = :sys.get_state(heartbeater).lifecycle

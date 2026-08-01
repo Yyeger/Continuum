@@ -492,10 +492,11 @@ defmodule Continuum.Health do
         SELECT id::text, run_id::text, attempt, scheduled_at, error
         FROM continuum_activity_tasks
         WHERE state IN ('discarded', 'dead_lettered')
+          AND (error IS NULL OR error <> $1)
         ORDER BY scheduled_at
-        LIMIT $1
+        LIMIT $2
         """,
-        [candidate_query_limit(opts, reviews)]
+        [:erlang.term_to_binary(:cancelled), candidate_query_limit(opts, reviews)]
       )
       |> Enum.map(fn [task_id, run_id, attempt, scheduled_at, error] ->
         decoded_error = decode_term(error)
@@ -510,7 +511,6 @@ defmodule Continuum.Health do
           cancelled: decoded_error == :cancelled
         })
       end)
-      |> Enum.reject(& &1.cancelled)
       |> Enum.map(&Map.delete(&1, :cancelled))
       |> limit_findings(result_limit(opts))
 
