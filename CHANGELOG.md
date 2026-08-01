@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.6.4 — 2026-08-01 — "Audit completion"
+
+### Fixes
+
+- Made Postgrex a required dependency and aligned in-memory/Postgres run-id
+  conflicts and activity-error normalization.
+- Prevented reviewed or cancelled health rows from hiding actionable findings,
+  and scoped workflow-version health to each configured instance.
+- Serialized timer claims through firing, supported infinite await timeouts,
+  and validated invalid timeout values.
+- Corrected Observer lineage paths and bounded event inspection with keyset
+  pages, payload byte/display caps, collapsed payloads, and configurable
+  redaction.
+- Switched JSONB attribute equality to typed GIN-backed containment and run
+  listing to stable cursor pagination without full counts or offsets.
+- Scoped snapshot hints by instance/version and counted event notifications so
+  histories are loaded only when a snapshot threshold is due.
+- Hardened Oban instance identifiers with JSON-safe encoding and bounded safe
+  decoding for legacy jobs.
+- Corrected determinism and signal documentation with executable regression
+  examples, and synchronized unknown-version and local Postgres guidance.
+
+### Packaging and CI
+
+- Isolated database-polling workers in tests and promoted paranoid replay to a
+  main/scheduled CI gate.
+- Added unlocked-latest, minimum-direct-dependency, and downstream-consumer
+  compatibility lanes.
+- Narrowed Hex contents to runtime assets, checked generated-site links, and
+  added documentation, package, retired-dependency, and unused-lock gates.
+- Added explicit read-only workflow permissions, job timeouts, and tag-driven
+  signed build-provenance attestations for local Hex artifacts.
+
 ## v0.6.3 — 2026-08-01 — "Audit hardening"
 
 ### Fixes
