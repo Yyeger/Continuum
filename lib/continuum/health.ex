@@ -515,6 +515,30 @@ defmodule Continuum.Health do
       |> Enum.map(&Map.delete(&1, :cancelled))
       |> limit_findings(result_limit(opts))
 
+    heartbeats =
+      query_rows(
+        repo,
+        """
+        SELECT id::text, run_id::text, state, attempt, last_heartbeat_at, heartbeat_details
+        FROM continuum_activity_tasks
+        WHERE last_heartbeat_at IS NOT NULL
+        ORDER BY last_heartbeat_at DESC, id
+        LIMIT $1
+        """,
+        [result_limit(opts)]
+      )
+      |> Enum.map(fn [task_id, run_id, state, attempt, heartbeat_at, details] ->
+        %{
+          task_id: task_id,
+          run_id: run_id,
+          state: String.to_atom(state),
+          attempt: attempt,
+          heartbeat_at: heartbeat_at,
+          heartbeat_age_ms: age_ms(now, heartbeat_at),
+          details: decode_term(details)
+        }
+      end)
+
     %{
       pending_count: Map.get(counts, "available", 0),
       leased_count: Map.get(counts, "leased", 0),
@@ -542,6 +566,12 @@ defmodule Continuum.Health do
           "SELECT count(*)::bigint FROM continuum_activity_tasks WHERE state = 'dead_lettered'"
         ),
       dead_letter_candidates: dead_letters,
+      heartbeat_count:
+        scalar(
+          repo,
+          "SELECT count(*)::bigint FROM continuum_activity_tasks WHERE last_heartbeat_at IS NOT NULL"
+        ),
+      heartbeats: heartbeats,
       counts_by_state: counts
     }
   end

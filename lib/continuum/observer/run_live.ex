@@ -137,6 +137,26 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             </form>
           </section>
 
+          <section :if={@activities != []}>
+            <h2>Activities</h2>
+            <ol class="co-timeline co-activities">
+              <%= for activity <- @activities do %>
+                <li>
+                  <header>
+                    <code><%= activity.id %></code>
+                    <strong><%= activity.state %></strong>
+                    <span>attempt <%= activity.attempt %></span>
+                  </header>
+                  <div :if={activity.last_heartbeat_at}>
+                    <span>Last heartbeat</span>
+                    <.timestamp value={activity.last_heartbeat_at} />
+                    <.payload payload={activity.heartbeat_details} />
+                  </div>
+                </li>
+              <% end %>
+            </ol>
+          </section>
+
           <section>
             <h2>Event Timeline</h2>
             <ol class="co-timeline">
@@ -165,11 +185,14 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       instance = socket.assigns.instance
 
       with {:ok, run} <- Continuum.Observer.get_run(run_id, instance: instance),
-           {:ok, event_page} <- Continuum.Observer.list_events(run_id, instance: instance) do
+           {:ok, event_page} <- Continuum.Observer.list_events(run_id, instance: instance),
+           {:ok, activities} <-
+             Continuum.Observer.list_activity_tasks(run_id, instance: instance) do
         socket
         |> assign(:run, run)
         |> assign(:events, event_page.entries)
         |> assign(:event_cursor, event_page.next_cursor)
+        |> assign(:activities, activities)
         |> assign(:continues_to, Continuum.Observer.successor_run_id(run_id, instance: instance))
       else
         {:error, :not_found} ->
@@ -177,6 +200,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           |> assign(:run, nil)
           |> assign(:events, [])
           |> assign(:event_cursor, nil)
+          |> assign(:activities, [])
           |> assign(:continues_to, nil)
 
         {:error, reason} ->
@@ -184,6 +208,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
           |> assign(:run, nil)
           |> assign(:events, [])
           |> assign(:event_cursor, nil)
+          |> assign(:activities, [])
           |> assign(:continues_to, nil)
           |> put_flash(:error, "Observer query failed: #{inspect(reason)}")
       end

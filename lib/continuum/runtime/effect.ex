@@ -449,6 +449,7 @@ defmodule Continuum.Runtime.Effect do
       retry: Continuum.Activity.Policy.retry_options(policy),
       timeout_ms: policy.timeout_ms,
       idempotency_key: policy.idempotency_key,
+      context?: activity_context?(mod),
       command_id: command_id
     }
 
@@ -623,7 +624,7 @@ defmodule Continuum.Runtime.Effect do
     # as in production.
     outcome =
       try do
-        {:ok, apply(mod, fun, args)}
+        {:ok, apply(mod, fun, inline_activity_args(mod, args, ctx))}
       rescue
         exception ->
           {:error,
@@ -854,6 +855,7 @@ defmodule Continuum.Runtime.Effect do
           retry: Continuum.Activity.Policy.retry_options(policy),
           timeout_ms: policy.timeout_ms,
           idempotency_key: policy.idempotency_key,
+          context?: activity_context?(mod),
           command_id: item.command_id,
           parallel_batch?: true
         }
@@ -1012,6 +1014,7 @@ defmodule Continuum.Runtime.Effect do
       retry: Continuum.Activity.Policy.retry_options(policy),
       timeout_ms: policy.timeout_ms,
       idempotency_key: policy.idempotency_key,
+      context?: activity_context?(mod),
       command_id: command_id
     }
 
@@ -1043,7 +1046,7 @@ defmodule Continuum.Runtime.Effect do
 
     result =
       try do
-        {:ok, apply(mod, fun, args)}
+        {:ok, apply(mod, fun, inline_activity_args(mod, args, ctx))}
       rescue
         error -> {:error, error}
       catch
@@ -1861,6 +1864,14 @@ defmodule Continuum.Runtime.Effect do
     if function_exported?(mod, :__continuum_activity__, 0),
       do: mod.__continuum_activity__(),
       else: %{}
+  end
+
+  defp activity_context?(mod), do: Map.get(activity_metadata(mod), :context?, false)
+
+  defp inline_activity_args(mod, args, ctx) do
+    if activity_context?(mod),
+      do: [Continuum.Activity.Context.inline(ctx) | args],
+      else: args
   end
 
   defp duration_to_ms({:seconds, n}), do: n * 1_000

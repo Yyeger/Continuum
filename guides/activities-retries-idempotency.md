@@ -3,6 +3,37 @@
 Activities are where side effects belong. Workflow code decides what should
 happen; activity code talks to the outside world.
 
+## Progress and cooperative cancellation
+
+Long-running activities can opt into a runtime context:
+
+```elixir
+defmodule MyApp.Export do
+  use Continuum.Activity, context: true, timeout: {:hours, 1}
+
+  def run(context, records) do
+    records
+    |> Enum.chunk_every(100)
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {batch, index}, :ok ->
+      if Continuum.Activity.Context.cancelled?(context) do
+        {:halt, {:error, :cancelled}}
+      else
+        :ok = upload(batch)
+        :ok = Continuum.Activity.Context.heartbeat(context, %{completed_batches: index + 1})
+        {:cont, :ok}
+      end
+    end)
+  end
+end
+```
+
+Heartbeat details must be durable terms and may encode to at most 16 KiB. Only
+the latest details are retained. The update is fenced by task owner and attempt;
+it returns `{:error, :cancelled}` or `{:error, :lease_lost}` when progress is no
+longer authoritative. Health reports and Observer run details expose the latest
+heartbeat through the configured payload redactor.
+
 ```elixir
 defmodule MyApp.Activities.ChargeCard do
   use Continuum.Activity,

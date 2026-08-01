@@ -37,6 +37,7 @@ defmodule Continuum.Activity do
   @type duration :: {:seconds | :minutes | :hours, pos_integer()}
 
   @callback run(any()) :: {:ok, term()} | {:error, term()}
+  @callback run(Continuum.Activity.Context.t(), any()) :: {:ok, term()} | {:error, term()}
   @doc """
   Returns a stable idempotency key for a scheduled activity call, or `nil`.
 
@@ -45,11 +46,17 @@ defmodule Continuum.Activity do
   """
   @callback idempotency_key(any()) :: binary() | nil
 
-  @optional_callbacks [run: 1, idempotency_key: 1]
+  @optional_callbacks [run: 1, run: 2, idempotency_key: 1]
 
   defmacro __using__(opts) do
     retry = Keyword.get(opts, :retry, max_attempts: 1)
     timeout = Keyword.get(opts, :timeout, {:seconds, 30})
+    context? = Keyword.get(opts, :context, false)
+
+    unless is_boolean(context?) do
+      raise ArgumentError, "Continuum.Activity :context must be a boolean"
+    end
+
     policy = Continuum.Activity.Policy.normalize!(retry: retry, timeout: timeout)
 
     quote do
@@ -58,13 +65,15 @@ defmodule Continuum.Activity do
       @continuum_activity_retry unquote(retry)
       @continuum_activity_timeout unquote(timeout)
       @continuum_activity_policy unquote(Macro.escape(policy))
+      @continuum_activity_context unquote(context?)
 
       def __continuum_activity__ do
         %{
           module: __MODULE__,
           retry: @continuum_activity_retry,
           timeout: @continuum_activity_timeout,
-          policy: @continuum_activity_policy
+          policy: @continuum_activity_policy,
+          context?: @continuum_activity_context
         }
       end
     end

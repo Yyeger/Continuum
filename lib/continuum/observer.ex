@@ -16,7 +16,7 @@ defmodule Continuum.Observer do
   import Ecto.Query
 
   alias Continuum.Runtime.Instance
-  alias Continuum.Schema.{Event, Run}
+  alias Continuum.Schema.{ActivityTask, Event, Run}
 
   @runs_topic "continuum:runs"
   @default_event_limit 50
@@ -157,6 +157,42 @@ defmodule Continuum.Observer do
         if length(rows) > limit, do: page_rows |> List.last() |> Map.fetch!(:seq), else: nil
 
       {:ok, %{entries: entries, next_cursor: next_cursor}}
+    end
+  end
+
+  @doc """
+  Lists bounded activity task state and last-heartbeat progress for a run.
+
+  Heartbeat details pass through the same configurable Observer redactor as
+  event payloads.
+  """
+  @spec list_activity_tasks(binary(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list_activity_tasks(run_id, opts \\ []) do
+    with {:ok, instance} <- repo_instance(opts) do
+      tasks =
+        instance.repo.all(
+          from(t in ActivityTask,
+            where: t.run_id == ^run_id,
+            order_by: [asc: t.seq, asc: t.id],
+            limit: 100
+          )
+        )
+        |> Enum.map(fn task ->
+          decoded_task = decode_term(task.mfa)
+
+          %{
+            id: task.id,
+            run_id: task.run_id,
+            seq: task.seq,
+            state: String.to_atom(task.state),
+            attempt: task.attempt,
+            mfa: Map.get(decoded_task, :mfa, decoded_task),
+            last_heartbeat_at: task.last_heartbeat_at,
+            heartbeat_details: task.heartbeat_details |> decode_term() |> redact(opts)
+          }
+        end)
+
+      {:ok, tasks}
     end
   end
 

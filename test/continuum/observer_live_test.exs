@@ -105,6 +105,32 @@ defmodule Continuum.ObserverLiveTest do
     assert html =~ ~s(<details class="co-payload">)
   end
 
+  test "run detail renders latest activity progress" do
+    {:ok, run_id} = Continuum.Test.start_postgres(SideEffectFlow, %{value: 5})
+    assert {:ok, %{state: :completed}} = await_postgres(run_id)
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    Repo.insert!(%Continuum.Schema.ActivityTask{
+      id: Ecto.UUID.generate(),
+      run_id: run_id,
+      seq: 1,
+      mfa: :erlang.term_to_binary(%{mfa: {__MODULE__, :work, []}}),
+      attempt: 1,
+      state: "completed",
+      scheduled_at: now,
+      available_at: now,
+      last_heartbeat_at: now,
+      heartbeat_details: :erlang.term_to_binary(%{percent: 77})
+    })
+
+    {:ok, _view, html} = live(build_conn(), "/continuum/runs/#{run_id}")
+
+    assert html =~ "Activities"
+    assert html =~ "Last heartbeat"
+    assert html =~ "percent"
+    assert html =~ "77"
+  end
+
   test "run detail renders valid lineage links" do
     run_ids =
       for value <- 1..4 do

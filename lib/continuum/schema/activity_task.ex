@@ -17,6 +17,8 @@ defmodule Continuum.Schema.ActivityTask do
     field(:available_at, :utc_datetime_usec)
     field(:lease_owner, :string)
     field(:lease_expires_at, :utc_datetime_usec)
+    field(:last_heartbeat_at, :utc_datetime_usec)
+    field(:heartbeat_details, :binary)
     field(:result, :binary)
     field(:error, :binary)
   end

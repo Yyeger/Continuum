@@ -265,6 +265,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :available_at, :utc_datetime_usec, null: false, default: fragment("now()")
           add :lease_owner, :text
           add :lease_expires_at, :utc_datetime_usec
+          add :last_heartbeat_at, :utc_datetime_usec
+          add :heartbeat_details, :bytea
           add :result, :bytea
           add :error, :bytea
         end

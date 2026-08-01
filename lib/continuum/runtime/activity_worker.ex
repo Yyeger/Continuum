@@ -4,10 +4,114 @@ defmodule Continuum.Runtime.ActivityWorker do
   require Logger
 
   alias Continuum.{DurableTerm, Runtime.Engine, Runtime.Journal, Telemetry}
+  alias Continuum.Activity.Context, as: ActivityContext
 
   @max_error_bytes 65_536
   @max_error_text_bytes 4_096
   @max_stacktrace_entries 20
+  @max_heartbeat_bytes 16_384
+
+  @doc false
+  def record_heartbeat(%ActivityContext{} = context, details) do
+    DurableTerm.validate!(details, :activity_heartbeat)
+    encoded = :erlang.term_to_binary(details)
+
+    if byte_size(encoded) > @max_heartbeat_bytes do
+      raise ArgumentError,
+            "activity heartbeat details exceed #{@max_heartbeat_bytes} encoded bytes"
+    end
+
+    sql = """
+    UPDATE continuum_activity_tasks AS task
+    SET last_heartbeat_at = clock_timestamp(),
+        heartbeat_details = $5
+    FROM continuum_runs AS run
+    WHERE task.id = $1::text::uuid
+      AND task.run_id = $2::text::uuid
+      AND task.state = 'leased'
+      AND task.lease_owner = $3
+      AND task.attempt = $4
+      AND run.id = task.run_id
+      AND run.state IN ('running', 'suspended')
+      AND run.cancel_requested_at IS NULL
+    """
+
+    case context.instance.repo.query(sql, [
+           context.task_id,
+           context.run_id,
+           context.lease_owner,
+           context.attempt,
+           encoded
+         ]) do
+      {:ok, %{num_rows: 1}} ->
+        Telemetry.execute(
+          [:continuum, :activity, :heartbeat],
+          %{encoded_bytes: byte_size(encoded)},
+          %{
+            run_id: context.run_id,
+            task_id: context.task_id,
+            attempt: context.attempt
+          }
+        )
+
+        :ok
+
+      {:ok, %{num_rows: 0}} ->
+        case activity_context_state(context) do
+          :cancelled -> {:error, :cancelled}
+          _other -> {:error, :lease_lost}
+        end
+
+      {:error, reason} ->
+        raise "Continuum activity heartbeat persistence failed: #{inspect(reason)}"
+    end
+  end
+
+  @doc false
+  def activity_cancelled?(%ActivityContext{} = context) do
+    activity_context_state(context) != :active
+  rescue
+    error ->
+      Logger.warning(
+        "Continuum activity cancellation check failed for #{context.task_id}: " <>
+          Exception.message(error)
+      )
+
+      true
+  end
+
+  defp activity_context_state(context) do
+    sql = """
+    SELECT task.state, task.lease_owner, task.attempt,
+           run.state, run.cancel_requested_at
+    FROM continuum_activity_tasks AS task
+    LEFT JOIN continuum_runs AS run ON run.id = task.run_id
+    WHERE task.id = $1::text::uuid
+      AND task.run_id = $2::text::uuid
+    """
+
+    case context.instance.repo.query(sql, [context.task_id, context.run_id]) do
+      {:ok,
+       %{
+         rows: [
+           ["leased", owner, attempt, run_state, cancel_requested_at]
+         ]
+       }}
+      when owner == context.lease_owner and attempt == context.attempt ->
+        if run_state in ["running", "suspended"] and is_nil(cancel_requested_at),
+          do: :active,
+          else: :cancelled
+
+      {:ok, %{rows: [_row]}} ->
+        :lease_lost
+
+      {:ok, %{rows: []}} ->
+        :lease_lost
+
+      {:error, reason} ->
+        raise "Continuum activity cancellation check failed: #{inspect(reason)}"
+    end
+  end
 
   def execute(task) do
     started_at = System.monotonic_time(:millisecond)
@@ -270,9 +374,12 @@ defmodule Continuum.Runtime.ActivityWorker do
     end
   end
 
-  defp run_activity(%{mfa: {mod, fun, args}, timeout_ms: timeout_ms}) do
+  defp run_activity(%{mfa: {mod, fun, args}, timeout_ms: timeout_ms} = task) do
     parent = self()
     ref = make_ref()
+
+    args =
+      if Map.get(task, :context?, false), do: [ActivityContext.from_task(task) | args], else: args
 
     {pid, monitor_ref} =
       spawn_monitor(fn ->

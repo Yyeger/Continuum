@@ -178,6 +178,42 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule ProgressActivity do
+    use Continuum.Activity, retry: [max_attempts: 1], context: true
+
+    def run(context, value) do
+      :ok = Continuum.Activity.Context.heartbeat(context, %{phase: "upload", percent: 50})
+      {:ok, value * 2}
+    end
+  end
+
+  defmodule ProgressFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input), do: activity(ProgressActivity.run(input.value))
+  end
+
+  defmodule CancelAwareActivity do
+    use Continuum.Activity, retry: [max_attempts: 1], context: true
+
+    def run(context, probe) do
+      Continuum.Test.ImpureProbe.notify_with_self(probe, :cancel_aware_started)
+
+      receive do
+        :check_cancellation ->
+          cancelled? = Continuum.Activity.Context.cancelled?(context)
+          Continuum.Test.ImpureProbe.notify(probe, {:activity_cancelled, cancelled?})
+          {:ok, :stopped}
+      end
+    end
+  end
+
+  defmodule CancelAwareFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input), do: activity(CancelAwareActivity.run(input.probe))
+  end
+
   defmodule LeaseRaceActivity do
     use Continuum.Activity, retry: [max_attempts: 2]
 
@@ -919,6 +955,88 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
 
     assert Repo.one!(ActivityTask).state == "completed"
+  end
+
+  test "context activities persist bounded progress for health and Observer" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(ProgressFlow, %{value: 21}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "progress-worker",
+               30
+             )
+
+    context = Continuum.Activity.Context.from_task(claimed)
+
+    assert_raise Continuum.DurableTermError, fn ->
+      Continuum.Activity.Context.heartbeat(context, %{owner: self()})
+    end
+
+    assert_raise ArgumentError, ~r/exceed/, fn ->
+      Continuum.Activity.Context.heartbeat(context, String.duplicate("x", 17_000))
+    end
+
+    assert :ok = Continuum.Runtime.ActivityWorker.execute(claimed)
+
+    assert {:ok, %{state: :completed, result: {:ok, 42}}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
+
+    persisted = Repo.one!(ActivityTask)
+    assert %DateTime{} = persisted.last_heartbeat_at
+    assert decode_term(persisted.heartbeat_details) == %{phase: "upload", percent: 50}
+
+    assert {:ok, [%{heartbeat_details: %{phase: "upload", percent: 50}}]} =
+             Continuum.Observer.list_activity_tasks(run_id)
+
+    assert {:ok, health} = Continuum.Health.report()
+
+    assert Enum.any?(health.activities.heartbeats, fn heartbeat ->
+             heartbeat.task_id == task.id and heartbeat.details.percent == 50
+           end)
+  end
+
+  test "context activities retain synchronous test parity" do
+    {:ok, run_id} = Continuum.Test.start_synchronous(ProgressFlow, %{value: 4})
+
+    assert {:ok, %{state: :completed, result: {:ok, 8}}} = Continuum.await(run_id)
+  end
+
+  test "context activities observe workflow cancellation cooperatively" do
+    probe = Continuum.Test.ImpureProbe.register()
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(CancelAwareFlow, %{probe: probe}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    task = Repo.one!(ActivityTask)
+
+    assert {:ok, claimed} =
+             Dispatcher.claim_one(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               task.attempt,
+               "cancel-aware-worker",
+               30
+             )
+
+    worker = Task.async(fn -> Continuum.Runtime.ActivityWorker.execute(claimed) end)
+    assert_receive {:cancel_aware_started, activity_pid}
+
+    assert :ok = Continuum.cancel(run_id, journal: Postgres)
+    send(activity_pid, :check_cancellation)
+
+    assert_receive {:activity_cancelled, true}
+    assert :ok = Task.await(worker)
+
+    assert {:error, %{state: :cancelled}} =
+             Continuum.await(run_id, 1_000, journal: Postgres)
   end
 
   test "fenced-out completion releases the task and the run still makes progress" do
