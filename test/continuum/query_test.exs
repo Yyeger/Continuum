@@ -59,6 +59,29 @@ defmodule Continuum.QueryTest do
     assert [%{run_id: ^run_id}] = observer_page.entries
   end
 
+  test "attribute equality keeps JSON types and uses the GIN containment index" do
+    number_id = insert_run!(%{}, %{"customer_tier" => 4})
+    string_id = insert_run!(%{}, %{"customer_tier" => "4"})
+
+    assert {:ok, %{entries: [%{run_id: ^number_id}]}} =
+             Continuum.query(where: [{:eq, [:attributes, :customer_tier], 4}])
+
+    assert {:ok, %{entries: [%{run_id: ^string_id}]}} =
+             Continuum.query(where: [{:eq, [:attributes, :customer_tier], "4"}])
+
+    Repo.query!("SET LOCAL enable_seqscan = off")
+
+    plan =
+      Repo.query!(
+        "EXPLAIN (COSTS OFF) SELECT id FROM continuum_runs WHERE attributes @> $1::jsonb",
+        [Jason.encode!(%{"customer_tier" => 4})]
+      ).rows
+      |> List.flatten()
+      |> Enum.join("\n")
+
+    assert plan =~ "continuum_runs_attributes_gin_idx"
+  end
+
   test "set_attributes merges metadata without journaling" do
     run_id = insert_run!(%{value: 5}, %{region: "eu"})
 

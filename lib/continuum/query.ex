@@ -172,15 +172,23 @@ defmodule Continuum.Query do
 
   defp apply_condition(query, {op, [:attributes, key], value}) when op in [:eq, :neq] do
     key = to_string(key)
-    value = attribute_value(value)
 
-    query =
-      case op do
-        :eq -> from(r in query, where: fragment("? ->> ? = ?", r.attributes, ^key, ^value))
-        :neq -> from(r in query, where: fragment("? ->> ? != ?", r.attributes, ^key, ^value))
-      end
+    with {:ok, containment} <- normalize_attributes(%{key => value}) do
+      query =
+        case op do
+          :eq ->
+            from(r in query, where: fragment("? @> ?", r.attributes, type(^containment, :map)))
 
-    {:ok, query}
+          :neq ->
+            from(r in query,
+              where:
+                fragment("(? ->> ?) IS NOT NULL", r.attributes, ^key) and
+                  not fragment("? @> ?", r.attributes, type(^containment, :map))
+            )
+        end
+
+      {:ok, query}
+    end
   end
 
   defp apply_condition(query, {:in, field, values}) when is_list(values) do
@@ -300,10 +308,6 @@ defmodule Continuum.Query do
       {:error, reason} -> {:error, {:invalid_json, reason}}
     end
   end
-
-  defp attribute_value(value) when is_binary(value), do: value
-  defp attribute_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp attribute_value(value), do: to_string(value)
 
   defp decode_term(nil), do: nil
 
