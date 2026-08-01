@@ -33,7 +33,7 @@ defmodule Continuum.MixProject do
   defp deps do
     [
       {:ecto_sql, "~> 3.12"},
-      {:postgrex, "~> 0.19", optional: true},
+      {:postgrex, "~> 0.19"},
       {:jason, "~> 1.4"},
       {:telemetry, "~> 1.2"},
       {:phoenix_pubsub, "~> 2.1"},
