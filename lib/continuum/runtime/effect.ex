@@ -625,7 +625,11 @@ defmodule Continuum.Runtime.Effect do
       try do
         {:ok, apply(mod, fun, args)}
       rescue
-        exception -> {:error, exception}
+        exception ->
+          {:error,
+           Continuum.Runtime.ActivityWorker.normalize_error(
+             {:activity_exception, exception, __STACKTRACE__}
+           )}
       catch
         # Inline activities execute in the workflow process; engine control
         # throws from a nested effect must keep unwinding to the engine, not
@@ -637,7 +641,10 @@ defmodule Continuum.Runtime.Effect do
           throw(token)
 
         kind, reason ->
-          {:error, {kind, reason}}
+          {:error,
+           Continuum.Runtime.ActivityWorker.normalize_error(
+             {:activity_catch, kind, reason, __STACKTRACE__}
+           )}
       end
 
     case outcome do

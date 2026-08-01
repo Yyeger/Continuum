@@ -16,6 +16,16 @@ defmodule Continuum.Runtime.InMemoryActivityErrorTest do
     def run(_input), do: throw(:ball)
   end
 
+  defmodule UnsafeError do
+    defexception [:owner, message: "unsafe activity failure"]
+  end
+
+  defmodule UnsafeActivity do
+    def run(:raise_pid), do: raise(%UnsafeError{owner: self()})
+    def run(:throw_pid), do: throw(self())
+    def run(:oversized), do: throw(String.duplicate("x", 70_000))
+  end
+
   defmodule ReserveActivity do
     def reserve(x), do: {:ok, {:reserved, x}}
     def unreserve(x), do: {:unreserved, x}
@@ -38,6 +48,12 @@ defmodule Continuum.Runtime.InMemoryActivityErrorTest do
     def run(input) do
       activity(ThrowingActivity.run(input))
     end
+  end
+
+  defmodule UnsafeErrorFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input), do: activity(UnsafeActivity.run(input.mode))
   end
 
   defmodule SagaErrorFlow do
@@ -81,6 +97,21 @@ defmodule Continuum.Runtime.InMemoryActivityErrorTest do
 
     assert {:ok, %{state: :completed, result: {:error, {:throw, :ball}}}} =
              Continuum.await(run_id, 1_000)
+  end
+
+  test "non-durable and oversized errors use the production worker normalization" do
+    for {mode, kind} <- [raise_pid: :error, throw_pid: :throw, oversized: :throw] do
+      {:ok, run_id} = Continuum.Test.start_synchronous(UnsafeErrorFlow, %{mode: mode})
+
+      assert {:ok,
+              %{
+                state: :completed,
+                result: {:error, %Continuum.ActivityError{kind: ^kind} = error}
+              }} = Continuum.await(run_id, 1_000)
+
+      assert :ok = Continuum.DurableTerm.validate(error, :activity_error)
+      assert byte_size(:erlang.term_to_binary(error)) < 65_536
+    end
   end
 
   test "the canonical saga path (payment fails -> compensate_all) works inline" do

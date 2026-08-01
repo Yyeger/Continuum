@@ -54,6 +54,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         correlation_id: run_id,
         trace_context: Keyword.get(opts, :trace_context)
       })
+      |> Ecto.Changeset.unique_constraint(:id, name: :continuum_runs_pkey)
 
     case Keyword.get(opts, :lease) do
       nil ->

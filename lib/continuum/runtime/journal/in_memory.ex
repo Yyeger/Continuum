@@ -127,21 +127,27 @@ defmodule Continuum.Runtime.Journal.InMemory do
 
   @impl true
   def handle_call({:start_run, instance, run_id, workflow, input}, _from, state) do
-    run = %{
-      run_id: run_id,
-      workflow: workflow,
-      version_hash: version_hash(workflow),
-      input: input,
-      events: [],
-      snapshots: [],
-      signal_buffer: %{},
-      state: :running,
-      result: nil,
-      error: nil,
-      error_stacktrace: nil
-    }
+    case get_run_state(state, instance.name, run_id) do
+      nil ->
+        run = %{
+          run_id: run_id,
+          workflow: workflow,
+          version_hash: version_hash(workflow),
+          input: input,
+          events: [],
+          snapshots: [],
+          signal_buffer: %{},
+          state: :running,
+          result: nil,
+          error: nil,
+          error_stacktrace: nil
+        }
 
-    {:reply, :ok, put_run(state, instance.name, run_id, run)}
+        {:reply, :ok, put_run(state, instance.name, run_id, run)}
+
+      _run ->
+        {:reply, {:error, :already_exists}, state}
+    end
   end
 
   def handle_call({:append, instance, run_id, event}, _from, state) do
