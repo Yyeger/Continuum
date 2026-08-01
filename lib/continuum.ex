@@ -15,6 +15,7 @@ defmodule Continuum do
     * `children/1` — Postgres runtime child specs for host supervision trees
     * `drain/1`, `readiness/1`, `ready?/1`, and `drained?/1` — deployment lifecycle
     * `start/3` — start a new workflow run
+    * `schedule_at/4` — durably schedule a one-shot workflow run
     * `signal/3` — deliver an external signal to a running workflow
     * `cancel/2` — cancel a running workflow
     * `await/2` — block until a workflow completes (test/synchronous use)
@@ -63,7 +64,8 @@ defmodule Continuum do
   Child-specific options may be passed with `:workflow_modules`,
   `:activity_executor`, `:activity_max_concurrency`, `:heartbeater`, `:run_supervisor`,
   `:activity_supervisor`, `:recovery`, `:dispatcher`, `:activity_dispatcher`,
-  `:timer_wheel`, `:signal_router`, `:snapshotter`, and `:partition_maintainer`.
+  `:timer_wheel`, `:schedule_runner`, `:signal_router`, `:snapshotter`, and
+  `:partition_maintainer`.
   Partition maintenance is disabled unless `:partition_maintainer` is `true`
   or an option list because it requires runtime DDL privileges.
   Passing `false` for a child omits it from the returned list.
@@ -139,6 +141,7 @@ defmodule Continuum do
           ),
           child(Continuum.Runtime.Snapshotter, Keyword.get(opts, :snapshotter, []), instance),
           child(Continuum.Runtime.TimerWheel, Keyword.get(opts, :timer_wheel, []), instance),
+          schedule_runner_child(opts, instance),
           child(Continuum.Runtime.SignalRouter, Keyword.get(opts, :signal_router, []), instance),
           partition_maintainer_child(opts, instance),
           child(Continuum.VersionRegistry, Keyword.get(opts, :version_registry, []), instance)
@@ -231,6 +234,19 @@ defmodule Continuum do
       :error ->
         {:error, :idempotency_key_required}
     end
+  end
+
+  @doc """
+  Durably schedules one workflow run at a UTC `DateTime`.
+
+  The schedule preallocates a stable run ID and is safe to retry across runner
+  crashes. Use `Continuum.Schedules.get/2` to inspect the resulting run ID and
+  `Continuum.Schedules.cancel/2` before dispatch begins.
+  """
+  @spec schedule_at(workflow_module(), input(), DateTime.t(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def schedule_at(workflow_module, input, scheduled_at, opts \\ []) do
+    Continuum.Schedules.schedule_at(workflow_module, input, scheduled_at, opts)
   end
 
   @doc """
@@ -528,6 +544,16 @@ defmodule Continuum do
       false -> nil
       value -> child(Continuum.Runtime.PartitionMaintainer, value, instance)
     end
+  end
+
+  defp schedule_runner_child(_opts, %{repo: nil}), do: nil
+
+  defp schedule_runner_child(opts, instance) do
+    child(
+      Continuum.Runtime.ScheduleRunner,
+      Keyword.get(opts, :schedule_runner, []),
+      instance
+    )
   end
 
   defp configured_drain_timeout(opts) do

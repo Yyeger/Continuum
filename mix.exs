@@ -79,6 +79,7 @@ defmodule Continuum.MixProject do
         "guides/idempotency.md",
         "guides/idempotent-ingress.md",
         "guides/retention-pruning.md",
+        "guides/schedules.md",
         "guides/multi-instance.md",
         "guides/clustering.md",
         "guides/namespaces.md",

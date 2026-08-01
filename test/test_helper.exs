@@ -38,6 +38,7 @@ test_runtime_children =
     activity_dispatcher: false,
     snapshotter: false,
     timer_wheel: false,
+    schedule_runner: false,
     signal_router: false,
     version_registry: false
   )
