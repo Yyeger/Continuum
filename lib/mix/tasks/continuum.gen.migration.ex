@@ -223,7 +223,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :id, :uuid, primary_key: true
           add :run_id, :uuid, null: false
           add :lineage_id, :uuid
-          add :parent_task_id, :uuid
+          add :parent_task_id,
+              references(:continuum_activity_tasks, type: :uuid, on_delete: :nilify_all)
           add :seq, :bigint, null: false
           add :mfa, :bytea, null: false
           add :attempt, :integer, null: false, default: 1

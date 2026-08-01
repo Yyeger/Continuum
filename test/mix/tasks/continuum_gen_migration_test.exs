@@ -39,7 +39,11 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "create table(:continuum_health_reviews"
       assert source =~ "PRIMARY KEY (finding_type, subject_id, fingerprint)"
       assert source =~ "add :lineage_id, :uuid"
-      assert source =~ "add :parent_task_id, :uuid"
+      assert source =~ "add :parent_task_id,"
+
+      assert source =~
+               "references(:continuum_activity_tasks, type: :uuid, on_delete: :nilify_all)"
+
       assert source =~ "create table(:continuum_activity_attempts"
       assert source =~ "create table(:continuum_activity_operations"
     end)
@@ -68,6 +72,8 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
       assert source =~ "PARTITION OF continuum_events DEFAULT"
       assert source =~ "add_if_not_exists :lineage_id"
       assert source =~ "add_if_not_exists :parent_task_id"
+      assert source =~ "references(:continuum_activity_tasks,"
+      assert source =~ "on_delete: :nilify_all"
       assert source =~ "create_if_not_exists table(:continuum_activity_attempts"
       assert source =~ "create_if_not_exists table(:continuum_activity_operations"
     end)
