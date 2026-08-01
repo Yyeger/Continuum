@@ -20,11 +20,13 @@ defmodule Continuum.Runtime.Effect do
   """
 
   alias Continuum.{Runtime.Context, Telemetry}
+  require Logger
 
   @type effect ::
           {:activity, {module(), atom(), list()}, keyword()}
           | {:await_signal, atom(), keyword()}
           | {:timer, pos_integer()}
+          | {:workflow_log, Logger.level(), binary()}
           | {:side_effect, atom()}
 
   @suspend_token :continuum_suspend
@@ -136,6 +138,11 @@ defmodule Continuum.Runtime.Effect do
       end
 
     maybe_wrap_activity(raw, effect, opts, command_id)
+  end
+
+  def run({:workflow_log, level, message} = effect, {:command, command_base}) do
+    validate_log!(level, message)
+    advance(effect, fn -> :ok end, fn _ctx -> command_base end)
   end
 
   def run(effect, {:command, command_base}) do
@@ -411,6 +418,8 @@ defmodule Continuum.Runtime.Effect do
     suspend!(:awaiting_timer)
   end
 
+  defp compute_live({:workflow_log, _level, _message}), do: :ok
+
   defp journal_live!(ctx, effect, result, command_id) do
     event = encode_event(effect, result, ctx.cursor, command_id)
 
@@ -672,6 +681,25 @@ defmodule Continuum.Runtime.Effect do
 
         {:error, error}
     end
+  end
+
+  defp live_tail!(ctx, {:workflow_log, level, message} = effect, _live_compute, command_id) do
+    journal_live!(ctx, effect, :ok, command_id)
+
+    Logger.log(level, message,
+      continuum_run_id: ctx.run_id,
+      continuum_workflow: ctx.workflow_module,
+      continuum_replay: false
+    )
+
+    Telemetry.execute([:continuum, :workflow, :log], %{count: 1}, %{
+      run_id: ctx.run_id,
+      workflow: ctx.workflow_module,
+      level: level,
+      message: message
+    })
+
+    :ok
   end
 
   defp live_tail!(ctx, effect, live_compute, command_id) do
@@ -1457,6 +1485,16 @@ defmodule Continuum.Runtime.Effect do
     %{type: :side_effect, kind: kind, payload: result, command_id: command_id, seq: seq}
   end
 
+  defp encode_event({:workflow_log, level, message}, _result, seq, command_id) do
+    %{
+      type: :workflow_log,
+      level: level,
+      message: message,
+      command_id: command_id,
+      seq: seq
+    }
+  end
+
   defp encode_event({:activity, {mod, fun, args}, _opts}, result, seq, command_id) do
     %{
       type: :activity_completed,
@@ -1504,6 +1542,14 @@ defmodule Continuum.Runtime.Effect do
        )
        when is_atom(ek),
        do: {:ok, payload}
+
+  defp match_event(
+         _ctx,
+         %{type: :workflow_log, level: level, message: message},
+         {:workflow_log, level, message},
+         _command_id
+       ),
+       do: {:ok, :ok}
 
   defp match_event(
          ctx,
@@ -1762,6 +1808,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp effect_shape({:side_effect, kind}), do: {:side_effect, kind}
+  defp effect_shape({:workflow_log, level, message}), do: {:workflow_log, {level, message}}
 
   defp effect_shape({:activity, {mod, fun, args}, _opts}) do
     {:activity, {mod, fun, length(args || [])}}
@@ -1804,6 +1851,22 @@ defmodule Continuum.Runtime.Effect do
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  defp validate_log!(level, message) do
+    unless level in [:debug, :info, :notice, :warning, :error, :critical, :alert, :emergency] do
+      raise ArgumentError, "invalid workflow log level: #{inspect(level)}"
+    end
+
+    unless is_binary(message) do
+      raise ArgumentError, "workflow log message must be a binary, got: #{inspect(message)}"
+    end
+
+    if byte_size(message) > 16_384 do
+      raise ArgumentError, "workflow log message exceeds 16 KiB"
+    end
+
+    :ok
   end
 
   defp activity_policy(mod, args, opts) do

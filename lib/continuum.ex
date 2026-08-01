@@ -459,6 +459,32 @@ defmodule Continuum do
   end
 
   @doc """
+  Emit one replay-safe workflow log breadcrumb.
+
+  The log event is journaled at its command site. Logger and telemetry emit
+  only when the event is first appended at the live tail, never while replaying
+  committed history. Messages must be binaries of at most 16 KiB.
+
+      Continuum.log(:info, "payment accepted")
+  """
+  defmacro log(level, message) do
+    command = command_base(__CALLER__, :workflow_log)
+
+    quote do
+      Continuum.__log__(
+        unquote(level),
+        unquote(message),
+        unquote(Macro.escape(command))
+      )
+    end
+  end
+
+  @doc false
+  def __log__(level, message, command_base) do
+    Effect.run({:workflow_log, level, message}, {:command, command_base})
+  end
+
+  @doc """
   Recover an activity's raw return value from a compensation handle.
 
   When an `activity/2` call uses `compensate:`, a success is returned as

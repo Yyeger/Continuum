@@ -200,7 +200,7 @@ defmodule Continuum.AstCheckTest do
       hints = AstCheck.forbidden_calls() |> Map.values() |> Enum.join("\n")
 
       refute hints =~ "Continuum.activity"
-      refute hints =~ "Continuum.log"
+      assert hints =~ "Continuum.log(:info, message)"
       refute hints =~ "Continuum.signal_child"
       refute hints =~ "planned post"
       refute hints =~ "Continuum.workflow_info"
@@ -230,7 +230,7 @@ defmodule Continuum.AstCheckTest do
           uuid = Continuum.uuid4()
           random = Continuum.random()
           timer(1)
-          logged = activity(Continuum.RemediationActivity#{suffix}.log(input))
+          logged = Continuum.log(:info, inspect(input))
           child = await(child(Continuum.RemediationChild#{suffix}.run(input)))
           {now, today, uuid, random, logged, child}
         end

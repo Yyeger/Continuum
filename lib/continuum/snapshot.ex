@@ -129,6 +129,10 @@ defmodule Continuum.Snapshot do
     one_step(event, :side_effect, kind, payload)
   end
 
+  defp step_from(%{type: :workflow_log, level: level, message: message} = event, _rest) do
+    one_step(event, :workflow_log, {level, message}, :ok)
+  end
+
   defp step_from(%{type: :activity_completed, mfa: mfa, payload: payload} = event, _rest) do
     one_step(event, :activity, activity_shape(mfa), payload)
   end

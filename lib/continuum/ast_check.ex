@@ -112,9 +112,9 @@ defmodule Continuum.AstCheck do
       "cancel root workflows outside workflow code or use activity(MyActivities.cancel(run_id))",
     {Continuum, :await} =>
       "await/2 polls workflow state; use the workflow DSL's await signal(...) form",
-    {IO, :puts} => "use activity(MyActivities.log(message))",
-    {IO, :inspect} => "use activity(MyActivities.log(message))",
-    {IO, :write} => "use activity(MyActivities.log(message))",
+    {IO, :puts} => "use Continuum.log(:info, message)",
+    {IO, :inspect} => "use Continuum.log(:debug, inspect(value))",
+    {IO, :write} => "use Continuum.log(:info, message)",
     {File, :read} => "use activity(MyActivities.read(path))",
     {File, :read!} => "use activity(MyActivities.read(path))",
     {File, :write} => "use activity(MyActivities.write(path, contents))",
