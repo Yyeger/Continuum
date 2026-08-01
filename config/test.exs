@@ -8,6 +8,7 @@ config :continuum,
   activity_worker: false,
   timer_wheel: false,
   signal_router: [listen?: false],
+  snapshotter_dispatch: :sync,
   recovery: false,
   determinism_violations: :error
 

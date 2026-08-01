@@ -55,6 +55,11 @@ defmodule Continuum.Runtime.SnapshotterTest do
     end
   end
 
+  setup do
+    start_supervised!({Snapshotter, instance: Instance.default()})
+    :ok
+  end
+
   test "writes a compacted snapshot and replays from it" do
     steps = [1, 2, 3, 4, 5, 6]
 

@@ -22,7 +22,12 @@ defmodule Continuum.Runtime.Snapshotter do
         :ok
 
       pid ->
-        GenServer.cast(pid, {:maybe_snapshot, run_id, lease_token, journal})
+        message = {:maybe_snapshot, run_id, lease_token, journal}
+
+        case Application.get_env(:continuum, :snapshotter_dispatch, :async) do
+          :sync -> GenServer.call(pid, message)
+          :async -> GenServer.cast(pid, message)
+        end
     end
   end
 
@@ -41,13 +46,22 @@ defmodule Continuum.Runtime.Snapshotter do
 
   @impl true
   def handle_cast({:maybe_snapshot, run_id, lease_token, journal}, state) do
+    {:noreply, handle_maybe_snapshot(state, run_id, lease_token, journal)}
+  end
+
+  @impl true
+  def handle_call({:maybe_snapshot, run_id, lease_token, journal}, _from, state) do
+    {:reply, :ok, handle_maybe_snapshot(state, run_id, lease_token, journal)}
+  end
+
+  defp handle_maybe_snapshot(state, run_id, lease_token, journal) do
     # The journal adapter that wrote the run's events identifies itself; the
     # snapshot must land in the same journal regardless of the instance-level
     # default (an InMemory-default instance can still own durable runs started
     # with `journal: Postgres`).
     config = if journal, do: %{state.config | journal: journal}, else: state.config
 
-    {:noreply, maybe_take_counted_snapshot(state, run_id, lease_token, config)}
+    maybe_take_counted_snapshot(state, run_id, lease_token, config)
   end
 
   defp maybe_take_counted_snapshot(state, run_id, lease_token, config) do

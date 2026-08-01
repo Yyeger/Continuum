@@ -31,7 +31,18 @@ end
 # Continuum is a dependency of this test host, so its application starts before
 # the host Repo. Mirror the documented integration by supervising the default
 # Postgres runtime only after the Repo is alive.
-case Supervisor.start_link(Continuum.children(),
+test_runtime_children =
+  Continuum.children(
+    recovery: false,
+    dispatcher: false,
+    activity_dispatcher: false,
+    snapshotter: false,
+    timer_wheel: false,
+    signal_router: false,
+    version_registry: false
+  )
+
+case Supervisor.start_link(test_runtime_children,
        strategy: :one_for_one,
        name: Continuum.Test.RuntimeSupervisor
      ) do

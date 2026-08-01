@@ -15,6 +15,11 @@ defmodule Mix.Tasks.ContinuumAuditTest do
   end
 
   setup do
+    start_supervised!(
+      {Continuum.VersionRegistry,
+       instance: Continuum.Runtime.Instance.default(), workflow_modules: [AuditFlow]}
+    )
+
     Repo.delete_all(ActivityTask)
     Repo.delete_all(Event)
     Repo.delete_all(Run)
