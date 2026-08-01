@@ -45,6 +45,47 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
     end)
   end
 
+  test "generates the complete v0.6.1 to v0.6.2 upgrade" do
+    in_tmp(fn ->
+      Mix.Task.rerun("continuum.gen.migration", [
+        "--repo",
+        "Continuum.Test.Repo",
+        "--from",
+        "0.6.1"
+      ])
+
+      [path] =
+        Path.wildcard("priv/test_repo/migrations/*_upgrade_continuum_v0_6_1_to_v0_6_2.exs")
+
+      source = File.read!(path)
+
+      assert source =~ "add_if_not_exists :cancel_requested_at"
+      assert source =~ "add_if_not_exists :error_stacktrace"
+      assert source =~ "add_if_not_exists :lease_acquired_at"
+      assert source =~ "add_if_not_exists :lease_heartbeat_at"
+      assert source =~ "continuum_runs_catch_up_idx"
+      assert source =~ "create_if_not_exists table(:continuum_health_reviews"
+      assert source =~ "PARTITION OF continuum_events DEFAULT"
+      assert source =~ "add_if_not_exists :lineage_id"
+      assert source =~ "add_if_not_exists :parent_task_id"
+      assert source =~ "create_if_not_exists table(:continuum_activity_attempts"
+      assert source =~ "create_if_not_exists table(:continuum_activity_operations"
+    end)
+  end
+
+  test "rejects unsupported upgrade sources" do
+    assert_raise Mix.Error, ~r/unsupported Continuum upgrade source/, fn ->
+      in_tmp(fn ->
+        Mix.Task.rerun("continuum.gen.migration", [
+          "--repo",
+          "Continuum.Test.Repo",
+          "--from",
+          "0.5.1"
+        ])
+      end)
+    end
+  end
+
   defp in_tmp(fun) do
     root = Path.join(System.tmp_dir!(), "continuum-gen-migration-#{System.unique_integer()}")
     File.rm_rf!(root)

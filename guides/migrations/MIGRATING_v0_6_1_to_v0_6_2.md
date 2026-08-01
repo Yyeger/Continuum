@@ -21,6 +21,16 @@ explicit execution flag is passed.
 
 ## Schema changes
 
+Generate the complete public delta migration in your application:
+
+```bash
+mix continuum.gen.migration --from 0.6.1 --repo MyApp.Repo
+```
+
+Run the generated migration before deploying v0.6.2. The command includes all
+of the schema changes described below; the snippets are explanatory and are
+not a substitute for the generated delta.
+
 Add two nullable columns to `continuum_runs`:
 
 ```sql
@@ -63,6 +73,11 @@ and create `continuum_activity_attempts` plus
 `continuum_activity_operations`. Apply the generated migration before using
 `Continuum.ActivityOperations` or `mix continuum.activities`; workers record
 terminal attempt outcomes in the new attempts table.
+
+The delta also adds `continuum_runs.cancel_requested_at`,
+`continuum_runs.error_stacktrace`, and `continuum_runs_catch_up_idx`, which are
+required by cancellation, failure persistence, manual retry, and bounded
+catch-up scans in v0.6.2.
 
 Add the event overflow safety partition:
 
