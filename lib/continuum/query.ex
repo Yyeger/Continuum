@@ -69,7 +69,7 @@ defmodule Continuum.Query do
 
       {:ok,
        %{
-         entries: Enum.map(page_rows, &decode_run/1),
+         entries: Enum.map(page_rows, &decode_run(&1, opts)),
          per_page: per_page,
          next_cursor: next_cursor
        }}
@@ -86,7 +86,7 @@ defmodule Continuum.Query do
 
       with {:ok, query} <- apply_namespace_precondition(query, opts),
            run when not is_nil(run) <- instance.repo.one(query) do
-        {:ok, decode_run(run)}
+        {:ok, decode_run(run, opts)}
       else
         nil -> {:error, :not_found}
         {:error, _reason} = error -> error
@@ -154,21 +154,47 @@ defmodule Continuum.Query do
   end
 
   @doc false
-  def decode_run(%Run{} = run) do
-    {error, legacy_stacktrace} = run.error |> decode_term() |> Continuum.RunFailure.split()
+  def decode_run(%Run{} = run), do: decode_run(run, [])
+
+  @doc false
+  def decode_run(%Run{} = run, opts) do
+    include_payloads? = Keyword.get(opts, :include_payloads, true)
+
+    {input, result, error, error_stacktrace} =
+      if include_payloads? do
+        decoded_error = decode_payload_raw(run.error, opts)
+
+        {error, legacy_stacktrace} =
+          if omitted_payload?(decoded_error) do
+            {decoded_error, nil}
+          else
+            Continuum.RunFailure.split(decoded_error)
+          end
+
+        stacktrace = decode_payload_raw(run.error_stacktrace, opts) || legacy_stacktrace
+
+        {
+          decode_payload(run.input, opts),
+          decode_payload(run.result, opts),
+          redact_payload(error, opts),
+          redact_payload(stacktrace, opts)
+        }
+      else
+        {nil, nil, nil, nil}
+      end
 
     %{
       id: run.id,
       run_id: run.id,
       workflow: run.workflow,
       state: display_state(run.state, error),
-      input: decode_term(run.input),
+      input: input,
       attributes: run.attributes || %{},
       namespace: run.namespace || "default",
       idempotency_key: run.idempotency_key,
-      result: decode_term(run.result),
+      result: result,
       error: error,
-      error_stacktrace: decode_term(run.error_stacktrace) || legacy_stacktrace,
+      error_stacktrace: error_stacktrace,
       trace_context: run.trace_context,
       started_at: run.started_at,
       completed_at: run.completed_at,
@@ -207,10 +233,12 @@ defmodule Continuum.Query do
     from(r in query, where: r.namespace == ^namespace)
   end
 
-  defp apply_condition(query, {op, [:attributes, key], value}) when op in [:eq, :neq] do
-    key = to_string(key)
+  defp apply_condition(query, {op, [:attributes | path], value})
+       when op in [:eq, :neq] and path != [] do
+    path = Enum.map(path, &to_string/1)
+    containment = Enum.reduce(Enum.reverse(path), value, fn key, nested -> %{key => nested} end)
 
-    with {:ok, containment} <- normalize_attributes(%{key => value}) do
+    with {:ok, containment} <- normalize_attributes(containment) do
       query =
         case op do
           :eq ->
@@ -219,7 +247,7 @@ defmodule Continuum.Query do
           :neq ->
             from(r in query,
               where:
-                fragment("(? ->> ?) IS NOT NULL", r.attributes, ^key) and
+                fragment("(? #> ?::text[]) IS NOT NULL", r.attributes, ^path) and
                   not fragment("? @> ?", r.attributes, type(^containment, :map))
             )
         end
@@ -399,6 +427,55 @@ defmodule Continuum.Query do
     end
   end
 
+  defp decode_payload(nil, _opts), do: nil
+
+  defp decode_payload(value, opts) do
+    value |> decode_payload_raw(opts) |> redact_payload(opts)
+  end
+
+  defp decode_payload_raw(nil, _opts), do: nil
+
+  defp decode_payload_raw(binary, opts) when is_binary(binary) do
+    case payload_limit!(opts) do
+      limit when is_integer(limit) and byte_size(binary) > limit ->
+        %{omitted: :payload_too_large, encoded_bytes: byte_size(binary)}
+
+      _limit ->
+        decode_term(binary)
+    end
+  end
+
+  defp decode_payload_raw(value, _opts), do: value
+
+  defp payload_limit!(opts) do
+    case Keyword.get(opts, :max_payload_bytes, :infinity) do
+      :infinity ->
+        :infinity
+
+      limit when is_integer(limit) and limit > 0 ->
+        limit
+
+      limit ->
+        raise ArgumentError,
+              "expected :max_payload_bytes to be positive or :infinity, got: #{inspect(limit)}"
+    end
+  end
+
+  defp redact_payload(nil, _opts), do: nil
+  defp redact_payload(%{omitted: :payload_too_large} = payload, _opts), do: payload
+
+  defp redact_payload(payload, opts) do
+    case Keyword.get(opts, :redactor) do
+      nil -> payload
+      redactor when is_function(redactor, 1) -> redactor.(payload)
+      module when is_atom(module) -> module.redact(payload)
+      redactor -> raise ArgumentError, "invalid query redactor: #{inspect(redactor)}"
+    end
+  end
+
+  defp omitted_payload?(%{omitted: :payload_too_large}), do: true
+  defp omitted_payload?(_payload), do: false
+
   defp encode_json(value) do
     case Jason.encode(value) do
       {:ok, json} -> {:ok, json}
@@ -406,15 +483,11 @@ defmodule Continuum.Query do
     end
   end
 
-  defp decode_term(nil), do: nil
-
-  defp decode_term(binary) when is_binary(binary) do
+  defp decode_term(binary) do
     :erlang.binary_to_term(binary)
   rescue
     error -> {:decode_error, error}
   end
-
-  defp decode_term(other), do: other
 
   defp display_state("failed", :cancelled), do: :cancelled
   defp display_state(state, _error), do: String.to_atom(state)

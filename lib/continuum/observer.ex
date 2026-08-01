@@ -83,7 +83,7 @@ defmodule Continuum.Observer do
   """
   @spec list_runs(keyword()) :: {:ok, map()} | {:error, term()}
   def list_runs(opts \\ []) do
-    Continuum.Query.list(opts)
+    opts |> observer_query_opts() |> Continuum.Query.list()
   end
 
   @doc """
@@ -91,7 +91,7 @@ defmodule Continuum.Observer do
   """
   @spec get_run(binary(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
   def get_run(run_id, opts \\ []) do
-    Continuum.Query.get_run(run_id, opts)
+    Continuum.Query.get_run(run_id, observer_query_opts(opts))
   end
 
   @doc """
@@ -178,7 +178,7 @@ defmodule Continuum.Observer do
           )
         )
         |> Enum.map(fn task ->
-          decoded_task = decode_term(task.mfa)
+          decoded_task = decode_payload(task.mfa, opts)
 
           %{
             id: task.id,
@@ -190,7 +190,7 @@ defmodule Continuum.Observer do
             priority: task.priority,
             mfa: Map.get(decoded_task, :mfa, decoded_task),
             last_heartbeat_at: task.last_heartbeat_at,
-            heartbeat_details: task.heartbeat_details |> decode_term() |> redact(opts)
+            heartbeat_details: decode_payload(task.heartbeat_details, opts)
           }
         end)
 
@@ -284,17 +284,7 @@ defmodule Continuum.Observer do
 
   defp decode_event(%Event{} = event, opts) do
     type = String.to_atom(event.event_type)
-    max_payload_bytes = positive_option!(opts, :max_payload_bytes, @default_payload_bytes)
-
-    payload =
-      case event.payload do
-        payload when is_binary(payload) and byte_size(payload) > max_payload_bytes ->
-          %{omitted: :payload_too_large, encoded_bytes: byte_size(payload)}
-
-        payload ->
-          decode_term(payload)
-      end
-      |> redact(opts)
+    payload = decode_payload(event.payload, opts)
 
     %{
       run_id: event.run_id,
@@ -315,6 +305,28 @@ defmodule Continuum.Observer do
   end
 
   defp decode_term(other), do: other
+
+  defp decode_payload(payload, opts) do
+    max_payload_bytes = positive_option!(opts, :max_payload_bytes, @default_payload_bytes)
+
+    case payload do
+      payload when is_binary(payload) and byte_size(payload) > max_payload_bytes ->
+        %{omitted: :payload_too_large, encoded_bytes: byte_size(payload)}
+
+      payload ->
+        payload |> decode_term() |> redact(opts)
+    end
+  end
+
+  defp observer_query_opts(opts) do
+    opts = Keyword.put_new(opts, :max_payload_bytes, @default_payload_bytes)
+
+    if Keyword.has_key?(opts, :redactor) do
+      opts
+    else
+      Keyword.put(opts, :redactor, Application.get_env(:continuum, :observer_redactor))
+    end
+  end
 
   defp event_limit(opts) do
     opts

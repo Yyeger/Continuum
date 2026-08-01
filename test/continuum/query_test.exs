@@ -103,6 +103,40 @@ defmodule Continuum.QueryTest do
     assert plan =~ "continuum_runs_attributes_gin_idx"
   end
 
+  test "filters nested attributes with type-preserving containment" do
+    number_id = insert_run!(%{}, %{customer: %{profile: %{tier: 4}}})
+    string_id = insert_run!(%{}, %{customer: %{profile: %{tier: "4"}}})
+
+    assert {:ok, %{entries: [%{run_id: ^number_id}]}} =
+             Continuum.query(where: [{:eq, [:attributes, :customer, :profile, :tier], 4}])
+
+    assert {:ok, %{entries: [%{run_id: ^string_id}]}} =
+             Continuum.query(where: [{:eq, [:attributes, :customer, :profile, :tier], "4"}])
+
+    assert {:ok, %{entries: [%{run_id: ^string_id}]}} =
+             Continuum.query(where: [{:neq, [:attributes, :customer, :profile, :tier], 4}])
+  end
+
+  test "can omit, cap, and redact decoded run payloads" do
+    run_id = insert_run!(%{secret: "token", large: String.duplicate("x", 100)}, %{})
+
+    assert {:ok, %{entries: [%{input: nil}]}} =
+             Continuum.Query.list(search: run_id, include_payloads: false)
+
+    assert {:ok, %{input: %{omitted: :payload_too_large, encoded_bytes: bytes}}} =
+             Continuum.get_run(run_id, max_payload_bytes: 16)
+
+    assert bytes > 16
+
+    redactor = fn
+      %{secret: _secret} = payload -> Map.put(payload, :secret, "[REDACTED]")
+      payload -> payload
+    end
+
+    assert {:ok, %{input: %{secret: "[REDACTED]"}}} =
+             Continuum.get_run(run_id, redactor: redactor)
+  end
+
   test "set_attributes merges metadata without journaling" do
     run_id = insert_run!(%{value: 5}, %{region: "eu"})
 

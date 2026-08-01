@@ -25,8 +25,8 @@ authorization callbacks in v0.2; the host application owns access control.
 
 The Observer provides:
 
-* a runs index at `/continuum` with state, workflow, run id search, and simple
-  pagination
+* a runs index at `/continuum` with state, workflow, run id search, and stable
+  cursor pagination
 * a run detail page at `/continuum/runs/:id` with run metadata and decoded
   journal events
 * operator actions for cancelling a run and sending a JSON signal payload
@@ -47,6 +47,23 @@ transitions. Detail pages subscribe to the existing per-run topic,
 Event payloads are decoded with `:erlang.binary_to_term/1` because Continuum
 stores its own journal data as `bytea`. Treat database write access as trusted;
 the Observer is not a sandbox for malicious journal rows.
+
+Run and event payloads are bounded before decoding. Configure a unary redactor
+globally with `config :continuum, observer_redactor: MyApp.Redactor`, where the
+module exports `redact/1`, or pass `redactor:` and `max_payload_bytes:` to the
+Observer query helpers. Oversized payloads are represented by an omission map
+that includes their encoded byte size. Event pages use sequence cursors and the
+display renderer also applies a hard byte cap.
+
+The underlying `Continuum.Query` API supports nested, type-preserving attribute
+filters without abandoning the generated JSONB GIN index:
+
+```elixir
+Continuum.query(
+  where: [{:eq, [:attributes, :customer, :profile, :tier], 4}],
+  cursor: previous_page.next_cursor
+)
+```
 
 Continuum includes `priv/static/observer.css` as a small baseline stylesheet.
 Copy or serve it from your host app if you want the default styling. One simple

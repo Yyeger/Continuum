@@ -80,6 +80,29 @@ defmodule Continuum.ObserverTest do
     assert String.ends_with?(rendered, "…")
   end
 
+  test "run inspection uses the Observer redactor and decode cap" do
+    {:ok, run_id} =
+      Continuum.Test.start_postgres(SideEffectFlow, %{
+        secret: "token",
+        value: String.duplicate("x", 100)
+      })
+
+    assert {:ok, %{state: :completed}} = await_postgres(run_id)
+
+    redactor = fn
+      %{secret: _secret} = payload -> Map.put(payload, :secret, "[REDACTED]")
+      payload -> payload
+    end
+
+    assert {:ok, %{input: %{secret: "[REDACTED]"}}} =
+             Continuum.Observer.get_run(run_id, redactor: redactor)
+
+    assert {:ok, %{input: %{omitted: :payload_too_large, encoded_bytes: bytes}}} =
+             Continuum.Observer.get_run(run_id, max_payload_bytes: 16)
+
+    assert bytes > 16
+  end
+
   test "runs-index topic receives coarse state updates" do
     Continuum.Test.reset_in_memory!()
     assert :ok = Continuum.Observer.subscribe_runs()
