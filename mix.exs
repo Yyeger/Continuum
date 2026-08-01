@@ -1,7 +1,7 @@
 defmodule Continuum.MixProject do
   use Mix.Project
 
-  @version "0.6.2"
+  @version "0.6.3"
   @source_url "https://github.com/Yyeger/Continuum"
 
   def project do

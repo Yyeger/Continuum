@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.3 — 2026-08-01 — "Audit hardening"
+
+### Fixes
+
+- Added a complete, version-aware v0.6.1-to-v0.6.2 delta migration.
+- Applied validated workflow retention from the database clock on terminal
+  completion, failure, cancellation, and continuation transitions.
+- Preserved original continue-as-new run handles after predecessor archival.
+- Rejected `Enum.random/1`, `Enum.take_random/2`, and `Enum.shuffle/1` in
+  workflow code.
+- Decoupled activity idempotency records from workflow-history cleanup.
+- Aligned fresh and upgraded activity parent foreign-key constraints.
+- Sanitized non-durable and oversized activity failures before persistence.
+- Corrected the documented host supervision setup for durable runtimes.
+- Pinned pre-1.0 installation requirements to the v0.6.3 patch line.
+
 ## v0.6.2 — 2026-07-18 — "Operational health"
 
 ### Features
