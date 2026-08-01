@@ -87,6 +87,27 @@ defmodule Continuum.WorkflowCompileTest do
       end
     end
 
+    test "random Enum calls refuse to compile in every supported syntax" do
+      cases = [
+        {"QualifiedRandom", "Enum.random(input)"},
+        {"QualifiedTakeRandom", "Enum.take_random(input, 1)"},
+        {"QualifiedShuffle", "Enum.shuffle(input)"},
+        {"AliasedRandom", "alias Enum, as: E\nE.random(input)"},
+        {"CapturedRandom", "picker = &Enum.random/1\npicker.(input)"},
+        {"PipedRandom", "input |> Enum.random()"}
+      ]
+
+      for {suffix, expression} <- cases do
+        assert_raise CompileError, ~r/Continuum.random\/0/, fn ->
+          compile_workflow(suffix, """
+          def run(input) do
+            #{expression}
+          end
+          """)
+        end
+      end
+    end
+
     test "a workflow that calls :ets.lookup refuses to compile" do
       assert_raise CompileError, ~r/ETS bypasses the journal/, fn ->
         defmodule BadFlow2 do

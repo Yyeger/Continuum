@@ -38,6 +38,28 @@ defmodule Continuum.AstCheckTest do
       assert violation.hint =~ "Continuum.random/0"
     end
 
+    test "rejects random Enum operations in qualified, aliased, captured, and piped forms" do
+      ast =
+        quote do
+          alias Enum, as: E
+          Enum.random([1, 2])
+          E.take_random([1, 2], 1)
+          (&Enum.shuffle/1).([1, 2])
+          [1, 2] |> Enum.random()
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      assert Enum.map(violations, & &1.mfa) == [
+               {Enum, :random},
+               {Enum, :take_random},
+               {Enum, :shuffle},
+               {Enum, :random}
+             ]
+
+      assert Enum.all?(violations, &String.contains?(&1.hint, "Continuum.random/0"))
+    end
+
     test "rejects ETS access" do
       ast =
         quote do
