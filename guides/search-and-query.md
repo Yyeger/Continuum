@@ -29,7 +29,7 @@ Use `Continuum.query/1` with a closed `:where` spec:
       {:gte, :started_at, ~U[2026-06-01 00:00:00Z]}
     ],
     order_by: {:desc, :started_at},
-    page: 1,
+    cursor: nil,
     per_page: 50
   )
 ```
@@ -39,7 +39,9 @@ and `:completed_at`. Supported operators are `:eq`, `:neq`, `:lt`, `:lte`, `:gt`
 `:gte`, and `:in` for run fields. Attribute filters support `:eq` and `:neq` on
 paths like `[:attributes, "region"]`.
 
-`per_page` is capped at 100. `Continuum.get_run/2` loads a single run by id.
+`per_page` is capped at 100. Pass `page.next_cursor` as the next call's `cursor`;
+the cursor is `nil` on the final page. Ordering always includes run id as a
+stable tie-breaker. `Continuum.get_run/2` loads a single run by id.
 
 ## Indexing
 

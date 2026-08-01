@@ -41,11 +41,10 @@ defmodule Continuum.QueryTest do
                order_by: {:asc, :started_at}
              )
 
-    assert page.total == 1
     assert [%{run_id: ^older, state: :suspended, attributes: %{"region" => "eu"}}] = page.entries
 
     assert {:ok, page} = Continuum.query(where: [{:in, :state, ["completed", "suspended"]}])
-    assert page.total == 2
+    assert Enum.map(page.entries, & &1.run_id) |> Enum.sort() == Enum.sort([older, newer])
   end
 
   test "caps pagination and preserves observer search behavior" do
@@ -57,6 +56,28 @@ defmodule Continuum.QueryTest do
 
     assert {:ok, observer_page} = Continuum.Observer.list_runs(search: run_id)
     assert [%{run_id: ^run_id}] = observer_page.entries
+  end
+
+  test "uses stable keyset pagination for equal sort values" do
+    ids = for value <- 1..3, do: insert_run!(%{value: value}, %{})
+    timestamp = ~U[2026-06-01 00:00:00Z]
+    Repo.update_all(from(r in Run, where: r.id in ^ids), set: [started_at: timestamp])
+
+    assert {:ok, first} = Continuum.query(order_by: {:asc, :started_at}, per_page: 2)
+    assert length(first.entries) == 2
+    assert is_binary(first.next_cursor)
+
+    assert {:ok, second} =
+             Continuum.query(
+               order_by: {:asc, :started_at},
+               per_page: 2,
+               cursor: first.next_cursor
+             )
+
+    paged_ids = Enum.map(first.entries ++ second.entries, & &1.run_id)
+    assert paged_ids == Enum.sort(ids)
+    assert second.next_cursor == nil
+    assert {:error, :invalid_cursor} = Continuum.query(cursor: "forged")
   end
 
   test "attribute equality keeps JSON types and uses the GIN containment index" do

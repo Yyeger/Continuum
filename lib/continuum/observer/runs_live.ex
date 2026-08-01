@@ -23,8 +23,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         |> assign(:observer_path, observer_path)
         |> assign(:refresh_ref, nil)
         |> assign(:runs, [])
-        |> assign(:total, 0)
-        |> assign(:total_pages, 1)
+        |> assign(:cursor, nil)
+        |> assign(:cursor_stack, [])
+        |> assign(:next_cursor, nil)
         |> assign_filters(params)
 
       {:ok, socket}
@@ -37,11 +38,31 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     @impl true
     def handle_event("filter", %{"filters" => filters}, socket) do
-      {:noreply, socket |> assign_filters(filters) |> load_runs()}
+      {:noreply,
+       socket
+       |> assign(:cursor, nil)
+       |> assign(:cursor_stack, [])
+       |> assign_filters(filters)
+       |> load_runs()}
     end
 
-    def handle_event("page", %{"page" => page}, socket) do
-      {:noreply, socket |> assign(:page, page) |> load_runs()}
+    def handle_event("page", %{"direction" => "next"}, socket) do
+      {:noreply,
+       socket
+       |> assign(:cursor_stack, [socket.assigns.cursor | socket.assigns.cursor_stack])
+       |> assign(:cursor, socket.assigns.next_cursor)
+       |> load_runs()}
+    end
+
+    def handle_event("page", %{"direction" => "previous"}, socket) do
+      case socket.assigns.cursor_stack do
+        [cursor | rest] ->
+          {:noreply,
+           socket |> assign(:cursor, cursor) |> assign(:cursor_stack, rest) |> load_runs()}
+
+        [] ->
+          {:noreply, socket}
+      end
     end
 
     @impl true
@@ -106,9 +127,9 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         </section>
 
         <footer class="co-pagination">
-          <button phx-click="page" phx-value-page={max(@page - 1, 1)} disabled={@page <= 1}>Previous</button>
-          <span>Page <%= @page %> / <%= @total_pages %> · <%= @total %> runs</span>
-          <button phx-click="page" phx-value-page={min(@page + 1, @total_pages)} disabled={@page >= @total_pages}>Next</button>
+          <button phx-click="page" phx-value-direction="previous" disabled={@cursor_stack == []}>Previous</button>
+          <span>Page <%= length(@cursor_stack) + 1 %></span>
+          <button phx-click="page" phx-value-direction="next" disabled={is_nil(@next_cursor)}>Next</button>
         </footer>
       </main>
       """
@@ -119,7 +140,6 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       |> assign(:search, Map.get(params, "search", ""))
       |> assign(:state, Map.get(params, "state", ""))
       |> assign(:workflow, Map.get(params, "workflow", ""))
-      |> assign(:page, Map.get(params, "page", "1"))
     end
 
     defp load_runs(socket) do
@@ -128,22 +148,19 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         search: socket.assigns.search,
         state: socket.assigns.state,
         workflow: socket.assigns.workflow,
-        page: socket.assigns.page
+        cursor: socket.assigns.cursor
       ]
 
       case Continuum.Observer.list_runs(opts) do
         {:ok, page} ->
           socket
           |> assign(:runs, page.entries)
-          |> assign(:page, page.page)
-          |> assign(:total, page.total)
-          |> assign(:total_pages, page.total_pages)
+          |> assign(:next_cursor, page.next_cursor)
 
         {:error, reason} ->
           socket
           |> assign(:runs, [])
-          |> assign(:total, 0)
-          |> assign(:total_pages, 1)
+          |> assign(:next_cursor, nil)
           |> put_flash(:error, "Observer query failed: #{inspect(reason)}")
       end
     end

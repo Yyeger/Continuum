@@ -31,7 +31,6 @@ defmodule Continuum.ObserverTest do
     assert {:ok, %{state: :completed, result: {:ok, 42}}} = await_postgres(run_id)
 
     assert {:ok, page} = Continuum.Observer.list_runs(search: run_id, state: :completed)
-    assert page.total == 1
     assert [%{run_id: ^run_id, state: :completed, result: {:ok, 42}}] = page.entries
 
     assert {:ok, run} = Continuum.Observer.get_run(run_id)

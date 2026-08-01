@@ -35,40 +35,43 @@ defmodule Continuum.Query do
     * `:search` - run id or workflow substring convenience filter.
     * `:workflow` - workflow substring convenience filter.
     * `:state` - run state convenience filter.
-    * `:order_by` - `{direction, field}`. Defaults to `{:desc, :started_at}`.
-    * `:page` and `:per_page` - 1-based pagination; `:per_page` caps at 100.
+    * `:order_by` - `{direction, field}`. Defaults to `{:desc, :started_at}`;
+      run id is always appended as a stable tie-breaker.
+    * `:cursor` and `:per_page` - opaque keyset cursor from the previous result;
+      `:per_page` caps at 100.
   """
   @spec list(keyword()) :: {:ok, map()} | {:error, term()}
   def list(opts \\ []) do
     with {:ok, instance} <- repo_instance(opts),
-         {:ok, query} <- build_query(opts) do
-      page = opts |> Keyword.get(:page, 1) |> positive_integer(1)
-
+         {:ok, query} <- build_query(opts),
+         {direction, order_field} <- normalize_order(Keyword.get(opts, :order_by)),
+         {:ok, cursor} <- decode_cursor(Keyword.get(opts, :cursor), direction, order_field) do
       per_page =
         opts |> Keyword.get(:per_page, @default_per_page) |> positive_integer(@default_per_page)
 
       per_page = min(per_page, @max_per_page)
-      offset = (page - 1) * per_page
+      query = apply_cursor(query, cursor, direction, order_field)
 
-      total = instance.repo.one(from(r in query, select: count(r.id)))
-
-      entries =
+      rows =
         instance.repo.all(
           from(r in query,
-            order_by: ^order_by(Keyword.get(opts, :order_by, {:desc, :started_at})),
-            limit: ^per_page,
-            offset: ^offset
+            order_by: ^stable_order(direction, order_field),
+            limit: ^(per_page + 1)
           )
         )
-        |> Enum.map(&decode_run/1)
+
+      page_rows = Enum.take(rows, per_page)
+
+      next_cursor =
+        if length(rows) > per_page do
+          encode_cursor(List.last(page_rows), direction, order_field)
+        end
 
       {:ok,
        %{
-         entries: entries,
-         page: page,
+         entries: Enum.map(page_rows, &decode_run/1),
          per_page: per_page,
-         total: total,
-         total_pages: max(ceil_div(total, per_page), 1)
+         next_cursor: next_cursor
        }}
     end
   end
@@ -279,12 +282,72 @@ defmodule Continuum.Query do
   defp query_field(field) when field in @query_fields, do: {:ok, field}
   defp query_field(field), do: {:error, {:invalid_field, field}}
 
-  defp order_by({direction, :run_id}), do: order_by({direction, :id})
+  defp normalize_order({direction, :run_id}), do: normalize_order({direction, :id})
 
-  defp order_by({direction, field}) when direction in [:asc, :desc] and field in @order_fields,
-    do: [{direction, field}]
+  defp normalize_order({direction, field})
+       when direction in [:asc, :desc] and field in @order_fields,
+       do: {direction, field}
 
-  defp order_by(_other), do: [desc: :started_at, desc: :id]
+  defp normalize_order(_other), do: {:desc, :started_at}
+
+  defp stable_order(:asc, :id), do: [asc: :id]
+  defp stable_order(:desc, :id), do: [desc: :id]
+  defp stable_order(:asc, field), do: [{:asc_nulls_last, field}, {:asc, :id}]
+  defp stable_order(:desc, field), do: [{:desc_nulls_last, field}, {:desc, :id}]
+
+  defp apply_cursor(query, nil, _direction, _field), do: query
+
+  defp apply_cursor(query, {_value, id}, :asc, :id),
+    do: from(r in query, where: r.id > ^id)
+
+  defp apply_cursor(query, {_value, id}, :desc, :id),
+    do: from(r in query, where: r.id < ^id)
+
+  defp apply_cursor(query, {nil, id}, :asc, field),
+    do: from(r in query, where: is_nil(field(r, ^field)) and r.id > ^id)
+
+  defp apply_cursor(query, {nil, id}, :desc, field),
+    do: from(r in query, where: is_nil(field(r, ^field)) and r.id < ^id)
+
+  defp apply_cursor(query, {value, id}, :asc, field) do
+    from(r in query,
+      where:
+        field(r, ^field) > ^value or is_nil(field(r, ^field)) or
+          (field(r, ^field) == ^value and r.id > ^id)
+    )
+  end
+
+  defp apply_cursor(query, {value, id}, :desc, field) do
+    from(r in query,
+      where:
+        field(r, ^field) < ^value or is_nil(field(r, ^field)) or
+          (field(r, ^field) == ^value and r.id < ^id)
+    )
+  end
+
+  defp encode_cursor(run, direction, field) do
+    {direction, field, Map.fetch!(run, field), run.id}
+    |> :erlang.term_to_binary()
+    |> Base.url_encode64(padding: false)
+  end
+
+  defp decode_cursor(nil, _direction, _field), do: {:ok, nil}
+  defp decode_cursor("", _direction, _field), do: {:ok, nil}
+
+  defp decode_cursor(cursor, direction, field)
+       when is_binary(cursor) and byte_size(cursor) <= 1_024 do
+    with {:ok, binary} <- Base.url_decode64(cursor, padding: false),
+         {^direction, ^field, value, id} when is_binary(id) <-
+           :erlang.binary_to_term(binary, [:safe]) do
+      {:ok, {value, id}}
+    else
+      _ -> {:error, :invalid_cursor}
+    end
+  rescue
+    _ -> {:error, :invalid_cursor}
+  end
+
+  defp decode_cursor(_cursor, _direction, _field), do: {:error, :invalid_cursor}
 
   defp repo_instance(opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -334,7 +397,4 @@ defmodule Continuum.Query do
   end
 
   defp positive_integer(_value, fallback), do: fallback
-
-  defp ceil_div(0, _denominator), do: 0
-  defp ceil_div(numerator, denominator), do: div(numerator + denominator - 1, denominator)
 end
