@@ -125,6 +125,24 @@ defmodule Continuum.TestHelpersTest do
     assert signal_event.command_id != nil
   end
 
+  test "await accepts an infinite timeout" do
+    Continuum.Test.reset_in_memory!()
+
+    {:ok, run_id} = Continuum.Test.start_synchronous(SignalFlow, %{})
+    task = Task.async(fn -> Continuum.await(run_id, :infinity) end)
+
+    assert :ok = Continuum.signal(run_id, :decision, :go)
+    assert {:ok, %{state: :completed, result: {:ok, :go}}} = Task.await(task, 1_000)
+  end
+
+  test "await rejects invalid timeouts" do
+    for timeout <- [-1, 1.5, nil, "1000"] do
+      assert_raise ArgumentError, ~r/non-negative integer or :infinity/, fn ->
+        Continuum.await(Ecto.UUID.generate(), timeout)
+      end
+    end
+  end
+
   defp assert_eventually(fun, attempts \\ 20)
 
   defp assert_eventually(fun, attempts) when attempts > 0 do

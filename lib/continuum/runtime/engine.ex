@@ -208,14 +208,25 @@ defmodule Continuum.Runtime.Engine do
 
   Accepts `journal:` in opts to override which journal adapter to poll.
   """
-  def await(run_id, timeout, opts \\ []) do
-    deadline = System.monotonic_time(:millisecond) + timeout
+  def await(run_id, timeout, opts \\ [])
+
+  def await(run_id, timeout, opts)
+      when timeout == :infinity or (is_integer(timeout) and timeout >= 0) do
+    deadline = deadline(timeout)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
     run_id = resolve_chain_tip(instance, run_id, opts)
 
     await_chain(instance, run_id, deadline, journal)
   end
+
+  def await(_run_id, timeout, _opts) do
+    raise ArgumentError,
+          "expected await timeout to be a non-negative integer or :infinity, got: #{inspect(timeout)}"
+  end
+
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
 
   # A run that continued as new completes with the internal {:continued, next}
   # marker. Follow the chain and await the successor so callers holding the
@@ -297,7 +308,7 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp await_run_finished(instance, run_id, deadline, journal) do
-    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
+    timeout = remaining_timeout(deadline)
 
     receive do
       {:run_finished, ^run_id, state, payload} ->
@@ -309,13 +320,19 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp poll_pending(instance, run_id, deadline, journal) do
-    if System.monotonic_time(:millisecond) >= deadline do
+    if deadline_expired?(deadline) do
       {:error, :timeout}
     else
       Process.sleep(5)
       poll_until(instance, run_id, deadline, journal)
     end
   end
+
+  defp remaining_timeout(:infinity), do: :infinity
+  defp remaining_timeout(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  defp deadline_expired?(:infinity), do: false
+  defp deadline_expired?(deadline), do: System.monotonic_time(:millisecond) >= deadline
 
   defp await_result(run_id, :completed, result) do
     {:ok, %{run_id: run_id, state: :completed, result: result}}
