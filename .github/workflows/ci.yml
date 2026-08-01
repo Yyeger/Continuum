@@ -47,4 +47,9 @@ jobs:
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
       - run: mix test
+      - name: Paranoid replay sweep
+        if: matrix.name == 'latest' && github.event_name != 'pull_request'
+        env:
+          CONTINUUM_PARANOID: "1"
+        run: mix test --seed 0
       - run: mix test.cluster
