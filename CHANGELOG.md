@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.7.0 — 2026-08-01 — "Product foundations"
+
+### Durable ingress and lifecycle
+
+- Added atomic idempotent root starts and chain-scoped signal delivery IDs.
+- Added strict workflow-version deployment preflight in library and Mix-task
+  forms, plus safe batched pruning for complete terminal chains.
+- Added durable one-shot schedules with inspect/cancel APIs and a supervised
+  schedule runner.
+
+### Activities and workflow APIs
+
+- Added activity progress heartbeats, bounded details, cooperative cancellation,
+  durable queues and priorities, per-queue concurrency, and retry jitter.
+- Added optional namespace expected-value guards to run-ID operations and
+  versioned signal contracts with compile-time literal checks and delivery-time
+  payload validation.
+- Added journaled `Continuum.log/2`, which emits Logger and telemetry only at
+  the live tail and remains silent during raw-history and snapshot replay.
+
+### Inspection and public surfaces
+
+- Extended bounded/redacted inspection to run and activity payloads and added
+  nested, type-preserving, GIN-backed attribute filters.
+- Introduced stable `%Continuum.Run{}`, `%Continuum.Page{}`, and
+  `%Continuum.Readiness{}` public structs with map-pattern compatibility notes.
+- Centralized runtime and component configuration validation and added a
+  generated reference with a CI check task.
+- Added a complete `v0.6.4`-to-`v0.7.0` generated delta migration and guide.
+
 ## v0.6.4 — 2026-08-01 — "Audit completion"
 
 ### Fixes

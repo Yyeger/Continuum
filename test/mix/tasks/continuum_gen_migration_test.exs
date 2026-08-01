@@ -83,6 +83,31 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
     end)
   end
 
+  test "generates the complete v0.6.4 to v0.7.0 upgrade" do
+    in_tmp(fn ->
+      Mix.Task.rerun("continuum.gen.migration", [
+        "--repo",
+        "Continuum.Test.Repo",
+        "--from",
+        "0.6.4"
+      ])
+
+      [path] =
+        Path.wildcard("priv/test_repo/migrations/*_upgrade_continuum_v0_6_4_to_v0_7_0.exs")
+
+      source = File.read!(path)
+
+      assert source =~ "add :idempotency_key, :text"
+      assert source =~ "continuum_signals_delivery_key_idx"
+      assert source =~ "create table(:continuum_run_ingress_keys"
+      assert source =~ "add :last_heartbeat_at, :utc_datetime_usec"
+      assert source =~ "create table(:continuum_schedules"
+      assert source =~ ~s(add :queue, :text, null: false, default: "default")
+      assert source =~ "(queue, priority DESC, available_at, scheduled_at)"
+      assert source =~ "@disable_ddl_transaction true"
+    end)
+  end
+
   test "rejects unsupported upgrade sources" do
     assert_raise Mix.Error, ~r/unsupported Continuum upgrade source/, fn ->
       in_tmp(fn ->

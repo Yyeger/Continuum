@@ -4,6 +4,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
 
       mix continuum.gen.migration
       mix continuum.gen.migration --from 0.6.1
+      mix continuum.gen.migration --from 0.6.4
 
   Writes a single migration file under `priv/repo/migrations/` (or whatever
   is configured for your repo) that creates: `continuum_runs`,
@@ -51,8 +52,13 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     {name, upgrade_0_6_1_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
   end
 
+  defp migration("0.6.4", repo) do
+    name = "upgrade_continuum_v0_6_4_to_v0_7_0"
+    {name, upgrade_0_6_4_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
+  end
+
   defp migration(version, _repo) do
-    Mix.raise("unsupported Continuum upgrade source #{inspect(version)}; supported: 0.6.1")
+    Mix.raise("unsupported Continuum upgrade source #{inspect(version)}; supported: 0.6.1, 0.6.4")
   end
 
   defp validate_args!(rest, invalid) do
@@ -569,6 +575,152 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           remove_if_exists :lease_acquired_at, :utc_datetime_usec
           remove_if_exists :error_stacktrace, :bytea
           remove_if_exists :cancel_requested_at, :utc_datetime_usec
+        end
+      end
+    end
+    """
+  end
+
+  defp upgrade_0_6_4_source(module_name) do
+    """
+    defmodule #{module_name} do
+      use Ecto.Migration
+
+      @disable_ddl_transaction true
+      @disable_migration_lock true
+
+      def up do
+        alter table(:continuum_runs) do
+          add :idempotency_key, :text
+        end
+
+        execute \"\"\"
+        CREATE UNIQUE INDEX continuum_runs_ingress_key_idx
+          ON continuum_runs (namespace, workflow, idempotency_key)
+          WHERE idempotency_key IS NOT NULL
+            AND parent_run_id IS NULL
+            AND continued_from_run_id IS NULL
+        \"\"\"
+
+        alter table(:continuum_signals) do
+          add :correlation_id, :uuid
+          add :delivery_id, :text
+        end
+
+        execute \"\"\"
+        UPDATE continuum_signals AS signal
+        SET correlation_id = COALESCE(run.correlation_id, run.id)
+        FROM continuum_runs AS run
+        WHERE signal.run_id = run.id
+          AND signal.correlation_id IS NULL
+        \"\"\"
+
+        execute \"\"\"
+        CREATE UNIQUE INDEX continuum_signals_delivery_key_idx
+          ON continuum_signals (correlation_id, name, delivery_id)
+          WHERE delivery_id IS NOT NULL
+        \"\"\"
+
+        create table(:continuum_run_ingress_keys, primary_key: false) do
+          add :namespace, :text, null: false
+          add :workflow, :text, null: false
+          add :idempotency_key, :text, null: false
+          add :run_id, :uuid, null: false
+          add :created_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        execute \"\"\"
+        ALTER TABLE continuum_run_ingress_keys
+          ADD PRIMARY KEY (namespace, workflow, idempotency_key)
+        \"\"\"
+
+        create index(:continuum_run_ingress_keys, [:run_id])
+
+        execute \"\"\"
+        INSERT INTO continuum_run_ingress_keys
+          (namespace, workflow, idempotency_key, run_id, created_at)
+        SELECT namespace, workflow, idempotency_key, id, started_at
+        FROM continuum_runs
+        WHERE idempotency_key IS NOT NULL
+        ON CONFLICT DO NOTHING
+        \"\"\"
+
+        alter table(:continuum_activity_tasks) do
+          add :last_heartbeat_at, :utc_datetime_usec
+          add :heartbeat_details, :bytea
+        end
+
+        create table(:continuum_schedules, primary_key: false) do
+          add :id, :uuid, primary_key: true
+          add :run_id, :uuid, null: false
+          add :workflow, :text, null: false
+          add :version_hash, :bytea, null: false
+          add :input, :bytea, null: false
+          add :namespace, :text, null: false, default: "default"
+          add :attributes, :map, null: false, default: %{}
+          add :trace_context, :bytea
+          add :scheduled_at, :utc_datetime_usec, null: false
+          add :state, :text, null: false, default: "scheduled"
+          add :attempt, :integer, null: false, default: 0
+          add :claimed_at, :utc_datetime_usec
+          add :started_at, :utc_datetime_usec
+          add :last_error, :text
+          add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
+        end
+
+        execute \"\"\"
+        CREATE INDEX continuum_schedules_due_idx
+          ON continuum_schedules (scheduled_at, id)
+          WHERE state IN ('scheduled', 'starting')
+        \"\"\"
+
+        alter table(:continuum_activity_tasks) do
+          add :queue, :text, null: false, default: "default"
+          add :priority, :integer, null: false, default: 0
+        end
+
+        execute "DROP INDEX CONCURRENTLY IF EXISTS continuum_activity_tasks_pickup_idx"
+
+        execute \"\"\"
+        CREATE INDEX CONCURRENTLY continuum_activity_tasks_pickup_idx
+          ON continuum_activity_tasks (queue, priority DESC, available_at, scheduled_at)
+          WHERE state = 'available'
+        \"\"\"
+      end
+
+      def down do
+        execute "DROP INDEX CONCURRENTLY IF EXISTS continuum_activity_tasks_pickup_idx"
+
+        execute \"\"\"
+        CREATE INDEX CONCURRENTLY continuum_activity_tasks_pickup_idx
+          ON continuum_activity_tasks (available_at)
+          WHERE state = 'available'
+        \"\"\"
+
+        alter table(:continuum_activity_tasks) do
+          remove :priority
+          remove :queue
+        end
+
+        drop_if_exists table(:continuum_schedules)
+
+        alter table(:continuum_activity_tasks) do
+          remove :heartbeat_details
+          remove :last_heartbeat_at
+        end
+
+        drop_if_exists table(:continuum_run_ingress_keys)
+        execute "DROP INDEX IF EXISTS continuum_signals_delivery_key_idx"
+
+        alter table(:continuum_signals) do
+          remove :delivery_id
+          remove :correlation_id
+        end
+
+        execute "DROP INDEX IF EXISTS continuum_runs_ingress_key_idx"
+
+        alter table(:continuum_runs) do
+          remove :idempotency_key
         end
       end
     end
