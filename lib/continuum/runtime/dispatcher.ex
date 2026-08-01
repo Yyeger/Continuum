@@ -58,8 +58,9 @@ defmodule Continuum.Runtime.Dispatcher do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:dispatcher, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    config = dispatcher_config()
+    config = Continuum.Config.validate_component!(:dispatcher, dispatcher_config())
 
     state = %{
       instance: instance,

@@ -120,6 +120,7 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:heartbeater, opts)
     Process.flag(:trap_exit, true)
     instance = Continuum.Runtime.Instance.lookup(Keyword.get(opts, :instance, Continuum))
 

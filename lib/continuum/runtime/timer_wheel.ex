@@ -54,8 +54,9 @@ defmodule Continuum.Runtime.TimerWheel do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:timer_wheel, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    config = timer_config()
+    config = Continuum.Config.validate_component!(:timer_wheel, timer_config())
     table = :ets.new(:continuum_timer_cache, [:set, :protected])
 
     state = %{

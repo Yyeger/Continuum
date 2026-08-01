@@ -80,8 +80,9 @@ defmodule Continuum.Runtime.SignalRouter do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:signal_router, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    config = router_config()
+    config = Continuum.Config.validate_component!(:signal_router, router_config())
 
     state = %{
       instance: instance,

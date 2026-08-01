@@ -72,6 +72,7 @@ defmodule Continuum do
   """
   @spec children(keyword()) :: [Supervisor.child_spec()]
   def children(opts \\ []) do
+    opts = Continuum.Config.validate_children!(opts)
     name = Keyword.get(opts, :name, Continuum)
 
     activity_executor =

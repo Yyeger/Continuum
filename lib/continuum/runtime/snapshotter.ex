@@ -40,6 +40,7 @@ defmodule Continuum.Runtime.Snapshotter do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:snapshotter, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     {:ok, %{instance: instance, config: config(opts, instance), run_counts: %{}}}
   end

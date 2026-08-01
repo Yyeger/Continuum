@@ -50,6 +50,8 @@ defmodule Continuum.VersionRegistry do
 
   @impl true
   def init({instance, opts}) do
+    opts = Continuum.Config.validate_component!(:version_registry, opts)
+
     state = %{
       instance: instance,
       workflow_modules: Keyword.get(opts, :workflow_modules, instance.workflow_modules),

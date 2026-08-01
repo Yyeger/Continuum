@@ -13,6 +13,7 @@ defmodule Continuum.Runtime.ActivityWorker.Supervisor do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:activity_supervisor, opts)
     instance = Continuum.Runtime.Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     DynamicSupervisor.init(

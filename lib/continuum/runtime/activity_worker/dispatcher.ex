@@ -116,8 +116,9 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:activity_dispatcher, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    config = worker_config()
+    config = Continuum.Config.validate_component!(:activity_dispatcher, worker_config())
 
     state = %{
       instance: instance,

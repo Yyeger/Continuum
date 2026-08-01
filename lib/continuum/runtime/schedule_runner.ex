@@ -32,6 +32,8 @@ defmodule Continuum.Runtime.ScheduleRunner do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:schedule_runner, opts)
+
     state = %{
       instance: Instance.lookup(Keyword.get(opts, :instance, Continuum)),
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),

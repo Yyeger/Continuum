@@ -24,8 +24,9 @@ defmodule Continuum.Runtime.Recovery do
 
   @doc false
   def start_link(opts \\ []) do
+    opts = Continuum.Config.validate_component!(:recovery, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    config = recovery_config()
+    config = Continuum.Config.validate_component!(:recovery, recovery_config())
 
     enabled? =
       Keyword.get(opts, :enabled?, Keyword.get(config, :enabled?, recovery_enabled?(instance)))

@@ -39,6 +39,7 @@ defmodule Continuum.Runtime.PartitionMaintainer do
 
   @impl true
   def init(opts) do
+    opts = Continuum.Config.validate_component!(:partition_maintainer, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
     if is_nil(instance.repo) do

@@ -71,6 +71,7 @@ defmodule Continuum.Runtime.Instance do
   end
 
   def new(opts) do
+    opts = Continuum.Config.validate_instance!(opts)
     name = Keyword.get(opts, :name, @default)
     repo = Keyword.get(opts, :repo) || default_repo(name)
 

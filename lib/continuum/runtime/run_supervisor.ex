@@ -12,7 +12,8 @@ defmodule Continuum.Runtime.RunSupervisor do
   end
 
   @impl true
-  def init(_opts) do
+  def init(opts) do
+    Continuum.Config.validate_component!(:run_supervisor, opts)
     DynamicSupervisor.init(strategy: :one_for_one)
   end
 end
