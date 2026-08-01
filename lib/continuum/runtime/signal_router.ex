@@ -362,11 +362,7 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   defp local_run_ids(instance) do
-    Registry.select(instance.registry, [{{:"$1", :_, :_}, [], [:"$1"]}])
-  rescue
-    _ -> []
-  catch
-    :exit, _ -> []
+    Instance.local_run_ids(instance)
   end
 
   defp catch_up_batch_size(opts, config) do

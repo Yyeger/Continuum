@@ -85,6 +85,17 @@ defmodule Continuum.Runtime.DispatcherTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
   end
 
+  test "dispatch_once ignores non-run runtime registry keys" do
+    worker_key = {:activity_worker, Ecto.UUID.generate()}
+    {:ok, _} = Registry.register(Continuum.Runtime.Registry, worker_key, %{queue: "default"})
+
+    try do
+      assert {:ok, 0} = Dispatcher.dispatch_once(owner: "registry-filter", batch_size: 10)
+    after
+      Registry.unregister(Continuum.Runtime.Registry, worker_key)
+    end
+  end
+
   test "a live engine adopts a rotated lease instead of being fenced out" do
     {:ok, run_id} = Continuum.start(WaitFlow, %{}, journal: Postgres)
 

@@ -70,6 +70,17 @@ defmodule Continuum.Runtime.Instance do
     end
   end
 
+  @doc false
+  def local_run_ids(%Instance{} = instance) do
+    instance.registry
+    |> Registry.select([{{:"$1", :_, :_}, [], [:"$1"]}])
+    |> Enum.filter(&is_binary/1)
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
+
   def new(opts) do
     opts = Continuum.Config.validate_instance!(opts)
     name = Keyword.get(opts, :name, @default)
