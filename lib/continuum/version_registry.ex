@@ -18,7 +18,7 @@ defmodule Continuum.VersionRegistry do
   alias Continuum.Telemetry
 
   @registry_key {__MODULE__, :entries}
-  @snapshot_hint_key {__MODULE__, :any_snapshot_threshold}
+  @snapshot_hint_key {__MODULE__, :snapshot_thresholds}
   @default_retry_base_ms 1_000
   @default_retry_max_ms 30_000
 
@@ -129,6 +129,7 @@ defmodule Continuum.VersionRegistry do
   @spec ensure_registered(module(), Instance.t()) :: {:ok, entry()} | {:error, term()}
   def ensure_registered(module, %Instance{} = instance) when is_atom(module) do
     with {:ok, entry} <- ensure_registered(module),
+         :ok <- flag_snapshot_thresholds(instance, [entry]),
          :ok <- ensure_durable(instance, [entry]) do
       {:ok, entry}
     end
@@ -321,6 +322,8 @@ defmodule Continuum.VersionRegistry do
       (entries ++ Map.values(state.pending))
       |> Enum.uniq_by(&entry_key/1)
 
+    flag_snapshot_thresholds(state.instance, entries)
+
     case invoke_registration(state.registration_fun, state.instance, entries) do
       :ok -> registration_succeeded(state, entries)
       {:error, error} -> registration_failed(state, entries, error)
@@ -477,27 +480,47 @@ defmodule Continuum.VersionRegistry do
 
   defp put_entry(%{workflow_string: workflow, version_hash: hash} = entry) do
     :persistent_term.put(@registry_key, Map.put(entry_map(), {workflow, hash}, entry))
-    maybe_flag_snapshot_threshold(entry)
     entry
   end
 
-  # Sticky fast-path hint for the Snapshotter: with the app-level threshold at
-  # :infinity, the per-event maybe_snapshot cast only pays the run lookup when
-  # at least one registered entrypoint declares its own snapshot_threshold.
+  # Per-instance, per-version fast-path hints keep a workflow that opts into
+  # snapshots from imposing run lookups on unrelated Continuum instances.
   @doc false
-  def any_snapshot_threshold? do
-    :persistent_term.get(@snapshot_hint_key, false)
+  def any_snapshot_threshold?(%Instance{} = instance) do
+    instance
+    |> snapshot_thresholds()
+    |> map_size()
+    |> Kernel.>(0)
   end
 
-  defp maybe_flag_snapshot_threshold(%{entrypoint: entrypoint}) do
-    with false <- any_snapshot_threshold?(),
-         true <- function_exported?(entrypoint, :__continuum_workflow__, 0),
-         threshold when not is_nil(threshold) <-
-           Map.get(entrypoint.__continuum_workflow__(), :snapshot_threshold) do
-      :persistent_term.put(@snapshot_hint_key, true)
-    end
+  @doc false
+  def snapshot_threshold(%Instance{} = instance, workflow, version_hash) do
+    Map.get(snapshot_thresholds(instance), {workflow_string(workflow), version_hash})
+  end
+
+  defp flag_snapshot_thresholds(instance, entries) do
+    thresholds =
+      Enum.reduce(entries, snapshot_thresholds(instance), fn entry, acc ->
+        with entrypoint when is_atom(entrypoint) <- Map.get(entry, :entrypoint),
+             true <- function_exported?(entrypoint, :__continuum_workflow__, 0),
+             threshold when not is_nil(threshold) <-
+               Map.get(entrypoint.__continuum_workflow__(), :snapshot_threshold) do
+          Map.put(acc, entry_key(entry), threshold)
+        else
+          _ -> acc
+        end
+      end)
+
+    hints = :persistent_term.get(@snapshot_hint_key, %{})
+    :persistent_term.put(@snapshot_hint_key, Map.put(hints, instance.name, thresholds))
 
     :ok
+  end
+
+  defp snapshot_thresholds(instance) do
+    @snapshot_hint_key
+    |> :persistent_term.get(%{})
+    |> Map.get(instance.name, %{})
   end
 
   defp discover(workflow_string, version_hash) do

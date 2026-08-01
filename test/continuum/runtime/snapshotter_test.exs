@@ -124,6 +124,29 @@ defmodule Continuum.Runtime.SnapshotterTest do
     end)
   end
 
+  test "per-workflow snapshot hints are isolated by instance and version" do
+    default = Instance.default()
+    isolated = %Instance{name: :isolated_snapshot_hints, repo: nil}
+
+    assert {:ok, entry} =
+             Continuum.VersionRegistry.ensure_registered(PerWorkflowSnapshotFlow, default)
+
+    assert Continuum.VersionRegistry.any_snapshot_threshold?(default)
+    refute Continuum.VersionRegistry.any_snapshot_threshold?(isolated)
+
+    assert Continuum.VersionRegistry.snapshot_threshold(
+             default,
+             entry.workflow_string,
+             entry.version_hash
+           ) == 1
+
+    assert Continuum.VersionRegistry.snapshot_threshold(
+             isolated,
+             entry.workflow_string,
+             entry.version_hash
+           ) == nil
+  end
+
   test "a future-format snapshot is skipped in favor of event replay" do
     steps = [1, 2, 3]
 

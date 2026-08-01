@@ -36,7 +36,7 @@ defmodule Continuum.Runtime.Snapshotter do
   @impl true
   def init(opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    {:ok, %{instance: instance, config: config(opts, instance)}}
+    {:ok, %{instance: instance, config: config(opts, instance), run_counts: %{}}}
   end
 
   @impl true
@@ -47,15 +47,57 @@ defmodule Continuum.Runtime.Snapshotter do
     # with `journal: Postgres`).
     config = if journal, do: %{state.config | journal: journal}, else: state.config
 
-    # The instance-level threshold alone cannot gate the cast: per-workflow
-    # `snapshot_threshold:` only resolves inside take_snapshot, after the run
-    # row is loaded. The registry hint keeps the default configuration
-    # (:infinity, no per-workflow opt-ins) free of a per-event run lookup.
-    if config.threshold != :infinity or Continuum.VersionRegistry.any_snapshot_threshold?() do
-      take_snapshot(state.instance, run_id, lease_token, config)
-    end
+    {:noreply, maybe_take_counted_snapshot(state, run_id, lease_token, config)}
+  end
 
-    {:noreply, state}
+  defp maybe_take_counted_snapshot(state, run_id, lease_token, config) do
+    if config.threshold == :infinity and
+         not Continuum.VersionRegistry.any_snapshot_threshold?(state.instance) do
+      state
+    else
+      {threshold, run_counts} = threshold_and_count(state, run_id, config)
+
+      case threshold do
+        :infinity ->
+          %{state | run_counts: run_counts}
+
+        threshold ->
+          count = get_in(run_counts, [run_id, :count]) + 1
+
+          if count >= threshold do
+            take_snapshot(state.instance, run_id, lease_token, config)
+            %{state | run_counts: Map.delete(run_counts, run_id)}
+          else
+            %{state | run_counts: put_in(run_counts, [run_id, :count], count)}
+          end
+      end
+    end
+  end
+
+  defp threshold_and_count(state, run_id, config) do
+    case Map.get(state.run_counts, run_id) do
+      %{threshold: threshold} ->
+        {threshold, state.run_counts}
+
+      nil ->
+        threshold = threshold_for_new_run(state.instance, run_id, config)
+        {threshold, Map.put(state.run_counts, run_id, %{threshold: threshold, count: 0})}
+    end
+  end
+
+  defp threshold_for_new_run(instance, run_id, config) do
+    if Continuum.VersionRegistry.any_snapshot_threshold?(instance) do
+      case config.journal.get_run(instance, run_id) do
+        %{workflow: workflow, version_hash: version_hash} ->
+          Continuum.VersionRegistry.snapshot_threshold(instance, workflow, version_hash) ||
+            config.threshold
+
+        _ ->
+          :infinity
+      end
+    else
+      config.threshold
+    end
   end
 
   defp take_snapshot(instance, run_id, lease_token, config) do
@@ -175,6 +217,7 @@ defmodule Continuum.Runtime.Snapshotter do
 
   defp config(opts, instance) do
     %{
+      instance: instance,
       threshold:
         opts
         |> Keyword.get(
@@ -207,19 +250,12 @@ defmodule Continuum.Runtime.Snapshotter do
   defp threshold_for_run(nil, _config), do: :infinity
 
   defp threshold_for_run(run, config) do
-    workflow_snapshot_threshold(run) || config.threshold
+    workflow_snapshot_threshold(run, config) || config.threshold
   end
 
-  defp workflow_snapshot_threshold(%{workflow: workflow, version_hash: version_hash}) do
-    with {:ok, %{entrypoint: entrypoint}} <-
-           Continuum.VersionRegistry.resolve(workflow, version_hash),
-         true <- function_exported?(entrypoint, :__continuum_workflow__, 0),
-         threshold <- Map.get(entrypoint.__continuum_workflow__(), :snapshot_threshold),
-         true <- not is_nil(threshold) do
-      threshold
-    else
-      _ -> nil
-    end
+  defp workflow_snapshot_threshold(%{workflow: workflow, version_hash: version_hash}, config) do
+    instance = Map.fetch!(config, :instance)
+    Continuum.VersionRegistry.snapshot_threshold(instance, workflow, version_hash)
   end
 
   # One source of truth for journal resolution (post-2.2 audit fix): named
