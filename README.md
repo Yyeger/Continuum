@@ -165,8 +165,8 @@ end
   fresh history for long-running loops.
 - **Workflow versioning** — journaled `Continuum.patched?/1` markers for safe
   in-place edits, and content-addressed `(workflow, version_hash)` dispatch that
-  marks missing code `:stuck_unknown_version` rather than replaying through
-  changed logic.
+  leaves a run suspended when code is missing rather than replaying through
+  changed logic. A node with the matching version can safely resume it later.
 
 ### Operations & observability
 
@@ -282,7 +282,7 @@ A `docker-compose.yml` brings up Postgres for local development and tests.
 
 ```bash
 mix deps.get
-docker compose up -d                  # Postgres on localhost:5432
+docker compose up -d                  # Postgres on localhost:5433
 mix compile --warnings-as-errors
 mix test                              # unit + integration suite
 mix test.cluster                      # real :peer cluster tests (run separately)
