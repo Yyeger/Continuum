@@ -1,11 +1,11 @@
 # Continuum
 
-**English** | [简体中文](./README.zh-CN.md)
+**English** | [简体中文](https://github.com/Yyeger/Continuum/blob/main/README.zh-CN.md)
 
 [![CI](https://github.com/Yyeger/Continuum/actions/workflows/ci.yml/badge.svg)](https://github.com/Yyeger/Continuum/actions/workflows/ci.yml)
 [![Hex.pm](https://img.shields.io/hexpm/v/continuum.svg)](https://hex.pm/packages/continuum)
 [![Documentation](https://img.shields.io/badge/hexdocs-docs-8e44ad.svg)](https://hexdocs.pm/continuum)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](./LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/Yyeger/Continuum/blob/main/LICENSE)
 
 **Continuum is a durable execution engine for Elixir.** Write a multi-step
 business process as straight-line Elixir code; failures, restarts, and node
@@ -222,7 +222,7 @@ signals. It exposes operator actions for cancelling a run, sending a signal,
 and previewing fenced repairs. It is mounted from a host Phoenix router and
 ships no authentication of its own — wrap it in your existing admin pipeline.
 
-![Continuum Observer runs index](./dev/ui.png)
+![Continuum Observer runs index](https://raw.githubusercontent.com/Yyeger/Continuum/main/dev/ui.png)
 
 ```elixir
 import Continuum.Observer.Router
@@ -244,7 +244,7 @@ MIX_ENV=test iex -S mix run dev/observer_demo.exs
 
 The demo seeds three runs in different states and prints iex helpers for
 spawning more, sending signals, and cancelling. See
-[`guides/observer.md`](./guides/observer.md) for production mount instructions.
+[`guides/observer.md`](https://github.com/Yyeger/Continuum/blob/main/guides/observer.md) for production mount instructions.
 
 ## Documentation
 
@@ -261,12 +261,12 @@ cover the entire surface:
 - *Operations* · *Auditing* · *Observer* · *Observability (OpenTelemetry)* ·
   *Snapshots*
 
-See [`examples/continuum_example_orders`](./examples/continuum_example_orders)
+See [`examples/continuum_example_orders`](https://github.com/Yyeger/Continuum/tree/main/examples/continuum_example_orders)
 for a Phoenix app exercising activity → signal/timeout → compensation,
 parent/child batches, `continue_as_new`, per-workflow snapshots, namespaces,
 the Observer, and OpenTelemetry.
 
-Upgrading? See the [migration guides](./guides/migrations/) .
+Upgrading? See the [migration guides](https://github.com/Yyeger/Continuum/tree/main/guides/migrations).
 
 ## Status
 
@@ -274,7 +274,7 @@ Continuum is **v0.6.3 (pre-1.0)**. The durable engine, determinism enforcement,
 workflow composition, observability, and clustering surface are implemented and
 covered by tests, including crash-resume, lease-fencing races, and
 property-based replay. APIs may still change before 1.0 — pin to a specific
-`0.x` in production. See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
+`0.x` in production. See [`CHANGELOG.md`](https://github.com/Yyeger/Continuum/blob/main/CHANGELOG.md) for release history.
 
 ## Development
 
@@ -293,4 +293,4 @@ mix format
 
 Copyright 2026 The Continuum Authors. (yyeger)
 
-Licensed under the [Apache License, Version 2.0](./LICENSE).
+Licensed under the [Apache License, Version 2.0](https://github.com/Yyeger/Continuum/blob/main/LICENSE).

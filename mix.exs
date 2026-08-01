@@ -56,7 +56,7 @@ defmodule Continuum.MixProject do
     [
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv guides mix.exs README.md LICENSE CHANGELOG.md)
+      files: ~w(lib priv/static guides mix.exs README.md LICENSE CHANGELOG.md)
     ]
   end
 
@@ -111,6 +111,7 @@ defmodule Continuum.MixProject do
     [
       "test.setup": ["ecto.drop --quiet", "ecto.create --quiet", "ecto.migrate --quiet"],
       "test.cluster": ["cmd env CONTINUUM_CLUSTER_TEST=1 mix test --only cluster test/cluster"],
+      "docs.check": ["docs", "run ci/check_doc_links.exs"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
     ]
   end

@@ -49,7 +49,7 @@ operator cleanup policy to bound storage.
 
 v0.4 adds `mix continuum.archive_continued_chains`, a dry-run-by-default task
 that deletes expired non-tail cycles and their dependent rows. See
-[`guides/operations.md`](./operations.md) for the safety rules and examples.
+[`guides/operations.md`](https://github.com/Yyeger/Continuum/blob/main/guides/operations.md) for the safety rules and examples.
 
 Long-running loops are also good candidates for snapshots. A per-workflow
 `snapshot_threshold:` keeps the setting local to the loop instead of enabling

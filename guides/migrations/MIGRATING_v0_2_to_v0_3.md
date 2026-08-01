@@ -93,8 +93,8 @@ crash-resume.
 
 Read these before adopting the new surface:
 
-* [`guides/sagas.md`](./guides/sagas.md)
-* [`guides/child-workflows.md`](./guides/child-workflows.md)
-* [`guides/long-running-workflows.md`](./guides/long-running-workflows.md)
-* [`guides/patching.md`](./guides/patching.md)
-* [`guides/workflow-versioning.md`](./guides/workflow-versioning.md)
+* [`guides/sagas.md`](https://github.com/Yyeger/Continuum/blob/main/guides/sagas.md)
+* [`guides/child-workflows.md`](https://github.com/Yyeger/Continuum/blob/main/guides/child-workflows.md)
+* [`guides/long-running-workflows.md`](https://github.com/Yyeger/Continuum/blob/main/guides/long-running-workflows.md)
+* [`guides/patching.md`](https://github.com/Yyeger/Continuum/blob/main/guides/patching.md)
+* [`guides/workflow-versioning.md`](https://github.com/Yyeger/Continuum/blob/main/guides/workflow-versioning.md)
