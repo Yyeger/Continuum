@@ -41,6 +41,9 @@ defmodule Continuum.QueryTest do
                order_by: {:asc, :started_at}
              )
 
+    assert %Continuum.Page{} = page
+    assert [%Continuum.Run{}] = page.entries
+
     assert [%{run_id: ^older, state: :suspended, attributes: %{"region" => "eu"}}] = page.entries
 
     assert {:ok, page} = Continuum.query(where: [{:in, :state, ["completed", "suspended"]}])

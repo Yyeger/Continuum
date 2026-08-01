@@ -81,7 +81,8 @@ defmodule Continuum.Observer do
     * `:page` - 1-based page number.
     * `:per_page` - page size, capped at 100.
   """
-  @spec list_runs(keyword()) :: {:ok, map()} | {:error, term()}
+  @spec list_runs(keyword()) ::
+          {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
   def list_runs(opts \\ []) do
     opts |> observer_query_opts() |> Continuum.Query.list()
   end
@@ -89,7 +90,8 @@ defmodule Continuum.Observer do
   @doc """
   Loads one run for the Observer detail view.
   """
-  @spec get_run(binary(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
+  @spec get_run(binary(), keyword()) ::
+          {:ok, Continuum.Run.t()} | {:error, :not_found | term()}
   def get_run(run_id, opts \\ []) do
     Continuum.Query.get_run(run_id, observer_query_opts(opts))
   end
@@ -135,7 +137,8 @@ defmodule Continuum.Observer do
   exports `redact/1`. The configured `:observer_redactor` application setting
   is used when `:redactor` is omitted.
   """
-  @spec list_events(binary(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec list_events(binary(), keyword()) ::
+          {:ok, Continuum.Page.t(map())} | {:error, term()}
   def list_events(run_id, opts \\ []) do
     with {:ok, instance} <- repo_instance(opts) do
       limit = event_limit(opts)
@@ -156,7 +159,7 @@ defmodule Continuum.Observer do
       next_cursor =
         if length(rows) > limit, do: page_rows |> List.last() |> Map.fetch!(:seq), else: nil
 
-      {:ok, %{entries: entries, next_cursor: next_cursor}}
+      {:ok, %Continuum.Page{entries: entries, per_page: limit, next_cursor: next_cursor}}
     end
   end
 

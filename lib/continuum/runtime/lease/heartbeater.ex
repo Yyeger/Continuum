@@ -599,7 +599,7 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
   end
 
   defp readiness_status(state) do
-    %{
+    %Continuum.Readiness{
       instance: state.instance,
       state: state.lifecycle,
       ready?: state.lifecycle == :ready,
@@ -611,7 +611,7 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
   end
 
   defp not_started_status(instance) do
-    %{
+    %Continuum.Readiness{
       instance: instance.name,
       state: :not_started,
       ready?: false,

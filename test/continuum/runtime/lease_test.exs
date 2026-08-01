@@ -402,6 +402,8 @@ defmodule Continuum.Runtime.LeaseHeartbeaterTest do
              pending_claim_count: 0
            } = Continuum.readiness(instance: instance.name)
 
+    assert %Continuum.Readiness{} = Continuum.readiness(instance: instance.name)
+
     assert Continuum.ready?(instance: instance.name)
     refute Continuum.drained?(instance: instance.name)
 

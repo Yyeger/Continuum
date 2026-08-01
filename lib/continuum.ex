@@ -177,7 +177,7 @@ defmodule Continuum do
   `:not_started`. A degraded drain is not ready and reports a non-zero
   `unreleased_count` in its last drain summary.
   """
-  @spec readiness(keyword()) :: map()
+  @spec readiness(keyword()) :: Continuum.Readiness.t()
   def readiness(opts \\ []) do
     opts
     |> Keyword.get(:instance, Continuum)
@@ -319,7 +319,7 @@ defmodule Continuum do
   See `Continuum.Query` for supported `:where`, `:order_by`, and pagination
   options. Querying requires a Postgres-backed Continuum instance.
   """
-  @spec query(keyword()) :: {:ok, map()} | {:error, term()}
+  @spec query(keyword()) :: {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
   def query(opts \\ []) do
     Continuum.Query.list(opts)
   end
@@ -328,7 +328,7 @@ defmodule Continuum do
   Query durable runs for a named Continuum instance.
   """
   @spec query(atom() | Continuum.Runtime.Instance.t(), keyword()) ::
-          {:ok, map()} | {:error, term()}
+          {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
   def query(instance, opts) do
     Continuum.Query.list(Keyword.put(opts, :instance, instance))
   end
@@ -337,7 +337,8 @@ defmodule Continuum do
   Load one durable run by id. Pass `namespace: expected_namespace` to reject a
   mismatched run as not found.
   """
-  @spec get_run(run_id(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
+  @spec get_run(run_id(), keyword()) ::
+          {:ok, Continuum.Run.t()} | {:error, :not_found | term()}
   def get_run(run_id, opts \\ []) do
     Continuum.Query.get_run(run_id, opts)
   end

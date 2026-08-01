@@ -40,7 +40,7 @@ defmodule Continuum.Query do
     * `:cursor` and `:per_page` - opaque keyset cursor from the previous result;
       `:per_page` caps at 100.
   """
-  @spec list(keyword()) :: {:ok, map()} | {:error, term()}
+  @spec list(keyword()) :: {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
   def list(opts \\ []) do
     with {:ok, instance} <- repo_instance(opts),
          {:ok, query} <- build_query(opts),
@@ -68,7 +68,7 @@ defmodule Continuum.Query do
         end
 
       {:ok,
-       %{
+       %Continuum.Page{
          entries: Enum.map(page_rows, &decode_run(&1, opts)),
          per_page: per_page,
          next_cursor: next_cursor
@@ -79,7 +79,8 @@ defmodule Continuum.Query do
   @doc """
   Loads one run by id.
   """
-  @spec get_run(binary(), keyword()) :: {:ok, map()} | {:error, :not_found | term()}
+  @spec get_run(binary(), keyword()) ::
+          {:ok, Continuum.Run.t()} | {:error, :not_found | term()}
   def get_run(run_id, opts \\ []) do
     with {:ok, instance} <- repo_instance(opts) do
       query = from(r in Run, where: r.id == ^run_id)
@@ -183,7 +184,7 @@ defmodule Continuum.Query do
         {nil, nil, nil, nil}
       end
 
-    %{
+    %Continuum.Run{
       id: run.id,
       run_id: run.id,
       workflow: run.workflow,

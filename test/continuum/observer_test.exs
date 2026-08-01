@@ -38,6 +38,7 @@ defmodule Continuum.ObserverTest do
     assert run.input == %{value: 42}
 
     assert {:ok, %{entries: events, next_cursor: nil}} = Continuum.Observer.list_events(run_id)
+    assert {:ok, %Continuum.Page{entries: ^events}} = Continuum.Observer.list_events(run_id)
     assert Enum.any?(events, &match?(%{type: :side_effect, payload: %{payload: {:ok, 42}}}, &1))
   end
 
