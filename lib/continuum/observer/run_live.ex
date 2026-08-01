@@ -23,6 +23,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         |> assign(:run_id, run_id)
         |> assign(:signal_name, "")
         |> assign(:signal_payload, "{}")
+        |> assign(:event_cursor, nil)
         |> load_run()
 
       {:ok, socket}
@@ -68,6 +69,10 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         {:error, reason} ->
           {:noreply, put_flash(socket, :error, "Signal failed: #{inspect(reason)}")}
       end
+    end
+
+    def handle_event("load-events", _params, socket) do
+      {:noreply, load_more_events(socket)}
     end
 
     @impl true
@@ -146,6 +151,7 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
                 </li>
               <% end %>
             </ol>
+            <button :if={@event_cursor} id="co-load-events" phx-click="load-events">Load more events</button>
           </section>
         <% else %>
           <p class="co-empty">Run not found.</p>
@@ -159,24 +165,46 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       instance = socket.assigns.instance
 
       with {:ok, run} <- Continuum.Observer.get_run(run_id, instance: instance),
-           {:ok, events} <- Continuum.Observer.list_events(run_id, instance: instance) do
+           {:ok, event_page} <- Continuum.Observer.list_events(run_id, instance: instance) do
         socket
         |> assign(:run, run)
-        |> assign(:events, events)
+        |> assign(:events, event_page.entries)
+        |> assign(:event_cursor, event_page.next_cursor)
         |> assign(:continues_to, Continuum.Observer.successor_run_id(run_id, instance: instance))
       else
         {:error, :not_found} ->
           socket
           |> assign(:run, nil)
           |> assign(:events, [])
+          |> assign(:event_cursor, nil)
           |> assign(:continues_to, nil)
 
         {:error, reason} ->
           socket
           |> assign(:run, nil)
           |> assign(:events, [])
+          |> assign(:event_cursor, nil)
           |> assign(:continues_to, nil)
           |> put_flash(:error, "Observer query failed: #{inspect(reason)}")
+      end
+    end
+
+    defp load_more_events(%{assigns: %{event_cursor: nil}} = socket), do: socket
+
+    defp load_more_events(socket) do
+      opts = [
+        instance: socket.assigns.instance,
+        after_seq: socket.assigns.event_cursor
+      ]
+
+      case Continuum.Observer.list_events(socket.assigns.run_id, opts) do
+        {:ok, event_page} ->
+          socket
+          |> assign(:events, socket.assigns.events ++ event_page.entries)
+          |> assign(:event_cursor, event_page.next_cursor)
+
+        {:error, reason} ->
+          put_flash(socket, :error, "Observer event query failed: #{inspect(reason)}")
       end
     end
   end

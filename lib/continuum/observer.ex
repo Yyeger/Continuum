@@ -19,6 +19,10 @@ defmodule Continuum.Observer do
   alias Continuum.Schema.{Event, Run}
 
   @runs_topic "continuum:runs"
+  @default_event_limit 50
+  @max_event_limit 100
+  @default_payload_bytes 65_536
+  @default_display_bytes 4_096
   @type run_state :: :running | :suspended | :completed | :failed | :cancelled
 
   @doc """
@@ -123,21 +127,36 @@ defmodule Continuum.Observer do
   end
 
   @doc """
-  Lists decoded journal events for a run ordered by sequence.
+  Lists a bounded keyset page of decoded journal events ordered by sequence.
+
+  Pass `:after_seq` to continue from a previous page, `:limit` (capped at
+  #{@max_event_limit}), `:max_payload_bytes` to reject oversized encoded
+  payloads before decoding, and `:redactor` as a unary function or module that
+  exports `redact/1`. The configured `:observer_redactor` application setting
+  is used when `:redactor` is omitted.
   """
-  @spec list_events(binary(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec list_events(binary(), keyword()) :: {:ok, map()} | {:error, term()}
   def list_events(run_id, opts \\ []) do
     with {:ok, instance} <- repo_instance(opts) do
-      events =
-        instance.repo.all(
-          from(e in Event,
-            where: e.run_id == ^run_id,
-            order_by: [asc: e.seq, asc: e.inserted_at]
-          )
-        )
-        |> Enum.map(&decode_event/1)
+      limit = event_limit(opts)
+      after_seq = after_seq(opts)
 
-      {:ok, events}
+      query =
+        from(e in Event,
+          where: e.run_id == ^run_id,
+          order_by: [asc: e.seq, asc: e.inserted_at],
+          limit: ^(limit + 1)
+        )
+
+      query = if after_seq, do: where(query, [e], e.seq > ^after_seq), else: query
+      rows = instance.repo.all(query)
+      page_rows = Enum.take(rows, limit)
+      entries = Enum.map(page_rows, &decode_event(&1, opts))
+
+      next_cursor =
+        if length(rows) > limit, do: page_rows |> List.last() |> Map.fetch!(:seq), else: nil
+
+      {:ok, %{entries: entries, next_cursor: next_cursor}}
     end
   end
 
@@ -172,10 +191,16 @@ defmodule Continuum.Observer do
   def decode_signal_payload(payload), do: {:ok, payload}
 
   @doc """
-  Pretty prints an event payload for display.
+  Pretty prints an event payload for display with a hard byte cap.
   """
-  @spec pretty(term()) :: binary()
-  def pretty(term), do: inspect(term, pretty: true, limit: :infinity, printable_limit: :infinity)
+  @spec pretty(term(), keyword()) :: binary()
+  def pretty(term, opts \\ []) do
+    max_bytes = positive_option!(opts, :max_bytes, @default_display_bytes)
+
+    term
+    |> inspect(pretty: true, limit: 50, printable_limit: max_bytes, width: 100)
+    |> truncate_display(max_bytes)
+  end
 
   defp subscribe(instance, topic) do
     if Process.whereis(instance.pubsub) do
@@ -206,9 +231,19 @@ defmodule Continuum.Observer do
     end
   end
 
-  defp decode_event(%Event{} = event) do
+  defp decode_event(%Event{} = event, opts) do
     type = String.to_atom(event.event_type)
-    payload = decode_term(event.payload)
+    max_payload_bytes = positive_option!(opts, :max_payload_bytes, @default_payload_bytes)
+
+    payload =
+      case event.payload do
+        payload when is_binary(payload) and byte_size(payload) > max_payload_bytes ->
+          %{omitted: :payload_too_large, encoded_bytes: byte_size(payload)}
+
+        payload ->
+          decode_term(payload)
+      end
+      |> redact(opts)
 
     %{
       run_id: event.run_id,
@@ -229,6 +264,61 @@ defmodule Continuum.Observer do
   end
 
   defp decode_term(other), do: other
+
+  defp event_limit(opts) do
+    opts
+    |> positive_option!(:limit, @default_event_limit)
+    |> min(@max_event_limit)
+  end
+
+  defp after_seq(opts) do
+    case Keyword.get(opts, :after_seq) do
+      nil ->
+        nil
+
+      value when is_integer(value) and value >= 0 ->
+        value
+
+      value ->
+        raise ArgumentError,
+              "expected :after_seq to be a non-negative integer, got: #{inspect(value)}"
+    end
+  end
+
+  defp positive_option!(opts, key, default) do
+    case Keyword.get(opts, key, default) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value ->
+        raise ArgumentError,
+              "expected #{inspect(key)} to be a positive integer, got: #{inspect(value)}"
+    end
+  end
+
+  defp redact(payload, opts) do
+    case Keyword.get(opts, :redactor, Application.get_env(:continuum, :observer_redactor)) do
+      nil -> payload
+      redactor when is_function(redactor, 1) -> redactor.(payload)
+      module when is_atom(module) -> module.redact(payload)
+      redactor -> raise ArgumentError, "invalid Observer redactor: #{inspect(redactor)}"
+    end
+  end
+
+  defp truncate_display(text, max_bytes) when byte_size(text) <= max_bytes, do: text
+
+  defp truncate_display(text, max_bytes) do
+    text
+    |> binary_part(0, max_bytes)
+    |> valid_prefix()
+    |> Kernel.<>("…")
+  end
+
+  defp valid_prefix(prefix) do
+    if String.valid?(prefix),
+      do: prefix,
+      else: valid_prefix(binary_part(prefix, 0, byte_size(prefix) - 1))
+  end
 
   defp normalize_signal_name(name) when is_atom(name), do: {:ok, name}
 

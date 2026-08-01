@@ -102,6 +102,7 @@ defmodule Continuum.ObserverLiveTest do
     assert html =~ "SideEffectFlow"
     assert html =~ "side_effect"
     assert html =~ "payload"
+    assert html =~ ~s(<details class="co-payload">)
   end
 
   test "run detail renders valid lineage links" do

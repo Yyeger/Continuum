@@ -38,8 +38,47 @@ defmodule Continuum.ObserverTest do
     assert run.workflow =~ "SideEffectFlow"
     assert run.input == %{value: 42}
 
-    assert {:ok, events} = Continuum.Observer.list_events(run_id)
+    assert {:ok, %{entries: events, next_cursor: nil}} = Continuum.Observer.list_events(run_id)
     assert Enum.any?(events, &match?(%{type: :side_effect, payload: %{payload: {:ok, 42}}}, &1))
+  end
+
+  test "event inspection is keyset-paged, redacted, and bounded before decoding" do
+    {:ok, run_id} = Continuum.Test.start_postgres(SideEffectFlow, %{value: 42})
+    assert {:ok, %{state: :completed}} = await_postgres(run_id)
+
+    now = DateTime.utc_now()
+
+    for seq <- 1..3 do
+      Repo.insert!(%Continuum.Schema.Event{
+        run_id: run_id,
+        seq: seq,
+        event_type: "side_effect",
+        payload: :erlang.term_to_binary(%{secret: "token-#{seq}", value: seq}),
+        inserted_at: DateTime.add(now, seq, :microsecond)
+      })
+    end
+
+    redactor = fn payload -> Map.replace(payload, :secret, "[REDACTED]") end
+
+    assert {:ok, %{entries: first, next_cursor: 1}} =
+             Continuum.Observer.list_events(run_id, limit: 2, redactor: redactor)
+
+    assert Enum.map(first, & &1.seq) == [0, 1]
+    assert List.last(first).payload.secret == "[REDACTED]"
+
+    assert {:ok, %{entries: rest, next_cursor: nil}} =
+             Continuum.Observer.list_events(run_id,
+               after_seq: 1,
+               limit: 10,
+               max_payload_bytes: 8
+             )
+
+    assert Enum.map(rest, & &1.seq) == [2, 3]
+    assert Enum.all?(rest, &match?(%{omitted: :payload_too_large}, &1.payload))
+
+    rendered = Continuum.Observer.pretty(String.duplicate("x", 10_000), max_bytes: 100)
+    assert byte_size(rendered) <= 103
+    assert String.ends_with?(rendered, "…")
   end
 
   test "runs-index topic receives coarse state updates" do

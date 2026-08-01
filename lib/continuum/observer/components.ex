@@ -24,7 +24,10 @@ if Code.ensure_loaded?(Phoenix.Component) do
 
     def payload(assigns) do
       ~H"""
-      <pre class="co-payload"><%= Continuum.Observer.pretty(@payload) %></pre>
+      <details class="co-payload">
+        <summary>Payload</summary>
+        <pre><%= Continuum.Observer.pretty(@payload) %></pre>
+      </details>
       """
     end
 
