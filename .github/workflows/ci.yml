@@ -8,9 +8,13 @@ on:
     - cron: "17 3 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +60,7 @@ jobs:
 
   dependency-compatibility:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -93,6 +98,7 @@ jobs:
 
   downstream-consumer:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
@@ -102,3 +108,22 @@ jobs:
       - name: Test an external unlocked consumer
         working-directory: ci/downstream_consumer
         run: mix deps.get && mix test
+
+  package-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+      - run: mix deps.get
+      - name: Reject retired dependencies
+        run: mix hex.audit
+      - name: Reject unused lock entries
+        run: mix deps.unlock --check-unused
+      - name: Build docs and check generated links
+        run: mix docs.check
+      - name: Validate the Hex package without publishing
+        run: mix hex.build

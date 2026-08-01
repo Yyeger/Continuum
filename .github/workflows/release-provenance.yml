@@ -1,0 +1,42 @@
+name: Release provenance
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  attest-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+      - run: mix deps.get
+      - name: Verify tag matches package version
+        if: github.ref_type == 'tag'
+        run: test "v$(mix run --no-start -e 'IO.write(Mix.Project.config()[:version])')" = "$GITHUB_REF_NAME"
+      - name: Build source package
+        run: mkdir -p artifacts && mix hex.build -o "artifacts/continuum-${GITHUB_REF_NAME}.tar"
+      - name: Upload source package
+        uses: actions/upload-artifact@v7
+        with:
+          name: continuum-${{ github.ref_name }}
+          path: artifacts/*.tar
+          if-no-files-found: error
+      - name: Attest source package provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: artifacts/*.tar
