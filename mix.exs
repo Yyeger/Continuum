@@ -32,20 +32,24 @@ defmodule Continuum.MixProject do
 
   defp deps do
     [
-      {:ecto_sql, "~> 3.12"},
-      {:postgrex, "~> 0.19"},
-      {:jason, "~> 1.4"},
-      {:telemetry, "~> 1.2"},
-      {:phoenix_pubsub, "~> 2.1"},
-      {:phoenix, "~> 1.7", optional: true},
-      {:phoenix_html, "~> 4.0", optional: true},
-      {:phoenix_live_view, "~> 1.0", optional: true},
-      {:oban, "~> 2.20", optional: true},
-      {:plug_cowboy, "~> 2.7", only: [:dev, :test], optional: true},
-      {:lazy_html, ">= 0.1.0", only: :test},
-      {:stream_data, "~> 1.1", only: [:dev, :test]},
+      {:ecto_sql, dependency_version("~> 3.12", "3.12.0")},
+      {:postgrex, dependency_version("~> 0.19", "0.19.0")},
+      {:jason, dependency_version("~> 1.4", "1.4.0")},
+      {:telemetry, dependency_version("~> 1.2", "1.2.0")},
+      {:phoenix_pubsub, dependency_version("~> 2.1", "2.1.0")},
+      {:phoenix, dependency_version("~> 1.7", "1.7.0"), optional: true},
+      {:phoenix_html, dependency_version("~> 4.0", "4.0.0"), optional: true},
+      {:phoenix_live_view, dependency_version("~> 1.0", "1.0.0"), optional: true},
+      {:oban, dependency_version("~> 2.20", "2.20.0"), optional: true},
+      {:plug_cowboy, dependency_version("~> 2.7", "2.7.0"), only: [:dev, :test], optional: true},
+      {:lazy_html, dependency_version(">= 0.1.0", "0.1.0"), only: :test},
+      {:stream_data, dependency_version("~> 1.1", "1.1.0"), only: [:dev, :test]},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
+  end
+
+  defp dependency_version(supported, minimum) do
+    if System.get_env("CONTINUUM_MINIMUM_DEPS") == "1", do: minimum, else: supported
   end
 
   defp package do

@@ -53,3 +53,52 @@ jobs:
           CONTINUUM_PARANOID: "1"
         run: mix test --seed 0
       - run: mix test.cluster
+
+  dependency-compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: latest-compatible-unlocked
+            minimum: "0"
+          - name: minimum-supported
+            minimum: "1"
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: continuum
+          POSTGRES_PASSWORD: continuum
+          POSTGRES_DB: continuum_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CONTINUUM_MINIMUM_DEPS: ${{ matrix.minimum }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+      - name: Resolve without the committed lock
+        run: rm mix.lock && mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  downstream-consumer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+      - name: Test an external unlocked consumer
+        working-directory: ci/downstream_consumer
+        run: mix deps.get && mix test
