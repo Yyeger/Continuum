@@ -27,7 +27,11 @@ Returning `nil` opts out for that activity call.
 
 Continuum records committed activity results in `continuum_activity_results`.
 Replay still reads from `continuum_events`; the side table only suppresses
-future duplicate execution.
+future duplicate execution. These records are retained independently of
+workflow history: partition cleanup and continued-chain archival never delete
+them. If an application needs a bounded idempotency lifetime, implement an
+explicit operator-owned policy whose TTL is at least as long as the external
+system's duplicate-suppression contract.
 
 There is one remaining crash window: if the activity performs the external side
 effect and the worker dies before Continuum commits the result, a retry can run

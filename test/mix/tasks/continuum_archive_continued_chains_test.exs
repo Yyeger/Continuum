@@ -83,7 +83,7 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChainsTest do
     assert only_run_ids(ActivityAttempt) == [run3]
     assert only_run_ids(ActivityOperation) == [run3]
     assert only_run_ids(ActivityTask) == [run3]
-    assert only_run_ids(ActivityResult) == [run3]
+    assert only_run_ids(ActivityResult) == Enum.sort([run1, run2, run3])
   end
 
   test "the original root handle reaches a live tail after archival" do

@@ -38,8 +38,6 @@ defmodule Mix.Tasks.Continuum.Partitions.DropOld do
       |> Enum.filter(&old_managed_partition?(&1, current_month, cutoff_date))
       |> Enum.filter(&fully_expired?(repo, &1))
 
-    cleanup_activity_results(repo, dry_run?)
-
     Enum.each(expired, fn partition ->
       if dry_run? do
         Mix.shell().info("Would drop #{partition}")
@@ -98,38 +96,6 @@ defmodule Mix.Tasks.Continuum.Partitions.DropOld do
 
     %{rows: [[expired?]]} = repo.query!(sql)
     expired?
-  end
-
-  defp cleanup_activity_results(repo, true) do
-    if table_exists?(repo, "continuum_activity_results") do
-      %{rows: [[count]]} =
-        repo.query!("""
-        SELECT count(*)
-        FROM continuum_activity_results ar
-        JOIN continuum_runs r ON r.id = ar.run_id
-        WHERE r.retention_until < now()
-        """)
-
-      Mix.shell().info("Would clean #{count} activity_results rows")
-    end
-  end
-
-  defp cleanup_activity_results(repo, false) do
-    if table_exists?(repo, "continuum_activity_results") do
-      %{num_rows: count} =
-        repo.query!("""
-        DELETE FROM continuum_activity_results ar
-        USING continuum_runs r
-        WHERE ar.run_id = r.id AND r.retention_until < now()
-        """)
-
-      Mix.shell().info("Cleaned #{count} activity_results rows")
-    end
-  end
-
-  defp table_exists?(repo, table) do
-    %{rows: [[exists?]]} = repo.query!("SELECT to_regclass($1) IS NOT NULL", [table])
-    exists?
   end
 
   defp parse_repo(opts) do

@@ -17,7 +17,6 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
   alias Continuum.Schema.{
     ActivityAttempt,
     ActivityOperation,
-    ActivityResult,
     ActivityTask,
     Event,
     Run,
@@ -95,8 +94,7 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
       {"continuum_signals", count(repo, Signal, run_ids)},
       {"continuum_activity_attempts", count(repo, ActivityAttempt, run_ids)},
       {"continuum_activity_operations", count(repo, ActivityOperation, run_ids)},
-      {"continuum_activity_tasks", count(repo, ActivityTask, run_ids)},
-      {"continuum_activity_results", count(repo, ActivityResult, run_ids)}
+      {"continuum_activity_tasks", count(repo, ActivityTask, run_ids)}
     ]
   end
 
@@ -109,7 +107,6 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
       continuum_activity_attempts
       continuum_activity_operations
       continuum_activity_tasks
-      continuum_activity_results
     )
   end
 
@@ -128,7 +125,6 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
       delete_all(repo, ActivityAttempt, run_ids)
       delete_all(repo, ActivityOperation, run_ids)
       delete_all(repo, ActivityTask, run_ids)
-      delete_all(repo, ActivityResult, run_ids)
       delete_runs(repo, run_ids)
     end)
     |> case do

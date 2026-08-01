@@ -105,7 +105,6 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
 
     Mix.Task.rerun("continuum.partitions.drop_old", ["--older-than", "180d"])
     assert partition_exists?(partition)
-    assert_received {:mix_shell, :info, ["Would clean 1 activity_results rows"]}
     assert_received {:mix_shell, :info, ["Would drop " <> ^partition]}
     assert activity_results_count() == 1
 
@@ -117,9 +116,8 @@ defmodule Mix.Tasks.Continuum.PartitionsTest do
 
     Mix.Task.rerun("continuum.partitions.drop_old", ["--older-than", "180d", "--execute"])
     refute partition_exists?(partition)
-    assert_received {:mix_shell, :info, ["Cleaned 1 activity_results rows"]}
     assert_received {:mix_shell, :info, ["Dropped " <> ^partition]}
-    assert activity_results_count() == 0
+    assert activity_results_count() == 1
 
     assert_received {:telemetry, [:continuum, :partition, :dropped], %{count: execute_count},
                      %{dry_run?: false, partitions: execute_partitions}}

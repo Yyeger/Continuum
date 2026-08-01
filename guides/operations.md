@@ -226,7 +226,10 @@ A run is eligible only when it is:
 - not part of a child chain whose parent is still non-terminal
 
 The task deletes dependent rows from events, snapshots, timers, signals,
-activity tasks, and activity results before deleting the run rows.
+activity attempts, activity operations, and activity tasks before deleting the
+run rows. It deliberately retains `continuum_activity_results`, whose lifetime
+is independent of workflow-history retention and protects cross-run
+idempotency.
 
 ## Event Partitions
 
@@ -274,7 +277,8 @@ mix continuum.partitions.drop_old --repo MyApp.Repo --older-than 180d --execute
 Treat `drop_old` like any destructive retention operation: run without
 `--execute` first, review the output, then run with `--execute` from an
 operator-controlled job. Retention deletion is intentionally never performed
-by the scheduled maintainer.
+by the scheduled maintainer. Dropping event partitions does not delete
+`continuum_activity_results`.
 
 Alert on `[:continuum, :partition, :maintenance_failed]`, missing horizon
 months, or a non-zero default-partition row count. Successful/skipped passes
