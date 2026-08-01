@@ -5,6 +5,10 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   alias Continuum.{DurableTerm, Runtime.Engine, Runtime.Journal, Telemetry}
 
+  @max_error_bytes 65_536
+  @max_error_text_bytes 4_096
+  @max_stacktrace_entries 20
+
   def execute(task) do
     started_at = System.monotonic_time(:millisecond)
 
@@ -276,9 +280,9 @@ defmodule Continuum.Runtime.ActivityWorker do
           try do
             {:ok, apply(mod, fun, args)}
           rescue
-            exception -> {:error, exception}
+            exception -> {:error, {:activity_exception, exception, __STACKTRACE__}}
           catch
-            kind, reason -> {:error, {kind, reason}}
+            kind, reason -> {:error, {:activity_catch, kind, reason, __STACKTRACE__}}
           end
 
         send(parent, {ref, result})
@@ -290,7 +294,7 @@ defmodule Continuum.Runtime.ActivityWorker do
         result
 
       {:DOWN, ^monitor_ref, :process, ^pid, reason} ->
-        {:error, {:exit, reason}}
+        {:error, {:activity_exit, reason}}
     after
       timeout_ms ->
         Process.demonitor(monitor_ref, [:flush])
@@ -353,12 +357,88 @@ defmodule Continuum.Runtime.ActivityWorker do
   end
 
   defp fail_or_retry(task, error, started_at) do
+    error = normalize_error(error)
+
     if task.attempt < max_attempts(task.retry) do
       retry(task, error, started_at)
     else
       fail(task, error, started_at)
     end
   end
+
+  @doc false
+  def normalize_error({:activity_exception, exception, stacktrace}) do
+    durable_or_fallback(exception, :error, exception.__struct__, stacktrace)
+  end
+
+  def normalize_error({:activity_catch, kind, reason, stacktrace})
+      when kind in [:throw, :exit] do
+    durable_or_fallback({kind, reason}, kind, nil, stacktrace)
+  end
+
+  def normalize_error({:activity_exit, reason}) do
+    durable_or_fallback({:exit, reason}, :exit, nil, [])
+  end
+
+  def normalize_error(error) do
+    durable_or_fallback(error, :error, error_class(error), [])
+  end
+
+  defp durable_or_fallback(error, kind, class, stacktrace) do
+    with :ok <- DurableTerm.validate(error, :activity_error),
+         true <- byte_size(:erlang.term_to_binary(error)) <= @max_error_bytes do
+      error
+    else
+      _ -> fallback_error(error, kind, class, stacktrace)
+    end
+  rescue
+    _ -> fallback_error(error, kind, class, stacktrace)
+  end
+
+  defp fallback_error(error, kind, class, stacktrace) do
+    %Continuum.ActivityError{
+      kind: kind,
+      class: if(class, do: inspect(class), else: nil),
+      message: error_message(error, kind),
+      reason: bounded_inspect(error),
+      stacktrace:
+        stacktrace
+        |> Enum.take(@max_stacktrace_entries)
+        |> Enum.map(&bounded_stacktrace_entry/1)
+    }
+  end
+
+  defp error_message(error, :error) when is_exception(error) do
+    error
+    |> Exception.message()
+    |> truncate(@max_error_text_bytes)
+  rescue
+    _ -> "activity raised an unserializable exception"
+  end
+
+  defp error_message(_error, kind), do: "activity #{kind} contained non-durable data"
+
+  defp bounded_inspect(error) do
+    error
+    |> inspect(limit: 20, printable_limit: @max_error_text_bytes, width: 80)
+    |> truncate(@max_error_text_bytes)
+  rescue
+    _ -> "#<uninspectable activity error>"
+  end
+
+  defp bounded_stacktrace_entry(entry) do
+    entry
+    |> Exception.format_stacktrace_entry()
+    |> truncate(@max_error_text_bytes)
+  rescue
+    _ -> "#<uninspectable stacktrace entry>"
+  end
+
+  defp truncate(value, max_bytes) when byte_size(value) <= max_bytes, do: value
+  defp truncate(value, max_bytes), do: binary_part(value, 0, max_bytes) <> "..."
+
+  defp error_class(error) when is_exception(error), do: error.__struct__
+  defp error_class(_error), do: nil
 
   defp retry(task, error, started_at) do
     backoff_ms = backoff_ms(task.retry, task.attempt)

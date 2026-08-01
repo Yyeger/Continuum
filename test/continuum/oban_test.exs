@@ -61,6 +61,18 @@ defmodule Continuum.ObanTest do
     end
   end
 
+  defmodule UnsafeErrorActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(_input), do: throw(self())
+  end
+
+  defmodule UnsafeErrorFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input), do: activity(UnsafeErrorActivity.run(input))
+  end
+
   defmodule IdempotentActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
 
@@ -249,6 +261,30 @@ defmodule Continuum.ObanTest do
     assert {:ok, %{state: :completed, result: {:error, :timeout}}} =
              Continuum.await(run_id, 1_000, journal: Postgres, instance: instance.name)
 
+    assert ["activity_scheduled", "activity_failed"] = event_types(run_id)
+  end
+
+  test "Oban worker persists a durable fallback for unsafe activity errors" do
+    instance = start_oban_continuum!()
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(UnsafeErrorFlow, :input,
+        journal: Postgres,
+        instance: instance.name
+      )
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    assert {:ok, 1} = Dispatcher.dispatch_once(instance: instance.name, batch_size: 1)
+    assert :ok = perform_next_oban_job()
+
+    assert {:ok,
+            %{
+              state: :completed,
+              result: {:error, %Continuum.ActivityError{kind: :throw} = error}
+            }} =
+             Continuum.await(run_id, 1_000, journal: Postgres, instance: instance.name)
+
+    assert :ok = Continuum.DurableTerm.validate(error, :activity_error)
     assert ["activity_scheduled", "activity_failed"] = event_types(run_id)
   end
 

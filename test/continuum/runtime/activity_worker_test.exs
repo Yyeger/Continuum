@@ -38,6 +38,25 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule UnsafeActivityError do
+    defexception [:owner, message: "unsafe activity failure"]
+  end
+
+  defmodule UnsafeErrorActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(:raise_pid), do: raise(%UnsafeActivityError{owner: self()})
+    def run(:throw_pid), do: throw(self())
+    def run(:exit_reference), do: exit(make_ref())
+    def run(:oversized), do: throw(String.duplicate("x", 70_000))
+  end
+
+  defmodule UnsafeErrorFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input), do: activity(UnsafeErrorActivity.run(input.mode))
+  end
+
   defmodule IdempotentActivity do
     use Continuum.Activity, retry: [max_attempts: 1]
 
@@ -263,6 +282,33 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     assert Exception.message(error) =~ "activity_result"
     assert Repo.one!(ActivityTask).state == "discarded"
     assert event_types(run_id) == ["activity_scheduled", "activity_failed"]
+  end
+
+  test "sanitizes non-durable and oversized activity errors before persistence" do
+    for {mode, kind} <- [
+          raise_pid: :error,
+          throw_pid: :throw,
+          exit_reference: :exit,
+          oversized: :throw
+        ] do
+      {:ok, run_id} =
+        Continuum.Runtime.Engine.start_run(UnsafeErrorFlow, %{mode: mode}, journal: Postgres)
+
+      assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+      assert {:ok, 1} = Dispatcher.dispatch_once(owner: "unsafe-error", batch_size: 1)
+
+      assert {:ok,
+              %{
+                state: :completed,
+                result: {:error, %Continuum.ActivityError{kind: ^kind} = error}
+              }} = Continuum.await(run_id, 1_000, journal: Postgres)
+
+      assert :ok = Continuum.DurableTerm.validate(error, :activity_error)
+      assert byte_size(:erlang.term_to_binary(error)) < 65_536
+      assert Repo.one!(ActivityTask).state == "discarded"
+
+      Repo.delete_all(ActivityTask)
+    end
   end
 
   test "activity idempotency hit skips the MFA and journals the committed result" do
