@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.7.1 — 2026-08-01 — "Pipeline hardening"
+
+### Fixes
+
+- Raised supported dependency floors and refreshed the lockfile to releases
+  without known Hex security advisories.
+- Replaced the development and test Cowboy adapter with Bandit while Cowlib
+  has unresolved request and response injection advisories.
+- Aligned the minimum-dependency lane across Ecto, Decimal, Jason, Telemetry,
+  Phoenix, and LiveView so its clean resolver and strict compile pass.
+- Made release tag verification read the package version without compiling
+  dependencies or capturing compiler output in the comparison.
+
 ## v0.7.0 — 2026-08-01 — "Product foundations"
 
 ### Durable ingress and lifecycle
