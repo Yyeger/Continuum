@@ -42,6 +42,7 @@ defmodule Continuum.Health do
       leases = lease_health(instance.repo, now, opts, reviews)
       activities = activity_health(instance.repo, now, opts, reviews)
       signals = signal_health(instance.repo, now)
+      schedules = schedule_health(instance.repo, now, opts, reviews)
       lost_wakes = lost_wake_health(instance.repo, now, opts, reviews)
       runtime = Continuum.readiness(instance: instance)
 
@@ -64,7 +65,8 @@ defmodule Continuum.Health do
             runs,
             timers,
             leases,
-            activities
+            activities,
+            schedules
           ),
         runtime: runtime,
         partitions: partitions,
@@ -73,7 +75,8 @@ defmodule Continuum.Health do
         timers: timers,
         leases: leases,
         activities: activities,
-        signals: signals
+        signals: signals,
+        schedules: schedules
       }
 
       {:ok, report}
@@ -608,7 +611,56 @@ defmodule Continuum.Health do
     }
   end
 
-  defp overall_status(runtime, partitions, versions, runs, timers, leases, activities) do
+  # A schedule that exhausts its start attempts stops retrying and parks in the
+  # terminal `failed` state. That is the only place it is recorded, so it has to
+  # be actionable here or it is invisible.
+  defp schedule_health(repo, now, opts, reviews) do
+    failed =
+      query_rows(
+        repo,
+        """
+        SELECT id::text, run_id::text, workflow, attempt, scheduled_at, last_error
+        FROM continuum_schedules
+        WHERE state = 'failed'
+        ORDER BY scheduled_at
+        LIMIT $1
+        """,
+        [candidate_query_limit(opts, reviews)]
+      )
+      |> Enum.map(fn [schedule_id, run_id, workflow, attempt, scheduled_at, last_error] ->
+        finding(:failed_schedule, schedule_id, [attempt, last_error], reviews, %{
+          schedule_id: schedule_id,
+          run_id: run_id,
+          workflow: workflow,
+          attempt: attempt,
+          scheduled_at: scheduled_at,
+          age_ms: age_ms(now, scheduled_at),
+          error: last_error
+        })
+      end)
+      |> limit_findings(result_limit(opts))
+
+    [pending_count, oldest_due_at] =
+      query_rows(repo, """
+      SELECT count(*)::bigint, min(scheduled_at)
+      FROM continuum_schedules
+      WHERE state IN ('scheduled', 'starting') AND scheduled_at <= clock_timestamp()
+      """)
+      |> List.first()
+
+    %{
+      failed_count:
+        scalar(repo, """
+        SELECT count(*)::bigint FROM continuum_schedules WHERE state = 'failed'
+        """),
+      failed: failed,
+      due_count: pending_count,
+      oldest_due_at: oldest_due_at,
+      due_lag_ms: age_ms(now, oldest_due_at)
+    }
+  end
+
+  defp overall_status(runtime, partitions, versions, runs, timers, leases, activities, schedules) do
     degraded? =
       runtime.state == :degraded or partitions.status == :degraded or
         versions.status == :degraded or
@@ -616,7 +668,8 @@ defmodule Continuum.Health do
         unreviewed?(timers.overdue_count, timers.overdue) or
         unreviewed?(leases.expired_count, Enum.filter(leases.entries, & &1.expired)) or
         unreviewed?(activities.expired_lease_count, activities.expired_leases) or
-        unreviewed?(activities.dead_letter_count, activities.dead_letter_candidates)
+        unreviewed?(activities.dead_letter_count, activities.dead_letter_candidates) or
+        unreviewed?(schedules.failed_count, schedules.failed)
 
     if degraded?, do: :degraded, else: :ok
   end

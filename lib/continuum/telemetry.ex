@@ -37,6 +37,9 @@ defmodule Continuum.Telemetry do
     * `[:continuum, :activity, :operated]`
     * `[:continuum, :timer, :scheduled]`
     * `[:continuum, :timer, :fired]`
+    * `[:continuum, :schedule, :started]`
+    * `[:continuum, :schedule, :retried]`
+    * `[:continuum, :schedule, :failed]`
     * `[:continuum, :signal, :awaited]`
     * `[:continuum, :signal, :delivered]`
     * `[:continuum, :signal, :received]`
@@ -114,6 +117,9 @@ defmodule Continuum.Telemetry do
     [:continuum, :activity, :operated],
     [:continuum, :timer, :scheduled],
     [:continuum, :timer, :fired],
+    [:continuum, :schedule, :started],
+    [:continuum, :schedule, :retried],
+    [:continuum, :schedule, :failed],
     [:continuum, :signal, :awaited],
     [:continuum, :signal, :delivered],
     [:continuum, :signal, :received],

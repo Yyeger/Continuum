@@ -6,12 +6,19 @@ defmodule Continuum.Runtime.ScheduleRunner do
 
   import Ecto.Query
 
+  alias Continuum.Activity.Policy
   alias Continuum.Runtime.{Engine, Instance}
   alias Continuum.Schema.{Run, Schedule}
 
   @default_interval_ms 1_000
   @default_batch_size 25
   @stale_claim_seconds 30
+
+  # A schedule whose start keeps failing (an unloaded workflow version, say)
+  # used to retry every 5s forever, holding a claim slot in every batch. Back
+  # off on the `attempt` the claim already increments, and give up loudly.
+  @retry_policy [backoff: :exponential, base_ms: 5_000, jitter_ms: 2_000, max_backoff_ms: 300_000]
+  @max_attempts 12
 
   def start_link(opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -79,7 +86,7 @@ defmodule Continuum.Runtime.ScheduleRunner do
     WHERE schedule.id = candidates.id
     RETURNING schedule.id::text, schedule.run_id::text, schedule.workflow,
               schedule.version_hash, schedule.input, schedule.namespace,
-              schedule.attributes, schedule.trace_context
+              schedule.attributes, schedule.trace_context, schedule.attempt
     """
 
     case instance.repo.query(sql, [@stale_claim_seconds, min(batch_size, 1_000)]) do
@@ -98,7 +105,8 @@ defmodule Continuum.Runtime.ScheduleRunner do
          input,
          namespace,
          attributes,
-         trace_context
+         trace_context,
+         attempt
        ]) do
     %{
       id: id,
@@ -108,7 +116,8 @@ defmodule Continuum.Runtime.ScheduleRunner do
       input: :erlang.binary_to_term(input),
       namespace: namespace,
       attributes: attributes || %{},
-      trace_context: trace_context
+      trace_context: trace_context,
+      attempt: attempt
     }
   end
 
@@ -162,14 +171,50 @@ defmodule Continuum.Runtime.ScheduleRunner do
   end
 
   defp retry_later(instance, schedule, reason) do
+    error = inspect(reason, limit: 20, printable_limit: 2_000)
+
+    if schedule.attempt >= @max_attempts do
+      give_up(instance, schedule, error)
+    else
+      backoff_ms = Policy.backoff_ms(@retry_policy, schedule.attempt)
+
+      instance.repo.update_all(
+        from(s in Schedule, where: s.id == ^schedule.id and s.state == "starting"),
+        set: [
+          state: "scheduled",
+          scheduled_at: DateTime.utc_now() |> DateTime.add(backoff_ms, :millisecond),
+          last_error: error
+        ]
+      )
+
+      :telemetry.execute([:continuum, :schedule, :retried], %{backoff_ms: backoff_ms}, %{
+        instance: instance.name,
+        schedule_id: schedule.id,
+        run_id: schedule.run_id,
+        attempt: schedule.attempt,
+        error: error
+      })
+    end
+  end
+
+  defp give_up(instance, schedule, error) do
     instance.repo.update_all(
       from(s in Schedule, where: s.id == ^schedule.id and s.state == "starting"),
-      set: [
-        state: "scheduled",
-        scheduled_at: DateTime.utc_now() |> DateTime.add(5, :second),
-        last_error: inspect(reason, limit: 20, printable_limit: 2_000)
-      ]
+      set: [state: "failed", last_error: error]
     )
+
+    Logger.error(
+      "Continuum schedule #{schedule.id} failed to start after " <>
+        "#{schedule.attempt} attempts: #{error}"
+    )
+
+    :telemetry.execute([:continuum, :schedule, :failed], %{}, %{
+      instance: instance.name,
+      schedule_id: schedule.id,
+      run_id: schedule.run_id,
+      attempt: schedule.attempt,
+      error: error
+    })
   end
 
   defp schedule_poll(delay), do: Process.send_after(self(), :poll, delay)
