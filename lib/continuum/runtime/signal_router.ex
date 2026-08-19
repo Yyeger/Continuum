@@ -80,6 +80,12 @@ defmodule Continuum.Runtime.SignalRouter do
 
   @impl true
   def init(opts) do
+    # `Postgrex.Notifications.start_link/1` links the notifier to this process.
+    # Without trapping, a refused connection kills the router before the retry
+    # in `start_listener/1` can be scheduled, and a later notifier crash takes
+    # the router with it.
+    Process.flag(:trap_exit, true)
+
     opts = Continuum.Config.validate_component!(:signal_router, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     config = Continuum.Config.validate_component!(:signal_router, router_config())
@@ -124,6 +130,18 @@ defmodule Continuum.Runtime.SignalRouter do
     schedule_catch_up(state)
     {:noreply, state}
   end
+
+  def handle_info({:EXIT, notifier, reason}, %{notifier: notifier} = state) do
+    Logger.warning(
+      "Continuum.SignalRouter notification listener stopped " <>
+        "(#{inspect(reason)}); retrying in #{@listener_retry_ms}ms"
+    )
+
+    Process.send_after(self(), :start_listener, @listener_retry_ms)
+    {:noreply, %{state | notifier: nil, ref: nil}}
+  end
+
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
   defp deliver_durable(instance, run_id, name, payload, opts) do
     # Delivery resolves continue_as_new chains to the live tip; wake that run,
@@ -218,8 +236,8 @@ defmodule Continuum.Runtime.SignalRouter do
 
       case Postgrex.Notifications.start_link(config) do
         {:ok, notifier} ->
-          {:ok, ref} = Postgrex.Notifications.listen(notifier, "continuum_signal")
-          {:ok, _wake_ref} = Postgrex.Notifications.listen(notifier, "continuum_run_wake")
+          ref = listen!(notifier, "continuum_signal")
+          _wake_ref = listen!(notifier, "continuum_run_wake")
 
           # Anything delivered while we were deaf is woken now; afterwards the
           # periodic backstop covers dropped notifications.
@@ -239,6 +257,18 @@ defmodule Continuum.Runtime.SignalRouter do
           Process.send_after(self(), :start_listener, @listener_retry_ms)
           state
       end
+    end
+  end
+
+  # `Postgrex.Notifications.listen/2` answers `{:eventually, ref}` when the
+  # notifier has not connected yet — a Postgres blip while the node boots.
+  # Postgres issues the LISTEN once the connection comes up, so that is a
+  # subscription that will take effect, not a failure. Matching only `{:ok, ref}`
+  # raised a MatchError inside `init/1` instead, defeating the retry below.
+  defp listen!(notifier, channel) do
+    case Postgrex.Notifications.listen(notifier, channel) do
+      {:ok, ref} -> ref
+      {:eventually, ref} -> ref
     end
   end
 

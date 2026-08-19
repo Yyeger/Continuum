@@ -1,6 +1,7 @@
 defmodule Continuum.Runtime.TimerWheelTest do
   use Continuum.Test.DataCase, async: false
 
+  alias Continuum.Runtime.Instance
   alias Continuum.Runtime.Journal.Postgres
   alias Continuum.Runtime.TimerWheel
   alias Continuum.Schema.{Run, Timer}
@@ -22,6 +23,76 @@ defmodule Continuum.Runtime.TimerWheelTest do
       timer(input.ms)
       {:ok, :fired}
     end
+  end
+
+  defmodule UnreachableRepo do
+    # Stands in for a repo whose notification connection cannot be established
+    # while the node boots. `Postgrex.Notifications.start_link/1` answers
+    # `{:error, _}` for a refused connection, and it links, so the failure also
+    # arrives as an exit signal. Queries still go to the real test repo, which
+    # is what a node with a working pool but a failed LISTEN looks like.
+    def config do
+      [hostname: "localhost", port: 1, username: "x", password: "x", database: "x"]
+    end
+
+    defdelegate all(queryable), to: Continuum.Test.Repo
+    defdelegate all(queryable, opts), to: Continuum.Test.Repo
+  end
+
+  test "the listener survives an unreachable Postgres and schedules a retry" do
+    name = :"continuum_timer_wheel_test_#{System.unique_integer([:positive])}"
+    Instance.register(Instance.new(name: name, repo: UnreachableRepo))
+    on_exit(fn -> :persistent_term.erase({Instance, name}) end)
+
+    {:ok, pid} =
+      TimerWheel.start_link(instance: name, listen?: true, enabled?: true, refresh_ms: 60_000)
+
+    # The wheel must come up deaf rather than dying: the DB refresh is still a
+    # working fallback, and the retry re-establishes LISTEN when Postgres returns.
+    state = :sys.get_state(pid)
+    assert state.notifier == nil
+    assert Process.alive?(pid)
+
+    # A retry that still cannot connect leaves the wheel alive and deaf.
+    send(pid, :start_listener)
+    assert :sys.get_state(pid).notifier == nil
+    assert Process.alive?(pid)
+  end
+
+  test "the listener attaches and a redundant retry keeps the live notifier" do
+    name = :"continuum_timer_wheel_test_#{System.unique_integer([:positive])}"
+    Instance.register(Instance.new(name: name, repo: Repo))
+    on_exit(fn -> :persistent_term.erase({Instance, name}) end)
+
+    {:ok, pid} =
+      TimerWheel.start_link(instance: name, listen?: true, enabled?: true, refresh_ms: 60_000)
+
+    notifier = :sys.get_state(pid).notifier
+    assert is_pid(notifier)
+
+    send(pid, :start_listener)
+    assert :sys.get_state(pid).notifier == notifier
+  end
+
+  test "a notifier crash leaves the wheel alive and deaf until it retries" do
+    name = :"continuum_timer_wheel_test_#{System.unique_integer([:positive])}"
+    Instance.register(Instance.new(name: name, repo: Repo))
+    on_exit(fn -> :persistent_term.erase({Instance, name}) end)
+
+    {:ok, pid} =
+      TimerWheel.start_link(instance: name, listen?: true, enabled?: true, refresh_ms: 60_000)
+
+    notifier = :sys.get_state(pid).notifier
+    assert is_pid(notifier)
+
+    Process.exit(notifier, :kill)
+
+    assert_eventually(fn -> :sys.get_state(pid).notifier == nil end)
+    assert Process.alive?(pid)
+
+    # And the scheduled retry re-attaches once it fires.
+    send(pid, :start_listener)
+    assert is_pid(:sys.get_state(pid).notifier)
   end
 
   test "timer schedules durable row and completes after TimerWheel fires it" do

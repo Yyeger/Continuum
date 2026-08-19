@@ -21,6 +21,7 @@ defmodule Continuum.Runtime.TimerWheel do
   @default_window_ms 60_000
   @default_batch_size 50
   @due_retry_ms 100
+  @listener_retry_ms 5_000
 
   @doc false
   def start_link(opts \\ []) do
@@ -54,6 +55,11 @@ defmodule Continuum.Runtime.TimerWheel do
 
   @impl true
   def init(opts) do
+    # `Postgrex.Notifications.start_link/1` links the notifier to this process.
+    # Without trapping, a refused connection kills the wheel before the retry
+    # below can be scheduled, and a later notifier crash takes the wheel with it.
+    Process.flag(:trap_exit, true)
+
     opts = Continuum.Config.validate_component!(:timer_wheel, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     config = Continuum.Config.validate_component!(:timer_wheel, timer_config())
@@ -125,6 +131,22 @@ defmodule Continuum.Runtime.TimerWheel do
   end
 
   def handle_info({:notification, _pid, _ref, _channel, _payload}, state), do: {:noreply, state}
+
+  def handle_info(:start_listener, state) do
+    {:noreply, state |> start_listener() |> hydrate_window() |> schedule_next_tick()}
+  end
+
+  def handle_info({:EXIT, notifier, reason}, %{notifier: notifier} = state) do
+    Logger.warning(
+      "Continuum.TimerWheel notification listener stopped " <>
+        "(#{inspect(reason)}); retrying in #{@listener_retry_ms}ms"
+    )
+
+    Process.send_after(self(), :start_listener, @listener_retry_ms)
+    {:noreply, %{state | notifier: nil, notify_ref: nil}}
+  end
+
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
   @impl true
   def handle_call(:reset_cache, _from, state) do
@@ -361,16 +383,38 @@ defmodule Continuum.Runtime.TimerWheel do
 
   defp start_listener(%{listen?: false} = state), do: state
   defp start_listener(%{instance: %{repo: nil}} = state), do: state
+  defp start_listener(%{notifier: notifier} = state) when is_pid(notifier), do: state
 
   defp start_listener(state) do
     case Postgrex.Notifications.start_link(state.instance.repo.config()) do
       {:ok, notifier} ->
-        {:ok, ref} = Postgrex.Notifications.listen(notifier, "continuum_timer_armed")
+        ref = listen!(notifier, "continuum_timer_armed")
         %{state | notifier: notifier, notify_ref: ref}
 
       {:error, reason} ->
-        Logger.warning("TimerWheel notification listener failed: #{inspect(reason)}")
+        # A node that silently never LISTENs never sees `continuum_timer_armed`,
+        # so `hydrate_run_timers/2` never runs and freshly-armed near-term timers
+        # wait for a full refresh window — for the lifetime of the node. Log and
+        # retry instead of giving up at init, the same as `SignalRouter`.
+        Logger.warning(
+          "Continuum.TimerWheel notification listener failed to start " <>
+            "(#{inspect(reason)}); retrying in #{@listener_retry_ms}ms"
+        )
+
+        Process.send_after(self(), :start_listener, @listener_retry_ms)
         state
+    end
+  end
+
+  # `Postgrex.Notifications.listen/2` answers `{:eventually, ref}` when the
+  # notifier has not connected yet — a Postgres blip while the node boots.
+  # Postgres issues the LISTEN once the connection comes up, so that is a
+  # subscription that will take effect, not a failure. Matching only `{:ok, ref}`
+  # raised a MatchError inside `init/1` instead.
+  defp listen!(notifier, channel) do
+    case Postgrex.Notifications.listen(notifier, channel) do
+      {:ok, ref} -> ref
+      {:eventually, ref} -> ref
     end
   end
 
