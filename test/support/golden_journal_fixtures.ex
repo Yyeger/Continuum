@@ -368,11 +368,15 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
       SignalTimeoutFlow,
       %{timeout_ms: 10},
       fn run_id ->
+        # The await journals `signal_awaited` and its 10ms timeout can fire inside
+        # a single pump interval, so wait for the await to be journaled rather
+        # than for it to be the *only* event, and only fire the timer by hand if
+        # the wheel has not already done it.
         pump_runs_until(fn ->
-          event_types(Journal.Postgres.load(Instance.default(), run_id)) == [:signal_awaited]
+          :signal_awaited in event_types(Journal.Postgres.load(Instance.default(), run_id))
         end)
 
-        fire_postgres_timer!(run_id)
+        maybe_fire_postgres_timer!(run_id)
         await_completed(run_id, {:ok, :timed_out})
       end,
       {:ok, :timed_out}
@@ -825,6 +829,13 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
 
   defp pending_timer_id(run_id) do
     Repo.one!(from(t in Timer, where: t.run_id == ^run_id and t.fired == false, select: t.id))
+  end
+
+  defp maybe_fire_postgres_timer!(run_id) do
+    case Repo.one(from(t in Timer, where: t.run_id == ^run_id and t.fired == false, select: t.id)) do
+      nil -> :ok
+      _timer_id -> fire_postgres_timer!(run_id)
+    end
   end
 
   defp fire_postgres_timer!(run_id) do
