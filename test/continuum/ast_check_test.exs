@@ -60,6 +60,70 @@ defmodule Continuum.AstCheckTest do
       assert Enum.all?(violations, &String.contains?(&1.hint, "Continuum.random/0"))
     end
 
+    test "rejects Logger calls at every level with a Continuum.log hint" do
+      ast =
+        quote do
+          require Logger
+          Logger.debug("d")
+          Logger.info("i")
+          Logger.notice("n")
+          Logger.warning("w")
+          Logger.error("e")
+          Logger.critical("c")
+          Logger.alert("a")
+          Logger.emergency("x")
+          Logger.log(:info, "l")
+          Logger.bare_log(:info, "b")
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      assert Enum.map(violations, & &1.mfa) == [
+               {Logger, :debug},
+               {Logger, :info},
+               {Logger, :notice},
+               {Logger, :warning},
+               {Logger, :error},
+               {Logger, :critical},
+               {Logger, :alert},
+               {Logger, :emergency},
+               {Logger, :log},
+               {Logger, :bare_log}
+             ]
+
+      assert Enum.all?(violations, &String.contains?(&1.hint, "Continuum.log("))
+    end
+
+    test "rejects Logger levels through an alias and a pipe" do
+      ast =
+        quote do
+          alias Logger, as: L
+          L.info("aliased")
+          "piped" |> Logger.error()
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert Enum.map(violations, & &1.mfa) == [{Logger, :info}, {Logger, :error}]
+    end
+
+    test "rejects Logger process metadata mutation" do
+      ast =
+        quote do
+          Logger.metadata(run: 1)
+          Logger.reset_metadata()
+          Logger.put_process_level(self(), :debug)
+          Logger.delete_process_level(self())
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      mfas = Enum.map(violations, & &1.mfa)
+      assert {Logger, :metadata} in mfas
+      assert {Logger, :reset_metadata} in mfas
+      assert {Logger, :put_process_level} in mfas
+      assert {Logger, :delete_process_level} in mfas
+    end
+
     test "rejects ETS access" do
       ast =
         quote do

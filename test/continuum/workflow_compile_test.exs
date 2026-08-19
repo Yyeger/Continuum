@@ -120,6 +120,31 @@ defmodule Continuum.WorkflowCompileTest do
       end
     end
 
+    test "a workflow that calls Logger.info refuses to compile" do
+      assert_raise CompileError, ~r/Continuum\.log\(:info, message\)/, fn ->
+        defmodule BadLoggerFlow do
+          use Continuum.Workflow, version: 1
+          require Logger
+
+          def run(_input) do
+            Logger.info("charging")
+          end
+        end
+      end
+    end
+
+    test "a workflow that calls Logger.bare_log refuses to compile" do
+      assert_raise CompileError, ~r/Continuum\.log\(level, message\)/, fn ->
+        defmodule BadBareLogFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            Logger.bare_log(:warning, "charging")
+          end
+        end
+      end
+    end
+
     test "a workflow that uses :rand.uniform refuses to compile" do
       assert_raise CompileError, ~r/Continuum.random\/0/, fn ->
         defmodule BadFlow3 do

@@ -34,6 +34,8 @@ Workflow code must not directly call non-deterministic APIs such as:
 * `:rand.*`
 * `System.*`
 * `IO.*`
+* `Logger.*` — use `Continuum.log/2`, which journals the breadcrumb and emits
+  only at the live tail
 * `Process.send/3`
 * ETS or `:persistent_term` reads
 * cluster topology and remote call APIs such as `Node.list/0`, `:pg.*`,
