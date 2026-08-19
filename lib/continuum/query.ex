@@ -300,26 +300,13 @@ defmodule Continuum.Query do
   defp apply_state(query, state) do
     state = state |> to_string() |> String.downcase()
 
-    case state do
-      "cancelled" ->
-        # Match both the canonical state and legacy pre-0.5.2 rows that
-        # stored a cancel as failed + :cancelled.
-        cancelled = encode_term(:cancelled)
-
-        from(r in query,
-          where: r.state == "cancelled" or (r.state == "failed" and r.error == ^cancelled)
-        )
-
-      "failed" ->
-        cancelled = encode_term(:cancelled)
-
-        from(r in query,
-          where: r.state == "failed" and (is_nil(r.error) or r.error != ^cancelled)
-        )
-
-      _ ->
-        from(r in query, where: r.state == ^state)
-    end
+    # `cancelled` has been a real terminal state since v0.5.2, and the v0.7.2
+    # migration promotes legacy `failed` + encoded `:cancelled` rows into it, so
+    # the state column is authoritative on its own. Do not reintroduce a
+    # comparison against an encoded error payload here: it is only correct while
+    # payloads are encoded with `:erlang.term_to_binary/1`, and it fails
+    # silently — legacy cancels reclassify as failures with no error.
+    from(r in query, where: r.state == ^state)
   end
 
   defp apply_workflow(query, nil), do: query
@@ -490,10 +477,12 @@ defmodule Continuum.Query do
     error -> {:decode_error, error}
   end
 
+  # Kept as a courtesy for databases that have not yet run the v0.7.2 legacy
+  # cancel promotion. This decodes the payload in Elixir rather than comparing
+  # encoded bytes in SQL, so unlike the filter in `apply_state/2` it stays
+  # correct under any payload encoding.
   defp display_state("failed", :cancelled), do: :cancelled
   defp display_state(state, _error), do: String.to_atom(state)
-
-  defp encode_term(term), do: :erlang.term_to_binary(term)
 
   defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
 

@@ -108,6 +108,28 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
     end)
   end
 
+  test "generates the complete v0.7.1 to v0.7.2 upgrade" do
+    in_tmp(fn ->
+      Mix.Task.rerun("continuum.gen.migration", [
+        "--repo",
+        "Continuum.Test.Repo",
+        "--from",
+        "0.7.1"
+      ])
+
+      [path] =
+        Path.wildcard("priv/test_repo/migrations/*_upgrade_continuum_v0_7_1_to_v0_7_2.exs")
+
+      source = File.read!(path)
+
+      assert source =~ "UPDATE continuum_runs"
+      assert source =~ "SET state = 'cancelled'"
+      assert source =~ "WHERE state = 'failed' AND error = $1"
+      assert source =~ ":erlang.term_to_binary(:cancelled)"
+      assert source =~ "def down do"
+    end)
+  end
+
   test "rejects unsupported upgrade sources" do
     assert_raise Mix.Error, ~r/unsupported Continuum upgrade source/, fn ->
       in_tmp(fn ->

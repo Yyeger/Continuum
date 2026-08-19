@@ -57,8 +57,15 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     {name, upgrade_0_6_4_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
   end
 
+  defp migration("0.7.1", repo) do
+    name = "upgrade_continuum_v0_7_1_to_v0_7_2"
+    {name, upgrade_0_7_1_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
+  end
+
   defp migration(version, _repo) do
-    Mix.raise("unsupported Continuum upgrade source #{inspect(version)}; supported: 0.6.1, 0.6.4")
+    Mix.raise(
+      "unsupported Continuum upgrade source #{inspect(version)}; supported: 0.6.1, 0.6.4, 0.7.1"
+    )
   end
 
   defp validate_args!(rest, invalid) do
@@ -576,6 +583,46 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           remove_if_exists :error_stacktrace, :bytea
           remove_if_exists :cancel_requested_at, :utc_datetime_usec
         end
+      end
+    end
+    """
+  end
+
+  defp upgrade_0_7_1_source(module_name) do
+    """
+    defmodule #{module_name} do
+      use Ecto.Migration
+
+      # Runs cancelled before v0.5.2 were stored as `failed` with an encoded
+      # `:cancelled` error payload, so every read path had to recognise that
+      # shape by comparing encoded bytes in SQL. Promote those rows to the
+      # canonical terminal state, which makes the state column authoritative on
+      # its own and keeps the classification correct once payload encoding is
+      # no longer `:erlang.term_to_binary/1`.
+      def up do
+        execute(fn ->
+          repo().query!(
+            \"\"\"
+            UPDATE continuum_runs
+            SET state = 'cancelled'
+            WHERE state = 'failed' AND error = $1
+            \"\"\",
+            [:erlang.term_to_binary(:cancelled)]
+          )
+        end)
+      end
+
+      def down do
+        execute(fn ->
+          repo().query!(
+            \"\"\"
+            UPDATE continuum_runs
+            SET state = 'failed'
+            WHERE state = 'cancelled' AND error = $1
+            \"\"\",
+            [:erlang.term_to_binary(:cancelled)]
+          )
+        end)
       end
     end
     """

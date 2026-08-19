@@ -18,6 +18,52 @@ defmodule Continuum.QueryTest do
     :ok
   end
 
+  test "state filters compare the state column alone" do
+    cancelled = insert_run!(%{value: 1}, %{})
+    failed = insert_run!(%{value: 2}, %{})
+
+    # A canonical cancel keeps its error payload for context; a real failure
+    # carries an unrelated error term.
+    Repo.update_all(
+      from(r in Run, where: r.id == ^cancelled),
+      set: [state: "cancelled", error: :erlang.term_to_binary(:cancelled)]
+    )
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^failed),
+      set: [state: "failed", error: :erlang.term_to_binary(:boom)]
+    )
+
+    assert {:ok, %{entries: [%{run_id: ^cancelled, state: :cancelled}]}} =
+             Continuum.query(where: [{:eq, :state, :cancelled}])
+
+    assert {:ok, %{entries: [%{run_id: ^failed, state: :failed}]}} =
+             Continuum.query(where: [{:eq, :state, :failed}])
+  end
+
+  test "the legacy cancel promotion moves failed + :cancelled rows into the cancelled filter" do
+    legacy = insert_run!(%{value: 1}, %{})
+
+    Repo.update_all(
+      from(r in Run, where: r.id == ^legacy),
+      set: [state: "failed", error: :erlang.term_to_binary(:cancelled)]
+    )
+
+    # Pre-migration shape: the row is a failure as far as the state column goes,
+    # and only the decoded payload says otherwise.
+    assert {:ok, %{entries: []}} = Continuum.query(where: [{:eq, :state, :cancelled}])
+
+    Repo.query!(
+      "UPDATE continuum_runs SET state = 'cancelled' WHERE state = 'failed' AND error = $1",
+      [:erlang.term_to_binary(:cancelled)]
+    )
+
+    assert {:ok, %{entries: [%{run_id: ^legacy, state: :cancelled}]}} =
+             Continuum.query(where: [{:eq, :state, :cancelled}])
+
+    assert {:ok, %{entries: []}} = Continuum.query(where: [{:eq, :state, :failed}])
+  end
+
   test "queries by state, timestamps, ordering, and JSONB attributes" do
     older = insert_run!(%{value: 1}, %{region: "eu", customer_tier: 2})
     newer = insert_run!(%{value: 2}, %{region: "us", customer_tier: 3})
