@@ -487,6 +487,15 @@ defmodule Continuum.Journal.PostgresConcurrencyTest do
     end
   end
 
+  test "no signal consumption path bypasses command identity" do
+    # `consume_signal/4` journaled `signal_received` with no command id, and
+    # `command_matches?/2` treats a missing command id as a wildcard, so such an
+    # event replays against whatever await sits at the cursor. It had no callers;
+    # the live paths (`consume_pending_signal!/6`, `resolve_signal_await/4`) all
+    # stamp the id. Keep it gone.
+    refute function_exported?(Postgres, :consume_signal, 4)
+  end
+
   test "implicit sequence numbers serialize concurrent appends" do
     run_id = Ecto.UUID.generate()
     :ok = Postgres.start_run(Continuum.Runtime.Instance.default(), run_id, SomeWorkflow, %{})
