@@ -250,17 +250,18 @@ defmodule Continuum.HealthTest do
     assert report.activities.dead_letter_count == 2
   end
 
-  test "cancelled tasks do not consume the dead-letter candidate limit" do
-    run_id = insert_run!([])
+  test "tasks discarded by a run cancel do not consume the dead-letter candidate limit" do
+    cancelled_run = insert_run!(state: "cancelled")
+    active_run = insert_run!([])
 
-    insert_task!(run_id,
+    insert_task!(cancelled_run,
       state: "discarded",
       error: :erlang.term_to_binary(:cancelled),
       scheduled_at: timestamp(-120)
     )
 
     actionable =
-      insert_task!(run_id,
+      insert_task!(active_run,
         state: "discarded",
         error: :erlang.term_to_binary(:exhausted),
         scheduled_at: timestamp(-60)
@@ -269,6 +270,36 @@ defmodule Continuum.HealthTest do
     assert {:ok, report} = Continuum.Health.report(repo: Repo, partition_months: 1, limit: 1)
     assert report.activities.dead_letter_count == 1
     assert [%{task_id: ^actionable}] = report.activities.dead_letter_candidates
+  end
+
+  test "a dead letter whose run row is gone stays visible" do
+    orphan =
+      insert_task!(Ecto.UUID.generate(),
+        state: "dead_lettered",
+        error: :erlang.term_to_binary(:exhausted),
+        scheduled_at: timestamp(-60)
+      )
+
+    assert {:ok, report} = Continuum.Health.report(repo: Repo, partition_months: 1, limit: 1)
+    assert report.activities.dead_letter_count == 1
+    assert [%{task_id: ^orphan}] = report.activities.dead_letter_candidates
+  end
+
+  test "the dead-letter classification does not read the encoded error payload" do
+    # A real failure whose error term happens to be `:cancelled` is still a dead
+    # letter: the owning run is not cancelled.
+    active_run = insert_run!([])
+
+    task =
+      insert_task!(active_run,
+        state: "discarded",
+        error: :erlang.term_to_binary(:cancelled),
+        scheduled_at: timestamp(-60)
+      )
+
+    assert {:ok, report} = Continuum.Health.report(repo: Repo, partition_months: 1, limit: 1)
+    assert report.activities.dead_letter_count == 1
+    assert [%{task_id: ^task}] = report.activities.dead_letter_candidates
   end
 
   test "a degraded runtime makes the aggregate health report degraded" do

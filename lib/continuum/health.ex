@@ -499,33 +499,36 @@ defmodule Continuum.Health do
       end)
       |> limit_findings(result_limit(opts))
 
+    # A run cancel discards its pending activity tasks, and those discards are
+    # not actionable operator work. Classify them by the owning run's state
+    # rather than by an encoded `:cancelled` error payload: comparing encoded
+    # bytes in SQL is only correct while payloads are `:erlang.term_to_binary/1`
+    # and it fails silently otherwise. The join is a LEFT JOIN so a task whose
+    # run row is gone stays visible instead of disappearing from the report.
     dead_letters =
       query_rows(
         repo,
         """
-        SELECT id::text, run_id::text, attempt, scheduled_at, error
-        FROM continuum_activity_tasks
-        WHERE state IN ('discarded', 'dead_lettered')
-          AND (error IS NULL OR error <> $1)
-        ORDER BY scheduled_at
-        LIMIT $2
+        SELECT t.id::text, t.run_id::text, t.attempt, t.scheduled_at, t.error
+        FROM continuum_activity_tasks AS t
+        LEFT JOIN continuum_runs AS r ON r.id = t.run_id
+        WHERE t.state IN ('discarded', 'dead_lettered')
+          AND (r.state IS NULL OR r.state <> 'cancelled')
+        ORDER BY t.scheduled_at
+        LIMIT $1
         """,
-        [:erlang.term_to_binary(:cancelled), candidate_query_limit(opts, reviews)]
+        [candidate_query_limit(opts, reviews)]
       )
       |> Enum.map(fn [task_id, run_id, attempt, scheduled_at, error] ->
-        decoded_error = decode_term(error)
-
         finding(:dead_letter_activity, task_id, [attempt, error], reviews, %{
           task_id: task_id,
           run_id: run_id,
           attempt: attempt,
           scheduled_at: scheduled_at,
           age_ms: age_ms(now, scheduled_at),
-          error: inspect(decoded_error),
-          cancelled: decoded_error == :cancelled
+          error: inspect(decode_term(error))
         })
       end)
-      |> Enum.map(&Map.delete(&1, :cancelled))
       |> limit_findings(result_limit(opts))
 
     heartbeats =
@@ -565,14 +568,13 @@ defmodule Continuum.Health do
         """),
       expired_leases: expired_leases,
       dead_letter_count:
-        scalar(
-          repo,
-          """
-          SELECT count(*)::bigint FROM continuum_activity_tasks
-          WHERE state IN ('discarded', 'dead_lettered') AND (error IS NULL OR error <> $1)
-          """,
-          [:erlang.term_to_binary(:cancelled)]
-        ),
+        scalar(repo, """
+        SELECT count(*)::bigint
+        FROM continuum_activity_tasks AS t
+        LEFT JOIN continuum_runs AS r ON r.id = t.run_id
+        WHERE t.state IN ('discarded', 'dead_lettered')
+          AND (r.state IS NULL OR r.state <> 'cancelled')
+        """),
       explicit_dead_letter_count:
         scalar(
           repo,
