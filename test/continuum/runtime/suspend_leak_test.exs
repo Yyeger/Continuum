@@ -126,6 +126,178 @@ defmodule Continuum.Runtime.SuspendLeakTest do
     assert warning =~ "rescue"
   end
 
+  test "the implicit-try catch spelling warns too" do
+    warning =
+      capture_io(:standard_error, fn ->
+        defmodule ImplicitCatchWarnFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            :ok
+          catch
+            _, _ -> :caught
+          end
+        end
+      end)
+
+    assert warning =~ "catch` arm"
+    assert warning =~ "SuspendLeakError"
+    assert warning =~ "rescue"
+  end
+
+  test "the implicit-try catch spelling warns on a guarded clause" do
+    warning =
+      capture_io(:standard_error, fn ->
+        defmodule GuardedImplicitCatchWarnFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(input) when is_map(input) do
+            :ok
+          catch
+            _, _ -> :caught
+          end
+
+          def run(_input), do: :ok
+        end
+      end)
+
+    assert warning =~ "catch` arm"
+  end
+
+  test "the implicit spelling warns exactly as often as the explicit one" do
+    explicit =
+      capture_io(:standard_error, fn ->
+        defmodule ExplicitCountFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            try do
+              :ok
+            catch
+              _, _ -> :caught
+            end
+          end
+        end
+      end)
+
+    implicit =
+      capture_io(:standard_error, fn ->
+        defmodule ImplicitCountFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            :ok
+          catch
+            _, _ -> :caught
+          end
+        end
+      end)
+
+    assert count_catch_warnings(implicit) == count_catch_warnings(explicit)
+  end
+
+  test "one scan of an implicit-try body reports one catch arm" do
+    # End-to-end warnings are emitted once per compiled definition, and the
+    # generated `V_<hash>` entrypoint recompiles every clause, so counts double
+    # there. Scan a body directly to pin that a single body is not itself
+    # double-reported by the implicit and explicit detectors both matching.
+    warning =
+      capture_io(:standard_error, fn ->
+        Continuum.AstCheck.check_catch_warnings(
+          def_body("""
+          def run(_input) do
+            :ok
+          catch
+            _, _ -> :caught
+          end
+          """),
+          __ENV__,
+          :run,
+          1
+        )
+      end)
+
+    assert count_catch_warnings(warning) == 1
+  end
+
+  test "one scan of an implicit body wrapping an explicit try reports both" do
+    warning =
+      capture_io(:standard_error, fn ->
+        Continuum.AstCheck.check_catch_warnings(
+          def_body("""
+          def run(_input) do
+            try do
+              :ok
+            catch
+              _, _ -> :inner
+            end
+          catch
+            _, _ -> :outer
+          end
+          """),
+          __ENV__,
+          :run,
+          1
+        )
+      end)
+
+    assert count_catch_warnings(warning) == 2
+  end
+
+  test "one scan of an implicit rescue body reports nothing" do
+    warning =
+      capture_io(:standard_error, fn ->
+        Continuum.AstCheck.check_catch_warnings(
+          def_body("""
+          def run(_input) do
+            :ok
+          rescue
+            _e -> :rescued
+          after
+            :ok
+          end
+          """),
+          __ENV__,
+          :run,
+          1
+        )
+      end)
+
+    assert count_catch_warnings(warning) == 0
+  end
+
+  # Mirrors what `@on_definition` hands `check_catch_warnings/4`: the body of a
+  # definition, which for the implicit-try spelling is a keyword list.
+  defp def_body(source) do
+    {:def, _meta, [_head, body]} = Code.string_to_quoted!(source)
+    body
+  end
+
+  defp count_catch_warnings(output) do
+    # The warning body mentions "`catch` arm" more than once, so count on the
+    # headline instead.
+    length(String.split(output, "workflow code uses a `catch` arm")) - 1
+  end
+
+  test "implicit rescue and after without catch do not warn" do
+    warning =
+      capture_io(:standard_error, fn ->
+        defmodule ImplicitRescueOnlyFlow do
+          use Continuum.Workflow, version: 1
+
+          def run(_input) do
+            {:ok, :fine}
+          rescue
+            _e -> {:error, :rescued}
+          after
+            :ok
+          end
+        end
+      end)
+
+    refute warning =~ "catch` arm"
+  end
+
   test "try/rescue without catch does not warn" do
     warning =
       capture_io(:standard_error, fn ->

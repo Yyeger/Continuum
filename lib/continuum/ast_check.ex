@@ -377,6 +377,9 @@ defmodule Continuum.AstCheck do
   @doc """
   Warn on `catch` arms inside workflow clauses.
 
+  Both spellings are covered: an explicit `try do ... catch ... end` and the
+  implicit form, where `catch` sits directly in the function body.
+
   Continuum suspends a workflow by throwing a control tuple *after* the
   pending effect has been journaled; a `catch` arm (especially `_, _ ->` or
   `:throw, _ ->`) can intercept it. The runtime detects the swallow and
@@ -385,6 +388,43 @@ defmodule Continuum.AstCheck do
   """
   @spec check_catch_warnings(Macro.t(), Macro.Env.t(), atom(), non_neg_integer()) :: :ok
   def check_catch_warnings(ast, env, caller_fun, caller_arity) do
+    (implicit_catches(ast) ++ explicit_catches(ast))
+    |> Enum.sort_by(&(&1.line || 0))
+    |> Enum.each(&warn_catch_arm(&1, env, caller_fun, caller_arity))
+
+    :ok
+  end
+
+  # `def f(x) do ... catch ... end` — the implicit-try spelling, which is the
+  # more idiomatic one. `@on_definition` hands that body over as a keyword list
+  # with a `:catch` key rather than a `{:try, _, _}` node, so the prewalk below
+  # never saw it. A guarded clause arrives wrapped in a block by `with_guards/2`,
+  # with the body as one element.
+  defp implicit_catches(body) when is_list(body), do: catch_arms(body)
+
+  defp implicit_catches({:__block__, _meta, items}) when is_list(items) do
+    items
+    |> Enum.filter(&is_list/1)
+    |> Enum.flat_map(&catch_arms/1)
+  end
+
+  defp implicit_catches(_ast), do: []
+
+  defp catch_arms(body) do
+    if Keyword.keyword?(body) and Keyword.has_key?(body, :do) and Keyword.has_key?(body, :catch) do
+      [%{line: catch_arm_line(Keyword.get(body, :catch))}]
+    else
+      []
+    end
+  end
+
+  defp catch_arm_line([{:->, meta, _arm} | _rest]), do: Keyword.get(meta, :line)
+  defp catch_arm_line(_arms), do: nil
+
+  # `try do ... catch ... end` written out. An explicit try inside a def body is
+  # a distinct node, so this cannot double-report the implicit form: that body
+  # carries a `:do` key and no `:catch` key of its own.
+  defp explicit_catches(ast) do
     {_ast, catches} =
       Macro.prewalk(ast, [], fn
         {:try, meta, [blocks]} = node, acc when is_list(blocks) ->
@@ -398,17 +438,13 @@ defmodule Continuum.AstCheck do
           {node, acc}
       end)
 
-    catches
-    |> Enum.reverse()
-    |> Enum.each(&warn_catch_arm(&1, env, caller_fun, caller_arity))
-
-    :ok
+    Enum.reverse(catches)
   end
 
   defp warn_catch_arm(found, env, caller_fun, caller_arity) do
     IO.warn(
       """
-      Continuum workflow code uses a `catch` arm inside `try`.
+      Continuum workflow code uses a `catch` arm.
 
       Continuum suspends this workflow by throwing a control tuple after the
       pending effect is journaled; a `catch` arm can swallow that throw, and

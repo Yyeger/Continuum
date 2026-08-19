@@ -47,6 +47,13 @@ Workflow code must not directly call non-deterministic APIs such as:
   `:rpc.*`, and `:erpc.*`
 * dynamic code loading or `apply/3`
 
+Workflow code must also not swallow the engine's control throws. Continuum
+suspends a workflow by throwing after the pending effect is journaled, so a
+`catch` arm can intercept that throw and the run fails with
+`Continuum.SuspendLeakError` instead of suspending. The scanner warns on both
+spellings — an explicit `try do ... catch ... end` and a `catch` sitting directly
+in the function body — and `rescue`/`after` are unaffected.
+
 `Continuum.AstCheck` scans workflow modules at compile time and rejects known
 unsafe calls with a remediation hint. The denylist has two layers:
 `Continuum.AstCheck.forbidden_calls/0` bans individual functions and carries the
