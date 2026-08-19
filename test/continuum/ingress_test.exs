@@ -100,6 +100,21 @@ defmodule Continuum.IngressTest do
     assert Repo.aggregate(from(s in Signal, where: s.run_id == ^run_id), :count) == 1
   end
 
+  test "delivery without an ID always inserts a mailbox row per signal" do
+    run_id = Ecto.UUID.generate()
+    :ok = Postgres.start_run(Instance.default(), run_id, WaitingFlow, %{})
+
+    # The conflict target is scoped to the delivery-ID index, so repeated
+    # keyless deliveries are distinct signals and each one must land. Reporting
+    # `:delivered` for a row that was never inserted would lose the signal.
+    for _ <- 1..3 do
+      assert {:ok, ^run_id, :delivered} =
+               Postgres.deliver_signal!(Instance.default(), run_id, :continue, :go, [])
+    end
+
+    assert Repo.aggregate(from(s in Signal, where: s.run_id == ^run_id), :count) == 3
+  end
+
   test "signal_unique reports duplicate delivery without a second in-memory payload" do
     Application.put_env(:continuum, :journal, InMemory)
     run_id = Ecto.UUID.generate()

@@ -1713,23 +1713,40 @@ defmodule Continuum.Runtime.Journal.Postgres do
                     inserted_at: now
                   }
                 ],
-                on_conflict: :nothing
+                # Name the index explicitly. A bare `on_conflict: :nothing`
+                # swallows a conflict on *any* unique constraint, so a future
+                # index would silently drop the mailbox row while the case below
+                # still reported success.
+                on_conflict: :nothing,
+                conflict_target:
+                  {:unsafe_fragment,
+                   "(correlation_id, name, delivery_id) WHERE delivery_id IS NOT NULL"}
               )
 
-            if inserted_count == 0 and is_binary(delivery_id) do
-              {delivered_run_id, :duplicate}
-            else
-              with {_count, _} <-
-                     repo().update_all(
-                       from(r in Run, where: r.id == ^delivered_run_id),
-                       set: [next_wakeup_at: now]
-                     ),
-                   {:ok, _} <-
-                     repo().query("SELECT pg_notify('continuum_signal', $1)", [delivered_run_id]) do
-                {delivered_run_id, :delivered}
-              else
-                {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
-              end
+            cond do
+              inserted_count == 0 and is_binary(delivery_id) ->
+                {delivered_run_id, :duplicate}
+
+              # Nothing was inserted and this delivery had no idempotency key, so
+              # there is no mailbox row and nothing can ever consume the signal.
+              # Reporting `:delivered` here would lose it silently.
+              inserted_count == 0 ->
+                repo().rollback({:signal_delivery_failed, :not_inserted})
+
+              true ->
+                with {_count, _} <-
+                       repo().update_all(
+                         from(r in Run, where: r.id == ^delivered_run_id),
+                         set: [next_wakeup_at: now]
+                       ),
+                     {:ok, _} <-
+                       repo().query("SELECT pg_notify('continuum_signal', $1)", [
+                         delivered_run_id
+                       ]) do
+                  {delivered_run_id, :delivered}
+                else
+                  {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
+                end
             end
         end
       end)
