@@ -153,6 +153,33 @@ defmodule Continuum.ActivityPolicyTest do
     assert Enum.uniq(delays) |> length() > 1
   end
 
+  test "retry jitter survives at max backoff" do
+    retry = [backoff: :exponential, base_ms: 100, jitter_ms: 50, max_backoff_ms: 1_000]
+
+    # Attempt 10 is far past the ramp, so every delay sits at the cap.
+    delays = Enum.map(1..200, fn _ -> Policy.backoff_ms(retry, 10) end)
+
+    assert Enum.all?(delays, &(&1 in 950..1_000))
+    assert length(Enum.uniq(delays)) > 1
+    assert Enum.max(delays) <= 1_000
+  end
+
+  test "retry jitter never pushes a delay past max backoff" do
+    retry = [base_ms: 5_000, jitter_ms: 250, max_backoff_ms: 1_000]
+    delays = Enum.map(1..200, fn _ -> Policy.backoff_ms(retry, 1) end)
+
+    assert Enum.all?(delays, &(&1 in 750..1_000))
+    assert length(Enum.uniq(delays)) > 1
+  end
+
+  test "a jitter window wider than max backoff still respects the cap" do
+    retry = [base_ms: 100, jitter_ms: 5_000, max_backoff_ms: 200]
+    delays = Enum.map(1..200, fn _ -> Policy.backoff_ms(retry, 1) end)
+
+    assert Enum.all?(delays, &(&1 in 0..200))
+    assert length(Enum.uniq(delays)) > 1
+  end
+
   defp assert_policy_failure_without_task(workflow, input, field) do
     {:ok, run_id} = Continuum.start(workflow, input, journal: Postgres)
     pump(run_id)

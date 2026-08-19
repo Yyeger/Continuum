@@ -94,10 +94,17 @@ defmodule Continuum.Activity.Policy do
         _legacy_or_constant -> base_ms
       end
 
-    jitter_ms = Keyword.get(retry || [], :jitter_ms, 0)
-    jitter = if jitter_ms > 0, do: :rand.uniform(jitter_ms + 1) - 1, else: 0
+    # Reserve the jitter window *below* the cap rather than clamping the sum.
+    # Clamping collapses every retry that has reached `max_backoff_ms` onto the
+    # same instant, so the spread disappears exactly for the cohort it exists to
+    # break: a downstream dependency went down and every task exhausted its ramp.
+    jitter_window = min(Keyword.get(retry || [], :jitter_ms, 0), max_backoff_ms)
+    jitter = if jitter_window > 0, do: :rand.uniform(jitter_window + 1) - 1, else: 0
 
-    min(delay + jitter, max_backoff_ms)
+    delay
+    |> min(max_backoff_ms - jitter_window)
+    |> max(0)
+    |> Kernel.+(jitter)
   end
 
   defp normalize_retry!(retry) when is_list(retry) do

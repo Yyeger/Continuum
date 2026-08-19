@@ -106,7 +106,10 @@ must be positive, `backoff` must be `:constant` or `:exponential`, and
 `base_ms` and `jitter_ms` must be non-negative. `jitter_ms` adds a uniformly
 random delay from zero through the configured value to each retry.
 `max_backoff_ms` defaults to one minute and caps the combined backoff and
-jitter. `max_retry_horizon_ms` defaults to 24 hours and must cover the
+jitter: the jitter window is reserved below the cap, so a cohort of retries that
+has reached maximum backoff stays spread out across
+`max_backoff_ms - jitter_ms` through `max_backoff_ms` instead of collapsing onto
+the cap. `max_retry_horizon_ms` defaults to 24 hours and must cover the
 worst-case execution time plus every maximum delay. Per-attempt timeouts must
 be positive and cannot exceed 24 hours.
 
