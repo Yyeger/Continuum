@@ -37,13 +37,22 @@ Workflow code must not directly call non-deterministic APIs such as:
 * `Logger.*` — use `Continuum.log/2`, which journals the breadcrumb and emits
   only at the live tail
 * `Process.send/3`
-* ETS or `:persistent_term` reads
+* `:timer.sleep/1` and the rest of the `:timer` scheduling API — use `timer/1`
+* shared mutable state: `:ets`, `:dets`, `:mnesia`, `:counters`, `:atomics`,
+  and `:persistent_term`
+* the file system: `File.*` and `:file.*`
+* the network: `:httpc`, `:gen_tcp`, `:gen_udp`, `:ssl`, and the host and
+  socket parts of `:inet`
 * cluster topology and remote call APIs such as `Node.list/0`, `:pg.*`,
   `:rpc.*`, and `:erpc.*`
 * dynamic code loading or `apply/3`
 
 `Continuum.AstCheck` scans workflow modules at compile time and rejects known
-unsafe calls with a remediation hint.
+unsafe calls with a remediation hint. The denylist has two layers:
+`Continuum.AstCheck.forbidden_calls/0` bans individual functions and carries the
+targeted hint, and `Continuum.AstCheck.forbidden_modules/0` bans modules whose
+entire surface is unsafe, so `:ets.select/2` and `File.rm_rf/1` are rejected
+without being enumerated. The per-function hint wins when both match.
 
 ## Helper Modules
 

@@ -115,6 +115,11 @@ defmodule Continuum.AstCheck do
     {IO, :puts} => "use Continuum.log(:info, message)",
     {IO, :inspect} => "use Continuum.log(:debug, inspect(value))",
     {IO, :write} => "use Continuum.log(:info, message)",
+    {IO, :gets} => "workflows cannot read stdin; pass the value as workflow input",
+    {IO, :read} => "workflows cannot read stdin; pass the value as workflow input",
+    {IO, :binread} => "workflows cannot read stdin; pass the value as workflow input",
+    {IO, :binwrite} => "use Continuum.log(:info, message)",
+    {IO, :warn} => "use Continuum.log(:warning, message)",
     {Logger, :debug} => "use Continuum.log(:debug, message)",
     {Logger, :info} => "use Continuum.log(:info, message)",
     {Logger, :notice} => "use Continuum.log(:notice, message)",
@@ -139,6 +144,27 @@ defmodule Continuum.AstCheck do
     {File, :write!} => "use activity(MyActivities.write(path, contents))",
     {:ets, :lookup} => "ETS bypasses the journal; wrap in an activity",
     {:ets, :insert} => "ETS bypasses the journal; wrap in an activity",
+    {:timer, :sleep} => "use timer(milliseconds)",
+    {:timer, :send_after} => "use timer(milliseconds)",
+    {:timer, :send_interval} => "use timer(milliseconds)",
+    {:timer, :apply_after} => "use timer(milliseconds) then call the function",
+    {:timer, :apply_interval} => "use timer(milliseconds) then call the function",
+    {:timer, :apply_repeatedly} => "use timer(milliseconds) then call the function",
+    {:timer, :exit_after} => "process mutation is non-deterministic; wrap in an activity",
+    {:timer, :kill_after} => "process mutation is non-deterministic; wrap in an activity",
+    {:timer, :cancel} => "timers are journaled; do not cancel them from workflow code",
+    {:timer, :tc} => "elapsed time is non-deterministic on replay; wrap in an activity",
+    {:timer, :now_diff} => "elapsed time is non-deterministic on replay; wrap in an activity",
+    {:inet, :getaddr} => "name resolution is non-deterministic; wrap in an activity",
+    {:inet, :getaddrs} => "name resolution is non-deterministic; wrap in an activity",
+    {:inet, :gethostbyname} => "name resolution is non-deterministic; wrap in an activity",
+    {:inet, :gethostname} => "host identity is non-deterministic; wrap in an activity",
+    {:inet, :getifaddrs} => "host identity is non-deterministic; wrap in an activity",
+    {:inet, :peername} => "socket state is non-deterministic; wrap in an activity",
+    {:inet, :sockname} => "socket state is non-deterministic; wrap in an activity",
+    {:inet, :getstat} => "socket state is non-deterministic; wrap in an activity",
+    {:inet, :getopts} => "socket state is non-deterministic; wrap in an activity",
+    {:inet, :setopts} => "socket state is non-deterministic; wrap in an activity",
     {:persistent_term, :get} => "persistent_term bypasses the journal",
     {:persistent_term, :put} => "persistent_term bypasses the journal",
     {Kernel, :apply} => "dynamic dispatch forbidden in workflows",
@@ -232,8 +258,36 @@ defmodule Continuum.AstCheck do
                     Function
                   ])
 
+  # Modules whose entire surface is a side effect or a read of shared mutable
+  # state. Consulted only after `@forbidden` misses, so the more specific
+  # per-function hints above still win; this catches the rest of the module
+  # without enumerating it (`:ets.select/2`, `File.rm_rf/1`, and so on).
+  @forbidden_modules %{
+    File => "file system access bypasses the journal; wrap in an activity",
+    :file => "file system access bypasses the journal; wrap in an activity",
+    :ets => "ETS bypasses the journal; wrap in an activity",
+    :dets => "DETS bypasses the journal; wrap in an activity",
+    :mnesia => "Mnesia bypasses the journal; wrap in an activity",
+    :counters => "counters are shared mutable state; wrap in an activity",
+    :atomics => "atomics are shared mutable state; wrap in an activity",
+    :httpc => "network access is non-deterministic; wrap in an activity",
+    :gen_tcp => "network access is non-deterministic; wrap in an activity",
+    :gen_udp => "network access is non-deterministic; wrap in an activity",
+    :ssl => "network access is non-deterministic; wrap in an activity"
+  }
+
   @doc "The full denylist as a map of `{mod, fun} => hint`."
   def forbidden_calls, do: @forbidden
+
+  @doc """
+  Modules banned in full, as a map of `module => hint`.
+
+  A call to any function of one of these modules is a violation. The
+  `forbidden_calls/0` entries take precedence, so a function with its own
+  targeted hint reports that hint instead.
+  """
+  @doc since: "0.7.2"
+  def forbidden_modules, do: @forbidden_modules
 
   @doc "Stdlib modules considered pure-by-construction."
   def trusted_stdlib, do: @trusted_stdlib
@@ -764,7 +818,7 @@ defmodule Continuum.AstCheck do
   defp record(acc, violation), do: %{acc | violations: [violation | acc.violations]}
 
   defp maybe_record(mod, fun, meta, file, acc) do
-    case Map.fetch(@forbidden, {mod, fun}) do
+    case forbidden_hint(mod, fun) do
       {:ok, hint} ->
         record(acc, %{
           mfa: {mod, fun},
@@ -775,6 +829,13 @@ defmodule Continuum.AstCheck do
 
       :error ->
         acc
+    end
+  end
+
+  defp forbidden_hint(mod, fun) do
+    case Map.fetch(@forbidden, {mod, fun}) do
+      {:ok, hint} -> {:ok, hint}
+      :error -> Map.fetch(@forbidden_modules, mod)
     end
   end
 

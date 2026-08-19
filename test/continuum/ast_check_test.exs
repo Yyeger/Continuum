@@ -134,6 +134,155 @@ defmodule Continuum.AstCheckTest do
       assert violation.mfa == {:ets, :lookup}
     end
 
+    test "rejects the rest of the ETS surface through the module denylist" do
+      ast =
+        quote do
+          :ets.new(:t, [])
+          :ets.select(:t, [])
+          :ets.match_object(:t, {:_, :_})
+          :ets.tab2list(:t)
+          :ets.first(:t)
+          :ets.next(:t, :k)
+          :ets.foldl(fn x, acc -> [x | acc] end, [], :t)
+          :ets.delete(:t, :k)
+          :ets.update_counter(:t, :k, 1)
+          :ets.info(:t)
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert length(violations) == 10
+      assert Enum.all?(violations, &(elem(&1.mfa, 0) == :ets))
+      assert Enum.all?(violations, &String.contains?(&1.hint, "ETS bypasses the journal"))
+    end
+
+    test "rejects the rest of the File surface through the module denylist" do
+      ast =
+        quote do
+          File.exists?("/tmp/x")
+          File.ls("/tmp")
+          File.rm("/tmp/x")
+          File.rm_rf("/tmp/x")
+          File.mkdir_p("/tmp/x")
+          File.cp("/tmp/x", "/tmp/y")
+          File.open("/tmp/x")
+          File.stat("/tmp/x")
+          File.stream!("/tmp/x")
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert length(violations) == 9
+      assert Enum.all?(violations, &(elem(&1.mfa, 0) == File))
+      assert Enum.all?(violations, &String.contains?(&1.hint, "file system access"))
+    end
+
+    test "the per-function hint still wins over the module hint" do
+      ast =
+        quote do
+          File.read!("/tmp/x")
+        end
+
+      assert {:error, [violation]} = AstCheck.scan(ast)
+      assert violation.mfa == {File, :read!}
+      assert violation.hint =~ "activity(MyActivities.read(path))"
+    end
+
+    test "rejects :timer blocking and scheduling calls" do
+      ast =
+        quote do
+          :timer.sleep(1000)
+          :timer.send_after(1000, :wake)
+          :timer.apply_after(1000, M, :f, [])
+          :timer.tc(M, :f, [])
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      assert Enum.map(violations, & &1.mfa) == [
+               {:timer, :sleep},
+               {:timer, :send_after},
+               {:timer, :apply_after},
+               {:timer, :tc}
+             ]
+
+      assert hd(violations).hint =~ "timer(milliseconds)"
+    end
+
+    test "leaves the pure :timer unit converters alone" do
+      ast =
+        quote do
+          :timer.seconds(5) + :timer.minutes(1) + :timer.hours(1) + :timer.hms(0, 0, 1)
+        end
+
+      assert :ok == AstCheck.scan(ast)
+    end
+
+    test "rejects stdin reads and IO.warn" do
+      ast =
+        quote do
+          IO.gets("> ")
+          IO.read(:line)
+          IO.binread(:line)
+          IO.binwrite("x")
+          IO.warn("x")
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      assert Enum.map(violations, & &1.mfa) == [
+               {IO, :gets},
+               {IO, :read},
+               {IO, :binread},
+               {IO, :binwrite},
+               {IO, :warn}
+             ]
+    end
+
+    test "leaves the pure IO conversions alone" do
+      ast =
+        quote do
+          IO.iodata_to_binary(["a", "b"]) <> IO.chardata_to_string(~c"c")
+        end
+
+      assert :ok == AstCheck.scan(ast)
+    end
+
+    test "rejects shared-state and network modules in full" do
+      ast =
+        quote do
+          :counters.add(ref, 1, 1)
+          :atomics.add(ref, 1, 1)
+          :mnesia.dirty_read({:t, :k})
+          :httpc.request("http://example.com")
+          :gen_tcp.connect(~c"localhost", 80, [])
+          :gen_udp.open(0)
+          :ssl.connect(~c"localhost", 443, [])
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+
+      assert Enum.map(violations, &elem(&1.mfa, 0)) == [
+               :counters,
+               :atomics,
+               :mnesia,
+               :httpc,
+               :gen_tcp,
+               :gen_udp,
+               :ssl
+             ]
+    end
+
+    test "rejects host and socket introspection but keeps :inet address conversion" do
+      ast =
+        quote do
+          :inet.gethostname()
+          :inet.getaddr(~c"localhost", :inet)
+          :inet.ntoa({127, 0, 0, 1})
+        end
+
+      assert {:error, violations} = AstCheck.scan(ast)
+      assert Enum.map(violations, & &1.mfa) == [{:inet, :gethostname}, {:inet, :getaddr}]
+    end
+
     test "rejects Function.capture/3 (dynamic dispatch laundering)" do
       ast =
         quote do
