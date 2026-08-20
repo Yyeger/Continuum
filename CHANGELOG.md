@@ -49,6 +49,14 @@
   than reporting `:delivered`, and named the delivery-ID index explicitly in
   `conflict_target`.
 
+### Dependencies
+
+- Raised the Postgrex floor to 0.22.4, which patches EEF-CVE-2026-66838 (SQL
+  injection via the `:comment` option of `Postgrex.stream/4`).
+- Raised the Phoenix LiveView floor to 1.2.9, which patches EEF-CVE-2026-64941
+  (open redirect in `Phoenix.LiveView.validate_local_url!/2` via ASCII tab, LF,
+  and CR).
+
 ## v0.7.1 — 2026-08-01 — "Pipeline hardening"
 
 ### Fixes
