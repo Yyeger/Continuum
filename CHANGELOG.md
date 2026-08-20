@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.7.2 — 2026-08-19 — "Determinism and operability fixes"
+
+### Determinism enforcement
+
+- Rejected `Logger` calls in workflow and `Continuum.Pure` code, with a
+  per-level `Continuum.log/2` remediation hint. Breaking for modules that logged
+  directly; see the migration guide.
+- Closed the standard-library denylist gaps: the `:timer` scheduling API, the
+  whole `File`, `:file`, `:ets`, `:dets`, `:mnesia`, `:counters`, `:atomics`,
+  `:httpc`, `:gen_tcp`, `:gen_udp`, and `:ssl` surfaces, the host and socket parts
+  of `:inet`, and the remaining `IO` reads and writes. Added
+  `Continuum.AstCheck.forbidden_modules/0` so a module with no pure functions is
+  banned in full without enumerating it, while per-function hints still win.
+- Warned on the implicit `catch` spelling, where `catch` sits directly in the
+  function body rather than inside an explicit `try`. That form is the more
+  idiomatic one and was entirely unwarned.
+- Removed `Continuum.Runtime.Journal.Postgres.consume_signal/4`, an unused
+  internal function that journaled `signal_received` without a command id, which
+  replays as a wildcard against whatever await sits at the cursor.
+
+### Cancellation classification
+
+- Promoted runs cancelled before v0.5.2 into the canonical terminal `cancelled`
+  state with a delta migration, and reduced the `state` query filter to a state
+  column comparison. The previous encoded-payload comparison in SQL is only
+  correct while payloads are `:erlang.term_to_binary/1` and fails silently
+  otherwise.
+- Classified activity tasks discarded by a run cancel through the owning run's
+  state instead of an encoded `:cancelled` error payload, keeping tasks whose run
+  row is gone visible in the report.
+
+### Retries, listeners, and schedules
+
+- Reserved the retry jitter window below `max_backoff_ms` instead of clamping the
+  sum, so jitter no longer becomes a no-op exactly for the cohort that has
+  reached maximum backoff.
+- Made the timer wheel and signal router survive an unreachable Postgres at boot:
+  both trap exits, retry the `LISTEN` every five seconds, re-attach after a
+  notifier crash, and accept a subscription that takes effect on connect. A node
+  that booted during a Postgres blip previously stayed deaf for its lifetime.
+- Backed off failing schedule starts on the attempt counter the claim already
+  maintained, and parked a schedule in a terminal `failed` state after twelve
+  attempts with telemetry, a log, and a `Continuum.Health` finding. Added a
+  `:schedules` section to the health report and documented the
+  `[:continuum, :schedule, :*]` events.
+- Rolled back `deliver_signal!/5` when its mailbox insert matched nothing rather
+  than reporting `:delivered`, and named the delivery-ID index explicitly in
+  `conflict_target`.
+
 ## v0.7.1 — 2026-08-01 — "Pipeline hardening"
 
 ### Fixes
