@@ -9,5 +9,6 @@ defmodule Continuum.Schema.Timer do
     field(:run_id, :binary_id)
     field(:fires_at, :utc_datetime_usec)
     field(:fired, :boolean, default: false)
+    field(:owner_seq, :integer)
   end
 end

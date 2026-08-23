@@ -1570,7 +1570,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
             id: timer.id,
             run_id: run_id,
             fires_at: timer.fires_at,
-            fired: false
+            fired: false,
+            owner_seq: event.seq
           })
 
         with {:ok, _event} <- repo().insert(event_changeset),
@@ -2085,7 +2086,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp maybe_insert_signal_timeout_timer(run_id, %{
          timeout_timer_id: timer_id,
-         timeout_at: fires_at
+         timeout_at: fires_at,
+         seq: seq
        }) do
     changeset =
       %Timer{}
@@ -2093,7 +2095,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
         id: timer_id,
         run_id: run_id,
         fires_at: fires_at,
-        fired: false
+        fired: false,
+        owner_seq: seq
       })
 
     case repo().insert(changeset) do
@@ -2232,7 +2235,36 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp mark_signal_timeout_resolved(_run_id, _event), do: :ok
 
+  # Two indexed reads on the events PK when the timer row knows which event
+  # armed it, which every timer armed since the `owner_seq` migration does.
+  # Timers armed before it fall back to the full-history scan.
   defp timer_winner(run_id, timer_id) do
+    case repo().one(from(t in Timer, where: t.id == ^timer_id, select: t.owner_seq)) do
+      nil -> timer_winner_by_scan(run_id, timer_id)
+      owner_seq -> timer_winner_at(run_id, timer_id, owner_seq)
+    end
+  end
+
+  defp timer_winner_at(run_id, timer_id, owner_seq) do
+    case event_at(run_id, owner_seq) do
+      nil ->
+        :not_found
+
+      timer_event ->
+        if timer_owner?(timer_event, timer_id) do
+          classify_timer_winner(
+            timer_event,
+            timer_id,
+            owner_seq + 1,
+            event_at(run_id, owner_seq + 1)
+          )
+        else
+          :mismatch
+        end
+    end
+  end
+
+  defp timer_winner_by_scan(run_id, timer_id) do
     events = load_events(run_id)
 
     case Enum.find(events, &timer_owner?(&1, timer_id)) do
@@ -2241,20 +2273,25 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       timer_event ->
         winner_seq = timer_event.seq + 1
+        winner = Enum.find(events, &(&1.seq == winner_seq))
+        classify_timer_winner(timer_event, timer_id, winner_seq, winner)
+    end
+  end
 
-        case Enum.find(events, &(&1.seq == winner_seq)) do
-          nil ->
-            {:pending, timer_event, winner_seq}
+  defp classify_timer_winner(timer_event, _timer_id, winner_seq, nil) do
+    {:pending, timer_event, winner_seq}
+  end
 
-          %{type: :timer_fired, timer_id: ^timer_id} = winner_event ->
-            {:already_fired, winner_event}
+  defp classify_timer_winner(timer_event, timer_id, _winner_seq, winner_event) do
+    case winner_event do
+      %{type: :timer_fired, timer_id: ^timer_id} ->
+        {:already_fired, winner_event}
 
-          %{type: :signal_received} = winner_event when timer_event.type == :signal_awaited ->
-            {:already_resolved, winner_event}
+      %{type: :signal_received} when timer_event.type == :signal_awaited ->
+        {:already_resolved, winner_event}
 
-          _other ->
-            :mismatch
-        end
+      _other ->
+        :mismatch
     end
   end
 

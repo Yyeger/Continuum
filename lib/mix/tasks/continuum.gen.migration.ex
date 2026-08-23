@@ -280,6 +280,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           add :run_id, :uuid, null: false
           add :fires_at, :utc_datetime_usec, null: false
           add :fired, :boolean, null: false, default: false
+          add :owner_seq, :bigint
         end
 
         execute \"\"\"
