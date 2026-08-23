@@ -7,7 +7,7 @@ defmodule Continuum.Test do
 
     * run workflows against the in-memory journal
     * load or persist event histories
-    * replay a committed golden history
+    * replay a committed golden history (through `Continuum.Replay`)
     * inject signals and timers in deterministic tests
     * check out an Ecto SQL Sandbox connection for Postgres-backed tests
 
@@ -18,7 +18,7 @@ defmodule Continuum.Test do
   import Ecto.Query
   import ExUnit.Assertions
 
-  alias Continuum.Runtime.{Context, Engine, Instance, Journal}
+  alias Continuum.Runtime.{Engine, Instance, Journal}
   alias Continuum.Schema.{Run, Timer}
 
   @type replay_result ::
@@ -91,105 +91,23 @@ defmodule Continuum.Test do
   @doc """
   Replay a workflow from an existing history.
 
+  Delegates to `Continuum.Replay.run/4`, which is read-only by default:
+  stepping past the journaled tail reports `{:suspended, {:history_exhausted, _}}`
+  instead of executing the next activity for real. Pass `journal:` explicitly to
+  replay through a live adapter.
+
   Returns `{:ok, result}` when the workflow completes from history, or
   `{:suspended, reason}` if the history ends at a pending effect.
   """
   @spec replay(module(), term(), [map()], keyword()) :: replay_result()
   def replay(workflow_module, input, history, opts \\ []) do
-    workflow_module
-    |> do_replay(input, history, opts)
-    |> maybe_replay_generated_entrypoint(workflow_module, input, history, opts)
-  end
+    case Continuum.Replay.run(workflow_module, input, history, opts) do
+      {:error, {:history_not_consumed, %{consumed: consumed, expected: expected}}} ->
+        flunk("replay consumed #{consumed} events but history covers through cursor #{expected}")
 
-  defp do_replay(workflow_module, input, history, opts) do
-    run_id = Keyword.get(opts, :run_id, "continuum-replay")
-    journal = Keyword.get(opts, :journal, Journal.InMemory)
-    instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    snapshot = compatible_snapshot(Keyword.get(opts, :snapshot), workflow_module)
-
-    ctx = %Context{
-      run_id: run_id,
-      history: history,
-      history_offset: history_offset(snapshot),
-      snapshot_steps: snapshot_steps(snapshot),
-      cursor: 0,
-      workflow_module: workflow_module,
-      lease_token: Keyword.get(opts, :lease_token),
-      instance: instance,
-      journal: journal
-    }
-
-    Context.put(ctx)
-
-    try do
-      result = workflow_module.run(input)
-      assert_all_history_consumed!(history)
-      {:ok, result}
-    catch
-      {token, reason} when token == :continuum_suspend ->
-        {:suspended, reason}
-
-      {token, next_run_id} when token == :continuum_continued_as_new ->
-        {:continued, next_run_id}
-
-      kind, reason ->
-        {:error, {kind, reason, __STACKTRACE__}}
-    after
-      Context.clear()
+      result ->
+        result
     end
-  end
-
-  defp maybe_replay_generated_entrypoint(
-         {:error, {:error, %Continuum.ReplayDriftError{expected: expected}, _stacktrace}} =
-           result,
-         workflow_module,
-         input,
-         history,
-         opts
-       ) do
-    entrypoint = expected_entrypoint(expected)
-
-    if entrypoint && entrypoint != workflow_module do
-      do_replay(entrypoint, input, history, opts)
-    else
-      result
-    end
-  end
-
-  defp maybe_replay_generated_entrypoint(result, _workflow_module, _input, _history, _opts) do
-    result
-  end
-
-  defp expected_entrypoint(expected) when is_map(expected) do
-    expected
-    |> Map.get(:command_id, Map.get(expected, "command_id"))
-    |> command_entrypoint()
-  end
-
-  defp expected_entrypoint(_expected), do: nil
-
-  defp command_entrypoint(module) when is_atom(module) do
-    if generated_workflow_entrypoint?(module) and function_exported?(module, :run, 1) do
-      module
-    end
-  end
-
-  defp command_entrypoint(tuple) when is_tuple(tuple) do
-    tuple
-    |> Tuple.to_list()
-    |> Enum.find_value(&command_entrypoint/1)
-  end
-
-  defp command_entrypoint(list) when is_list(list),
-    do: Enum.find_value(list, &command_entrypoint/1)
-
-  defp command_entrypoint(_other), do: nil
-
-  defp generated_workflow_entrypoint?(module) do
-    metadata = module.__continuum_workflow__()
-    metadata.entrypoint == module and Map.get(metadata, :source_module, module) != module
-  rescue
-    UndefinedFunctionError -> false
   end
 
   @doc """
@@ -269,36 +187,6 @@ defmodule Continuum.Test do
 
     :ok
   end
-
-  defp assert_all_history_consumed!(history) do
-    ctx = Context.get()
-    consumed = ctx.cursor
-    expected = (ctx.history_offset || 0) + length(history)
-
-    assert consumed == expected,
-           "replay consumed #{consumed} events but history covers through cursor #{expected}"
-  end
-
-  defp compatible_snapshot(nil, _workflow_module), do: nil
-
-  defp compatible_snapshot(
-         %Continuum.Snapshot{version_hash: version_hash} = snapshot,
-         workflow_module
-       ) do
-    if version_hash == workflow_version_hash(workflow_module), do: snapshot, else: nil
-  end
-
-  defp workflow_version_hash(workflow_module) do
-    workflow_module.__continuum_workflow__().version_hash
-  rescue
-    UndefinedFunctionError -> <<0::256>>
-  end
-
-  defp history_offset(nil), do: 0
-  defp history_offset(%Continuum.Snapshot{through_seq: through_seq}), do: through_seq + 1
-
-  defp snapshot_steps(nil), do: %{}
-  defp snapshot_steps(%Continuum.Snapshot{steps_by_seq: steps}), do: steps || %{}
 
   defp fire_journal_timer(instance, run_id, journal) do
     with {:ok, timer_event} <- latest_pending_timer(journal.load(instance, run_id)) do

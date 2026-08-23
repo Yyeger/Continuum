@@ -84,7 +84,7 @@ defmodule Continuum.Replay.ReadOnlyTest do
 
       # The Postgres adapter resolves a tail await by consuming the mailbox row
       # inside a transaction, so "replaying" a history through it is a write.
-      Continuum.Test.replay(AwaitingFlow, %{}, history,
+      Continuum.Replay.run(AwaitingFlow, %{}, history,
         journal: Postgres,
         run_id: run_id,
         lease_token: Repo.get(Run, run_id).lease_token
@@ -120,7 +120,7 @@ defmodule Continuum.Replay.ReadOnlyTest do
 
       # The append that follows fails (no in-memory run row), which is exactly
       # the point: the activity body already ran by then.
-      Continuum.Test.replay(ChargingFlow, %{amount: 100}, [],
+      Continuum.Replay.run(ChargingFlow, %{amount: 100}, [],
         journal: Continuum.Runtime.Journal.InMemory
       )
 

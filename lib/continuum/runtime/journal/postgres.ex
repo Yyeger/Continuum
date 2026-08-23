@@ -359,6 +359,24 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
+  @doc """
+  Read a run's snapshot and events for offline replay.
+
+  The read-only sibling of `load_with_snapshot/3`: no row lock, no lease
+  validation, no transaction. `load_with_snapshot/3` exists to hand a *resuming
+  engine* a history it holds the lease for, so it must fence; `Continuum.Replay`
+  holds no lease and must not disturb the one the run has.
+  """
+  @doc since: "0.8.0"
+  @spec load_for_replay(Instance.t(), binary()) :: {Continuum.Snapshot.t() | nil, [map()]}
+  def load_for_replay(%Instance{} = instance, run_id) do
+    with_repo(instance, fn ->
+      snapshot = latest_snapshot(run_id)
+      through_seq = if snapshot, do: snapshot.through_seq, else: -1
+      {snapshot, load_events_after(run_id, through_seq)}
+    end)
+  end
+
   @impl true
   def take_snapshot!(%Instance{} = instance, %Continuum.Snapshot{} = snapshot) do
     with_repo(instance, fn -> take_snapshot_with_repo!(snapshot) end)

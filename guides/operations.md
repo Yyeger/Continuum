@@ -67,6 +67,13 @@ The `retry` action re-attempts durable registration for a loaded workflow. The
 epoch, attempt, timestamp, or error becomes unreviewed again. Applied repairs
 emit `[:continuum, :health, :repaired]` telemetry.
 
+## Offline Replay
+
+`mix continuum.replay RUN_ID --repo MyApp.Repo` answers "what does this run do
+next, against the code on this node?" without running it — nothing is written,
+and the run keeps its lease, its history, and its pending signals. See
+[Offline replay](replay.md).
+
 ## Activity Dead Letters and Manual Retry
 
 `Continuum.ActivityOperations` exposes durable task lineage, every recorded

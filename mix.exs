@@ -94,6 +94,7 @@ defmodule Continuum.MixProject do
         "guides/patching.md",
         "guides/workflow-versioning.md",
         "guides/operations.md",
+        "guides/replay.md",
         "guides/auditing.md",
         "guides/oban-executor.md",
         "guides/observability.md",
