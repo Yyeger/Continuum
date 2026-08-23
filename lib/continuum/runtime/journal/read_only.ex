@@ -68,6 +68,14 @@ defmodule Continuum.Runtime.Journal.ReadOnly do
     do: refuse!(:deliver_signal!, run_id)
 
   @impl true
+  def start_child!(_instance, parent_run_id, _child, _lease_token),
+    do: refuse!(:start_child!, parent_run_id)
+
+  @impl true
+  def await_child_terminal!(_instance, parent_run_id, _child_run_id, _cid, _seq, _lease_token),
+    do: refuse!(:await_child_terminal!, parent_run_id)
+
+  @impl true
   def get_run(_instance, run_id), do: refuse!(:get_run, run_id)
 
   defp refuse!(operation, run_id) do

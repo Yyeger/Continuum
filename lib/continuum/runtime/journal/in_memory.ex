@@ -119,6 +119,47 @@ defmodule Continuum.Runtime.Journal.InMemory do
     )
   end
 
+  @impl true
+  def start_child!(%Instance{} = instance, parent_run_id, child, _lease_token) do
+    DurableTerm.validate!(child.input, :input)
+
+    __MODULE__
+    |> GenServer.call({:start_child, instance.name, parent_run_id, child})
+    |> unwrap_write!(:start_child!)
+
+    # Started from the client, not from inside `handle_call/3`: the child engine
+    # journals through this same GenServer as it boots, so starting it while the
+    # journal is answering its own call would deadlock. The parent link is
+    # already recorded by then, which is what lets the child's terminal
+    # transition wake the parent.
+    case Continuum.Runtime.Engine.start_run(child.workflow, child.input,
+           run_id: child.child_run_id,
+           journal: __MODULE__,
+           instance: instance.name
+         ) do
+      {:ok, _run_id} -> :ok
+      {:error, reason} -> raise JournalError, op: :start_child!, reason: reason
+    end
+  end
+
+  @impl true
+  def await_child_terminal!(
+        %Instance{} = instance,
+        parent_run_id,
+        child_run_id,
+        command_id,
+        seq,
+        _lease_token
+      ) do
+    case GenServer.call(
+           __MODULE__,
+           {:await_child_terminal, instance.name, parent_run_id, child_run_id, command_id, seq}
+         ) do
+      {:error, reason} -> raise JournalError, op: :await_child_terminal!, reason: reason
+      outcome -> outcome
+    end
+  end
+
   @doc """
   Pop the oldest buffered payload for signal `name`, or return `:none`.
 
@@ -240,6 +281,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
         :ok =
           Continuum.Runtime.Engine.broadcast_run_finished(instance, run_id, :completed, result)
 
+        wake_parent(state, instance, run_id)
         {:reply, :ok, state}
 
       {:error, reason} ->
@@ -264,6 +306,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
     case update do
       {:ok, state} ->
         broadcast_failed(instance, run_id, public_error)
+        wake_parent(state, instance, run_id)
         {:reply, :ok, state}
 
       {:error, reason} ->
@@ -343,8 +386,126 @@ defmodule Continuum.Runtime.Journal.InMemory do
     reply_update(result, state)
   end
 
+  def handle_call({:start_child, instance_name, parent_run_id, child}, _from, state) do
+    with :ok <- check_child_depth(state, instance_name, parent_run_id),
+         {:ok, state} <-
+           update_active_run(state, instance_name, parent_run_id, fn parent ->
+             Map.update!(parent, :events, fn events ->
+               events ++ [normalize_event_seq(child.started_event, events)]
+             end)
+           end) do
+      {:reply, :ok, put_child_parent(state, instance_name, child.child_run_id, parent_run_id)}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(
+        {:await_child_terminal, instance_name, parent_run_id, child_run_id, command_id, seq},
+        _from,
+        state
+      ) do
+    case child_outcome(state, instance_name, child_run_id) do
+      :pending ->
+        {:reply, :pending, state}
+
+      {outcome, event_fields} ->
+        event = Map.merge(event_fields, %{command_id: command_id, seq: seq})
+
+        case update_active_run(state, instance_name, parent_run_id, fn parent ->
+               Map.update!(parent, :events, &(&1 ++ [normalize_event_seq(event, &1)]))
+             end) do
+          {:ok, state} -> {:reply, reply_child_outcome(outcome, event), state}
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
   def handle_call({:get_run, instance_name, run_id}, _from, state),
     do: {:reply, get_run_state(state, instance_name, run_id), state}
+
+  # Parent links live beside the runs rather than on them: the child run row is
+  # created by the child engine's own `start_run/5`, after `start_child!/4` has
+  # already had to record the relationship.
+  @child_parents :__child_parents__
+
+  defp put_child_parent(state, instance_name, child_run_id, parent_run_id) do
+    Map.update(
+      state,
+      instance_name,
+      %{@child_parents => %{child_run_id => parent_run_id}},
+      fn runs ->
+        Map.update(
+          runs,
+          @child_parents,
+          %{child_run_id => parent_run_id},
+          &Map.put(&1, child_run_id, parent_run_id)
+        )
+      end
+    )
+  end
+
+  # The Postgres adapter arms the parent's next_wakeup_at and notifies; with no
+  # dispatcher in-memory, the cast is the whole mechanism. It is a cast, so
+  # issuing it from inside `handle_call/3` cannot deadlock, and a suspended
+  # parent engine stays alive to receive it.
+  defp wake_parent(state, instance, run_id) do
+    case parent_of(state, instance.name, run_id) do
+      nil -> :ok
+      parent_run_id -> Continuum.Runtime.Engine.wake(instance, parent_run_id)
+    end
+
+    :ok
+  end
+
+  defp parent_of(state, instance_name, run_id) do
+    state
+    |> Map.get(instance_name, %{})
+    |> Map.get(@child_parents, %{})
+    |> Map.get(run_id)
+  end
+
+  defp check_child_depth(state, instance_name, parent_run_id) do
+    max_depth = Application.get_env(:continuum, :max_child_depth, 10)
+    depth = ancestor_depth(state, instance_name, parent_run_id, 0, max_depth)
+
+    if depth + 1 > max_depth do
+      {:error, {:max_child_depth_exceeded, depth: depth + 1, max_child_depth: max_depth}}
+    else
+      :ok
+    end
+  end
+
+  defp ancestor_depth(_state, _instance_name, _run_id, depth, max_depth) when depth >= max_depth,
+    do: depth
+
+  defp ancestor_depth(state, instance_name, run_id, depth, max_depth) do
+    case parent_of(state, instance_name, run_id) do
+      nil -> depth
+      parent -> ancestor_depth(state, instance_name, parent, depth + 1, max_depth)
+    end
+  end
+
+  defp child_outcome(state, instance_name, child_run_id) do
+    case get_run_state(state, instance_name, child_run_id) do
+      %{state: :completed, result: result} ->
+        {{:completed, result},
+         %{type: :child_completed, child_run_id: child_run_id, result: result}}
+
+      %{state: :failed, error: error} ->
+        {{:failed, error}, %{type: :child_failed, child_run_id: child_run_id, error: error}}
+
+      %{state: :cancelled} ->
+        {:cancelled, %{type: :child_cancelled, child_run_id: child_run_id}}
+
+      _ ->
+        :pending
+    end
+  end
+
+  defp reply_child_outcome({:completed, result}, event), do: {:completed, result, event}
+  defp reply_child_outcome({:failed, error}, event), do: {:failed, error, event}
+  defp reply_child_outcome(:cancelled, event), do: {:cancelled, event}
 
   defp put_buffer(buffer, name, []), do: Map.delete(buffer, name)
   defp put_buffer(buffer, name, rest), do: Map.put(buffer, name, rest)
@@ -353,6 +514,12 @@ defmodule Continuum.Runtime.Journal.InMemory do
     state
     |> Map.get(instance_name, %{})
     |> Map.get(run_id)
+  end
+
+  defp runs_only(state, instance_name) do
+    state
+    |> Map.get(instance_name, %{})
+    |> Map.delete(@child_parents)
   end
 
   defp put_run(state, instance_name, run_id, run) do
@@ -378,7 +545,7 @@ defmodule Continuum.Runtime.Journal.InMemory do
   end
 
   defp find_start_conflict(state, instance_name, run_id, workflow, namespace, idempotency_key) do
-    runs = Map.get(state, instance_name, %{})
+    runs = runs_only(state, instance_name)
 
     cond do
       Map.has_key?(runs, run_id) ->

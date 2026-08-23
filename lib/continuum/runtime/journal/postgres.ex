@@ -466,6 +466,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   the `child_started` event to the parent's history. The child run is left
   runnable for the dispatcher to claim.
   """
+  @impl true
   def start_child!(%Instance{} = instance, parent_run_id, child, lease_token) do
     with_repo(instance, fn -> start_child_with_repo!(parent_run_id, child, lease_token) end)
   end
@@ -570,6 +571,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   matching `child_completed`/`child_failed`/`child_cancelled` event to the
   parent and returns the decoded outcome; otherwise returns `:pending`.
   """
+  @impl true
   def await_child_terminal!(
         %Instance{} = instance,
         parent_run_id,

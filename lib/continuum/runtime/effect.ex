@@ -1145,12 +1145,16 @@ defmodule Continuum.Runtime.Effect do
   # --- Child workflows -------------------------------------------------------
 
   defp live_start_child!(
-         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         %{journal: Continuum.Runtime.Journal.ReadOnly} = ctx,
          workflow,
          input,
          opts,
-         command_id
+         _command_id
        ) do
+    refuse_live!(ctx, {:start_child, workflow, input, opts})
+  end
+
+  defp live_start_child!(ctx, workflow, input, opts, command_id) do
     child_run_id = deterministic_child_run_id(ctx.run_id, command_id, Keyword.get(opts, :id))
 
     event = %{
@@ -1172,7 +1176,7 @@ defmodule Continuum.Runtime.Effect do
     }
 
     :ok =
-      Continuum.Runtime.Journal.Postgres.start_child!(
+      child_journal!(ctx, :start_child!, 4).start_child!(
         ctx.instance,
         ctx.run_id,
         child,
@@ -1194,22 +1198,12 @@ defmodule Continuum.Runtime.Effect do
     child_run_id
   end
 
-  defp live_start_child!(
-         %{journal: Continuum.Runtime.Journal.ReadOnly} = ctx,
-         workflow,
-         input,
-         opts,
-         _command_id
-       ) do
-    refuse_live!(ctx, {:start_child, workflow, input, opts})
+  defp live_await_child!(%{journal: Continuum.Runtime.Journal.ReadOnly} = ctx, ref, _command_id) do
+    refuse_live!(ctx, {:await_child, ref.child_run_id})
   end
 
-  defp live_start_child!(_ctx, _workflow, _input, _opts, _command_id) do
-    raise "child workflows require the Postgres journal (start_child is durable-only)"
-  end
-
-  defp live_await_child!(%{journal: Continuum.Runtime.Journal.Postgres} = ctx, ref, command_id) do
-    case Continuum.Runtime.Journal.Postgres.await_child_terminal!(
+  defp live_await_child!(ctx, ref, command_id) do
+    case child_journal!(ctx, :await_child_terminal!, 6).await_child_terminal!(
            ctx.instance,
            ctx.run_id,
            ref.child_run_id,
@@ -1237,12 +1231,16 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
-  defp live_await_child!(%{journal: Continuum.Runtime.Journal.ReadOnly} = ctx, ref, _command_id) do
-    refuse_live!(ctx, {:await_child, ref.child_run_id})
-  end
-
-  defp live_await_child!(_ctx, _ref, _command_id) do
-    raise "child workflows require the Postgres journal (await_child is durable-only)"
+  # Child workflows are a journal capability, not an `Effect` special case: both
+  # stock adapters implement them, and a third-party journal that does not gets
+  # a message naming what is missing rather than an UndefinedFunctionError.
+  defp child_journal!(ctx, callback, arity) do
+    if function_exported?(ctx.journal, callback, arity) do
+      ctx.journal
+    else
+      raise "child workflows require a journal implementing " <>
+              "#{callback}/#{arity}; #{inspect(ctx.journal)} does not"
+    end
   end
 
   defp advance_await_child(ctx, winner_event) do

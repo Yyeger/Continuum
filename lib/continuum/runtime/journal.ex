@@ -86,12 +86,54 @@ defmodule Continuum.Runtime.Journal do
             ) :: {:ok, binary(), :delivered | :duplicate} | {:error, term()}
 
   @doc """
+  Start a child run and journal `child.started_event` on the parent.
+
+  Optional: a journal that does not export it makes `await child` and
+  `start_child/3` unavailable, and the effect raises with that explanation
+  rather than silently doing nothing.
+
+  `child` carries `:child_run_id`, `:workflow`, `:input`, `:parent_command_id`,
+  `:trace_context`, and `:started_event`.
+  """
+  @doc since: "0.8.0"
+  @callback start_child!(
+              instance :: Continuum.Runtime.Instance.t(),
+              parent_run_id :: binary(),
+              child :: map(),
+              lease_token :: integer() | nil
+            ) :: :ok
+
+  @doc """
+  Journal the parent's view of a child's terminal state, or report `:pending`.
+
+  Returns the winner event alongside the outcome so the parent can advance its
+  cursor over exactly the event that was appended.
+  """
+  @doc since: "0.8.0"
+  @callback await_child_terminal!(
+              instance :: Continuum.Runtime.Instance.t(),
+              parent_run_id :: binary(),
+              child_run_id :: binary(),
+              command_id :: term(),
+              seq :: non_neg_integer(),
+              lease_token :: integer() | nil
+            ) ::
+              {:completed, term(), map()}
+              | {:failed, term(), map()}
+              | {:cancelled, map()}
+              | :pending
+
+  @doc """
   Look up the run record. Returns `nil` if no such run, or a map with at
   least `:state`, `:result`, `:error` keys (atoms / terms — already decoded).
   """
   @callback get_run(instance :: Continuum.Runtime.Instance.t(), run_id :: binary()) :: nil | map()
 
-  @optional_callbacks start_run: 5, deliver_signal!: 4, deliver_signal!: 5
+  @optional_callbacks start_run: 5,
+                      deliver_signal!: 4,
+                      deliver_signal!: 5,
+                      start_child!: 4,
+                      await_child_terminal!: 6
 
   @doc "Returns the configured default journal adapter."
   def default do
