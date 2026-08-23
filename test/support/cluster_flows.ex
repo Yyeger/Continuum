@@ -2,6 +2,8 @@ defmodule Continuum.Test.ClusterFlows do
   @moduledoc false
 
   defmodule SideEffectFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(input) do
@@ -14,6 +16,8 @@ defmodule Continuum.Test.ClusterFlows do
   end
 
   defmodule SignalFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(_input) do
@@ -22,6 +26,8 @@ defmodule Continuum.Test.ClusterFlows do
   end
 
   defmodule Activity do
+    @moduledoc false
+
     use Continuum.Activity, retry: [max_attempts: 2]
 
     def run(input) do
@@ -34,6 +40,8 @@ defmodule Continuum.Test.ClusterFlows do
   end
 
   defmodule ActivityFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(input) do

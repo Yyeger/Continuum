@@ -1,4 +1,6 @@
 defmodule Mix.Tasks.Continuum.Config.Docs do
+  @moduledoc false
+
   use Mix.Task
 
   @shortdoc "Generate the Continuum runtime configuration reference"

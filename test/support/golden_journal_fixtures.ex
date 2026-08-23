@@ -69,6 +69,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule ActivitySignalFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.Activities
 
@@ -81,6 +83,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule SignalTimeoutFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(input) do
@@ -92,6 +96,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule TimerFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(input) do
@@ -101,6 +107,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule RetryFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.RetryActivity
 
@@ -119,6 +127,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule TerminalFailureFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     alias Continuum.TestSupport.GoldenJournalFixtures.{
@@ -135,6 +145,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule SideEffectFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(input) do
@@ -144,6 +156,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule DeterministicPrimitivesFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(_input) do
@@ -152,6 +166,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule SagaSuccessFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.Activities
 
@@ -167,6 +183,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule SagaFailureFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.Activities
 
@@ -182,6 +200,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule ParallelCompensationFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.Activities
 
@@ -202,12 +222,16 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule LeafFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(input), do: {:ok, {:leaf, input.id}}
   end
 
   defmodule FanoutParentFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.LeafFlow
 
@@ -222,12 +246,16 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule SlowLeafFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(_input), do: {:ok, await(signal(:never))}
   end
 
   defmodule CancelParentFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.SlowLeafFlow
 
@@ -238,12 +266,16 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule CycleActivity do
+    @moduledoc false
+
     use Continuum.Activity, retry: [max_attempts: 1]
 
     def run(n), do: {:ok, n}
   end
 
   defmodule CycleFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.CycleActivity
 
@@ -259,6 +291,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule ParentOfCycleFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
     alias Continuum.TestSupport.GoldenJournalFixtures.CycleFlow
 
@@ -269,6 +303,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule PatchedOldFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(_input) do
@@ -282,6 +318,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule PatchedNewFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(_input) do
@@ -294,6 +332,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule SnapshotFlow do
+    @moduledoc false
+
     use Continuum.Workflow, version: 1
 
     def run(input) do
@@ -307,6 +347,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule Activities do
+    @moduledoc false
+
     use Continuum.Activity, retry: [max_attempts: 1]
 
     def echo(value), do: {:ok, value}
@@ -316,6 +358,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule RetryActivity do
+    @moduledoc false
+
     use Continuum.Activity, retry: [max_attempts: 2, backoff: :constant, base_ms: 1]
 
     def run(seed) do
@@ -330,6 +374,8 @@ defmodule Continuum.TestSupport.GoldenJournalFixtures do
   end
 
   defmodule TerminalFailureActivity do
+    @moduledoc false
+
     use Continuum.Activity, retry: [max_attempts: 1]
     alias Continuum.TestSupport.GoldenJournalFixtures.TerminalFailureError
 
