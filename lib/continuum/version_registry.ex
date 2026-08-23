@@ -480,8 +480,21 @@ defmodule Continuum.VersionRegistry do
     end
   end
 
+  # Compare before writing. Replacing a `persistent_term` schedules a global
+  # literal-area collection that scans every process which might reference the
+  # old term, and this sits on the run-start path twice — once through
+  # `Postgres.start_run_with_repo/4` and once through
+  # `Engine.resolve_workflow_entrypoint/1`. The value is content-addressed by
+  # `{workflow, version_hash}`, so after the first write it never changes.
   defp put_entry(%{workflow_string: workflow, version_hash: hash} = entry) do
-    :persistent_term.put(@registry_key, Map.put(entry_map(), {workflow, hash}, entry))
+    entries = entry_map()
+    key = {workflow, hash}
+
+    case Map.get(entries, key) do
+      ^entry -> entry
+      _other -> :persistent_term.put(@registry_key, Map.put(entries, key, entry))
+    end
+
     entry
   end
 
@@ -514,7 +527,13 @@ defmodule Continuum.VersionRegistry do
       end)
 
     hints = :persistent_term.get(@snapshot_hint_key, %{})
-    :persistent_term.put(@snapshot_hint_key, Map.put(hints, instance.name, thresholds))
+
+    # Same reasoning as `put_entry/1`: this runs on every run start of an
+    # instance whose workflows declare a threshold, and the hints for a given
+    # instance stop changing once its versions are loaded.
+    unless Map.get(hints, instance.name) == thresholds do
+      :persistent_term.put(@snapshot_hint_key, Map.put(hints, instance.name, thresholds))
+    end
 
     :ok
   end
