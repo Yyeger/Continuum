@@ -81,6 +81,28 @@ defmodule Continuum.Runtime.Instance do
     :exit, _ -> []
   end
 
+  @doc """
+  Local run ids, or `:too_many` when the registry holds more than `limit`.
+
+  `Registry.count/1` is O(1), so the large case never materializes the list.
+  Callers that ship these ids to Postgres as a query parameter use this: a
+  10k-element array on every one-second poll costs more than what excluding
+  them saves, and every such exclusion is an optimisation over a correctness
+  path that already exists.
+  """
+  @doc since: "0.8.0"
+  def local_run_ids(%Instance{} = instance, limit) when is_integer(limit) and limit >= 0 do
+    if Registry.count(instance.registry) > limit do
+      :too_many
+    else
+      local_run_ids(instance)
+    end
+  rescue
+    _ -> :too_many
+  catch
+    :exit, _ -> :too_many
+  end
+
   def new(opts) do
     opts = Continuum.Config.validate_instance!(opts)
     name = Keyword.get(opts, :name, @default)

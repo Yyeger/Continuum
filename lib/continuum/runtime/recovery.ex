@@ -12,6 +12,8 @@ defmodule Continuum.Runtime.Recovery do
 
   alias Continuum.{Runtime.Instance, Telemetry}
 
+  @max_local_exclusions 256
+
   @doc false
   def child_spec(opts) do
     %{
@@ -88,12 +90,15 @@ defmodule Continuum.Runtime.Recovery do
   end
 
   defp recover_runs(instance) do
-    local_run_ids = local_run_ids(instance)
-
+    # Same bound and same reasoning as the dispatcher's claim: excluding
+    # locally-registered runs is an optimisation over the lease-expiry
+    # predicate below, so a node with more live runs than the cap ships no
+    # array rather than a 10k-element one.
     {skip_local_sql, params} =
-      case local_run_ids do
+      case Instance.local_run_ids(instance, @max_local_exclusions) do
         [] -> {"", []}
-        ids -> {"AND id::text <> ALL($1::text[])", [ids]}
+        :too_many -> {"", []}
+        ids -> {"AND NOT (id = ANY($1::uuid[]))", [Enum.map(ids, &Ecto.UUID.dump!/1)]}
       end
 
     sql = """
@@ -174,9 +179,5 @@ defmodule Continuum.Runtime.Recovery do
 
   defp recovery_enabled?(instance) do
     instance.repo != nil
-  end
-
-  defp local_run_ids(instance) do
-    Instance.local_run_ids(instance)
   end
 end

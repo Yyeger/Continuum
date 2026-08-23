@@ -23,6 +23,7 @@ defmodule Continuum.Runtime.Dispatcher do
   @default_interval_ms 1_000
   @default_batch_size 10
   @default_ttl_seconds 30
+  @max_local_exclusions 256
 
   @doc false
   def start_link(opts \\ []) do
@@ -115,13 +116,7 @@ defmodule Continuum.Runtime.Dispatcher do
   end
 
   defp claim(instance, owner, batch_size, ttl_seconds) do
-    # Runs with a live local engine must not be claimed: rotating their token
-    # fences out the healthy engine (Recovery applies the same exclusion).
-    {skip_local_sql, extra_params} =
-      case local_run_ids(instance) do
-        [] -> {"", []}
-        ids -> {"AND id::text <> ALL($4::text[])", [ids]}
-      end
+    {skip_local_sql, extra_params} = skip_local_engines(instance)
 
     sql = """
     WITH candidates AS (
@@ -162,6 +157,25 @@ defmodule Continuum.Runtime.Dispatcher do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # Runs with a live local engine should not be claimed: rotating their token
+  # forces the engine to adopt the new one instead of just continuing. That is
+  # handled correctly — `start_engine/2` hands the rotated token to the live
+  # engine via `Engine.adopt_lease/4` — so this exclusion is an optimisation,
+  # which is why it is safe to drop above the cap. A 10k-element array shipped
+  # on every one-second poll costs more than the adoptions it avoids.
+  #
+  # Ids go over as dumped `uuid` values rather than text, so the comparison
+  # does not have to cast `id` on every candidate row.
+  defp skip_local_engines(instance) do
+    case Instance.local_run_ids(instance, @max_local_exclusions) do
+      [] -> {"", []}
+      :too_many -> {"", []}
+      ids -> {"AND NOT (id = ANY($4::uuid[]))", [Enum.map(ids, &Ecto.UUID.dump!/1)]}
+    end
+  rescue
+    ArgumentError -> {"", []}
   end
 
   defp decode_claim(owner, [
@@ -262,10 +276,6 @@ defmodule Continuum.Runtime.Dispatcher do
 
         :error
     end
-  end
-
-  defp local_run_ids(instance) do
-    Instance.local_run_ids(instance)
   end
 
   defp dispatcher_config do

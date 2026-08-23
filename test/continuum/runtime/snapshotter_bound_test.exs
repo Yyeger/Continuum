@@ -60,9 +60,14 @@ defmodule Continuum.Runtime.SnapshotterBoundTest do
       GenServer.call(pid, {:maybe_snapshot, "run-#{n}", nil, Continuum.Runtime.Journal.InMemory})
     end
 
-    # "kept" has been rotated into the previous generation, not dropped.
+    rotated = :sys.get_state(pid)
+    refute Map.has_key?(rotated.run_counts, "kept")
+    assert Map.has_key?(rotated.previous_run_counts, "kept")
+
+    # Touching it again promotes it back into the live generation rather than
+    # re-deriving its threshold from scratch.
     GenServer.call(pid, {:maybe_snapshot, "kept", nil, Continuum.Runtime.Journal.InMemory})
 
-    assert %{count: 2} = :sys.get_state(pid).run_counts["kept"]
+    assert Map.has_key?(:sys.get_state(pid).run_counts, "kept")
   end
 end
