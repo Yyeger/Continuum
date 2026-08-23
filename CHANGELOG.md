@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.8.1 — 2026-08-23 — "Lint the generator"
+
+- Added `ex_slop` 0.4.4 and Credo 1.7.19 as development/test quality gates;
+  CI now runs `mix credo --strict` on every supported Elixir/OTP lane.
+- Resolved every recommended `ex_slop` finding, including dual atom/string
+  lookups on replay identities and trace context, redundant control flow, and
+  full-list count assertions in tests.
+- Fixed Credo's actionable warning and refactoring backlog: Oban decoding now
+  preserves the original stacktrace, internal support modules explicitly opt
+  out of public docs, and small control-flow and enumeration paths use their
+  idiomatic single-pass forms.
+- Documented the two architecture-specific Credo policies: runtime-selected
+  adapters and optional integrations intentionally use `apply/3`, while fully
+  qualified boundary modules remain explicit. Existing replay-engine nesting
+  and cyclomatic-complexity maxima are retained as regression ceilings.
+
 ## v0.8.0 — 2026-08-23 — "Finish the foundations"
 
 Everything the engine could already do, you can now reach. The batch scheduler,
