@@ -65,6 +65,7 @@ defmodule Continuum.SnapshotFormatTest do
       assert step.advance_by == 6
       assert step.command_ids == [command_id(0), command_id(1), command_id(2)]
       assert step.shape == List.duplicate({__MODULE__, :activity, 1}, 3)
+      assert step.input_hashes == ["h0", "h1", "h2"]
 
       assert step.results == %{
                command_id(0) => {:ok, :a},

@@ -26,12 +26,13 @@ defmodule Continuum.DurableTerm do
   @doc """
   Decode a term Continuum wrote across a journal boundary.
 
-  Decoding is `:safe`, so it refuses to create atoms the node has never defined.
-  Every atom Continuum journals originates in compiled workflow, activity, or
-  runtime code, and that code has to be loaded for the value to be meaningful
-  anyway, so a refusal means one of three things: the stored bytes are corrupt,
-  they were written by code this node does not have, or workflow code journaled
-  a dynamically constructed atom — which was never replay-durable, because the
+  Decoding is `:safe`, so it refuses to create atoms from journal bytes. On a
+  cold node, Continuum loads the modules declared by the node's loaded OTP
+  applications and retries once; this makes atoms from deployed workflow,
+  activity, and runtime code available without trusting database text. A final
+  refusal means one of three things: the stored bytes are corrupt, they were
+  written by code this node does not have, or workflow code journaled a
+  dynamically constructed atom — which was never replay-durable, because the
   atom does not exist on a node that has not run the same input.
 
   Raises `Continuum.DurableTermError` rather than leaking `ArgumentError` from
@@ -39,10 +40,21 @@ defmodule Continuum.DurableTerm do
   """
   @spec decode!(binary()) :: term()
   def decode!(binary) when is_binary(binary) do
-    :erlang.binary_to_term(binary, [:safe])
-  rescue
-    ArgumentError ->
-      reraise %DurableTermError{path: nil, kind: :undecodable}, __STACKTRACE__
+    case safe_decode(binary) do
+      {:ok, term} ->
+        term
+
+      :error ->
+        # A cold node may not have loaded the module containing an otherwise
+        # legitimate domain atom yet. Load atoms from deployed application
+        # code, never from the journal bytes, then retry the safe decoder.
+        load_deployed_code_atoms()
+
+        case safe_decode(binary) do
+          {:ok, term} -> term
+          :error -> raise %DurableTermError{path: nil, kind: :undecodable}
+        end
+    end
   end
 
   @doc "Non-raising `decode!/1`."
@@ -51,6 +63,31 @@ defmodule Continuum.DurableTerm do
     {:ok, decode!(binary)}
   rescue
     error in DurableTermError -> {:error, error}
+  end
+
+  @doc false
+  @spec atom_from_binary!(binary(), atom()) :: atom()
+  def atom_from_binary!(binary, root \\ :journal_atom) when is_binary(binary) and is_atom(root) do
+    case existing_atom(binary) do
+      {:ok, atom} ->
+        atom
+
+      :error ->
+        load_deployed_code_atoms()
+
+        case existing_atom(binary) do
+          {:ok, atom} -> atom
+          :error -> raise %DurableTermError{path: [root], kind: :unknown_atom, value: binary}
+        end
+    end
+  end
+
+  @doc false
+  @spec module_from_binary!(binary(), atom()) :: module()
+  def module_from_binary!(binary, root \\ :journal_module)
+      when is_binary(binary) and is_atom(root) do
+    module_name = if String.starts_with?(binary, "Elixir."), do: binary, else: "Elixir." <> binary
+    atom_from_binary!(module_name, root)
   end
 
   @doc false
@@ -116,4 +153,36 @@ defmodule Continuum.DurableTerm do
   defp validate_list_tail(tail, path, _index), do: do_validate(tail, path ++ [:tail])
 
   defp invalid(path, kind), do: {:error, %DurableTermError{path: path, kind: kind}}
+
+  defp safe_decode(binary) do
+    {:ok, :erlang.binary_to_term(binary, [:safe])}
+  rescue
+    ArgumentError -> :error
+  end
+
+  defp existing_atom(binary) do
+    {:ok, String.to_existing_atom(binary)}
+  rescue
+    ArgumentError -> :error
+  end
+
+  # Loading a BEAM module interns the atoms from its atom table. Application
+  # manifests are trusted deployed code and provide a bounded source; unlike
+  # decoding journal bytes without `:safe`, this cannot turn database contents
+  # into new atoms. This fallback runs only after a safe decode misses.
+  defp load_deployed_code_atoms do
+    Application.loaded_applications()
+    |> Enum.each(fn {application, _description, _version} ->
+      application
+      |> Application.spec(:modules)
+      |> List.wrap()
+      |> Enum.each(&Code.ensure_loaded/1)
+    end)
+
+    :ok
+  rescue
+    _error -> :ok
+  catch
+    :exit, _reason -> :ok
+  end
 end

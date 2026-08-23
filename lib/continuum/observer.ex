@@ -188,7 +188,7 @@ defmodule Continuum.Observer do
             id: task.id,
             run_id: task.run_id,
             seq: task.seq,
-            state: String.to_atom(task.state),
+            state: Continuum.DurableTerm.atom_from_binary!(task.state, :activity_task_state),
             attempt: task.attempt,
             queue: task.queue,
             priority: task.priority,
@@ -287,7 +287,7 @@ defmodule Continuum.Observer do
   end
 
   defp decode_event(%Event{} = event, opts) do
-    type = String.to_atom(event.event_type)
+    type = Continuum.EventType.from_string!(event.event_type)
     payload = decode_payload(event.payload, opts)
 
     %{

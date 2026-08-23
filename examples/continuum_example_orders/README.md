@@ -57,7 +57,7 @@ remain opt-in; see `../../guides/snapshots.md` and
 `../../bench/snapshot_bench.exs`.
 
 The script starts one approved order in the `retail` namespace and one rejected
-order in the `enterprise` namespace, then uses `Continuum.query/1` and
+order in the `enterprise` namespace, then uses `Continuum.list_runs/1` and
 `Continuum.set_attributes/3` to assert that namespace-scoped searches do not
 cross tenants.
 

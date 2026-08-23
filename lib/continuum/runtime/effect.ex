@@ -473,8 +473,11 @@ defmodule Continuum.Runtime.Effect do
   defp replay_batch_snapshot_step!(ctx, %{effect_type: :activity_batch} = step, items) do
     expected_ids = Enum.map(items, & &1.command_id)
     expected_shape = Enum.map(items, fn item -> activity_shape(item.mfa) end)
+    expected_input_hashes = Enum.map(items, & &1.input_hash)
 
-    if Map.get(step, :command_ids) == expected_ids and Map.get(step, :shape) == expected_shape do
+    if Map.get(step, :command_ids) == expected_ids and
+         Map.get(step, :shape) == expected_shape and
+         Map.get(step, :input_hashes) == expected_input_hashes do
       Context.put(%{ctx | cursor: ctx.cursor + Map.fetch!(step, :advance_by)})
       results = Map.fetch!(step, :results)
       Enum.map(expected_ids, &Map.fetch!(results, &1))

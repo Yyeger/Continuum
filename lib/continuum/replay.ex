@@ -115,8 +115,7 @@ defmodule Continuum.Replay do
 
     with {:ok, run} <- fetch_run(instance, run_id),
          {:ok, entrypoint} <- resolve_entrypoint(run, opts) do
-      {snapshot, events} = Journal.Postgres.load_for_replay(instance, run_id)
-      snapshot = if Keyword.get(opts, :snapshot, true), do: snapshot, else: nil
+      {snapshot, events} = replay_history(instance, run_id, opts)
       input = Continuum.DurableTerm.decode!(run.input)
 
       outcome =
@@ -258,6 +257,17 @@ defmodule Continuum.Replay do
   # ---------------------------------------------------------------------------
   # Durable lookup
 
+  defp replay_history(instance, run_id, opts) do
+    if Keyword.get(opts, :snapshot, true) do
+      Journal.Postgres.load_for_replay(instance, run_id)
+    else
+      # `load_for_replay/2` intentionally returns only the suffix after the
+      # newest snapshot. Dropping that snapshot after the read would strand the
+      # suffix at cursor zero, so event-only replay must load the full journal.
+      {nil, Journal.Postgres.load(instance, run_id)}
+    end
+  end
+
   defp resolve_instance(opts) do
     case Keyword.get(opts, :repo) do
       nil -> Instance.lookup(Keyword.get(opts, :instance, Continuum))
@@ -314,7 +324,7 @@ defmodule Continuum.Replay do
       version_hash: printable_hash(run.version_hash),
       entrypoint: entrypoint,
       namespace: run.namespace,
-      stored_state: String.to_existing_atom(run.state),
+      stored_state: Continuum.DurableTerm.atom_from_binary!(run.state, :run_state),
       stored_result: redact(stored_result, opts),
       event_count: length(events),
       snapshot: snapshot_summary(snapshot),

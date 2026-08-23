@@ -64,6 +64,19 @@ defmodule Continuum.Integration.PublicCrashResumeTest do
     assert {:error, :no_engine} = Test.crash!(run_id)
   end
 
+  defmodule ContinueFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(%{step: 1}), do: continue_as_new(%{step: 2})
+    def run(%{step: 2}), do: {:ok, :finished}
+  end
+
+  test "drive follows a continue_as_new chain to its logical result" do
+    {:ok, run_id} = Test.start_postgres(ContinueFlow, %{step: 1})
+
+    assert {:ok, %{state: :completed, result: {:ok, :finished}}} = Test.drive(run_id)
+  end
+
   defp event_types(run_id) do
     run_id
     |> Test.history(journal: :postgres)

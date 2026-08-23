@@ -103,7 +103,7 @@ defmodule Continuum.Schedules do
       namespace: schedule.namespace,
       attributes: schedule.attributes,
       scheduled_at: schedule.scheduled_at,
-      state: String.to_atom(schedule.state),
+      state: Continuum.DurableTerm.atom_from_binary!(schedule.state, :schedule_state),
       attempt: schedule.attempt,
       started_at: schedule.started_at,
       last_error: schedule.last_error

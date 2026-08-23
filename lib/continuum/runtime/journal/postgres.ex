@@ -842,7 +842,9 @@ defmodule Continuum.Runtime.Journal.Postgres do
   # of pinning the predecessor's hash — a pinned chain never picks up deploys
   # and goes unknown-version once the old module is gone.
   defp successor_workflow_version(run) do
-    case Continuum.VersionRegistry.ensure_registered(Module.concat([run.workflow])) do
+    workflow_module = DurableTerm.module_from_binary!(run.workflow, :workflow)
+
+    case Continuum.VersionRegistry.ensure_registered(workflow_module) do
       {:ok, metadata} -> {metadata.workflow_string, metadata.version_hash}
       {:error, _reason} -> {run.workflow, run.version_hash}
     end
@@ -2715,12 +2717,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
       |> Map.delete(:seq)
       |> encode_term(:event)
 
-    {Atom.to_string(type), payload}
+    {Continuum.EventType.to_string!(type), payload}
   end
 
   defp decode_event(%Event{event_type: event_type, payload: payload, seq: seq}) do
     decoded = decode_term(payload)
-    type = String.to_atom(event_type)
+    type = Continuum.EventType.from_string!(event_type)
 
     decoded
     |> Map.put(:type, type)
@@ -2747,9 +2749,14 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp maybe_atomize(map, key) do
     case Map.get(map, key) || Map.get(map, to_string(key)) do
-      nil -> map
-      val when is_binary(val) -> Map.put(map, key, String.to_atom(val))
-      _ -> map
+      nil ->
+        map
+
+      val when is_binary(val) ->
+        Map.put(map, key, DurableTerm.atom_from_binary!(val, :event_payload_atom))
+
+      _ ->
+        map
     end
   end
 
@@ -2759,7 +2766,15 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
     case Map.get(map, key) || Map.get(map, str_key) do
       [mod, fun, args] when is_binary(mod) and is_binary(fun) and is_list(args) ->
-        Map.put(map, key, {String.to_atom("Elixir." <> mod), String.to_atom(fun), args})
+        Map.put(
+          map,
+          key,
+          {
+            DurableTerm.module_from_binary!(mod, :activity_module),
+            DurableTerm.atom_from_binary!(fun, :activity_function),
+            args
+          }
+        )
 
       [mod, fun, args] when is_atom(mod) and is_atom(fun) and is_list(args) ->
         Map.put(map, key, {mod, fun, args})
@@ -2775,7 +2790,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     %{
       run_id: run.id,
       workflow: run.workflow,
-      state: String.to_atom(run.state),
+      state: DurableTerm.atom_from_binary!(run.state, :run_state),
       result: decode_term(run.result),
       error: error,
       error_stacktrace: decode_term(run.error_stacktrace) || legacy_stacktrace,

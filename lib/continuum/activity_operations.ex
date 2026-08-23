@@ -16,7 +16,7 @@ defmodule Continuum.ActivityOperations do
 
   import Ecto.Query
 
-  alias Continuum.Activity.Policy
+  alias Continuum.{Activity.Policy, DurableTerm}
   alias Continuum.Runtime.{Instance, Journal.Postgres}
   alias Continuum.Schema.{ActivityAttempt, ActivityOperation, ActivityTask, Run}
 
@@ -315,7 +315,8 @@ defmodule Continuum.ActivityOperations do
     operations
     |> Enum.reverse()
     |> Enum.find_value(fn operation ->
-      if operation.classification, do: String.to_atom(operation.classification)
+      if operation.classification,
+        do: DurableTerm.atom_from_binary!(operation.classification, :activity_classification)
     end)
   end
 
@@ -325,7 +326,7 @@ defmodule Continuum.ActivityOperations do
     %{
       task_id: task.id,
       parent_task_id: task.parent_task_id,
-      state: String.to_atom(task.state),
+      state: DurableTerm.atom_from_binary!(task.state, :activity_task_state),
       attempt: task.attempt,
       mfa: Map.get(source, :mfa),
       retry_policy: Map.get(source, :retry),
@@ -341,7 +342,7 @@ defmodule Continuum.ActivityOperations do
     %{
       task_id: attempt.task_id,
       attempt: attempt.attempt,
-      outcome: String.to_atom(attempt.outcome),
+      outcome: DurableTerm.atom_from_binary!(attempt.outcome, :activity_attempt_outcome),
       error: decode(attempt.error),
       recorded_at: attempt.recorded_at
     }
@@ -352,8 +353,15 @@ defmodule Continuum.ActivityOperations do
       id: operation.id,
       task_id: operation.task_id,
       successor_task_id: operation.successor_task_id,
-      action: String.to_atom(operation.action),
-      classification: if(operation.classification, do: String.to_atom(operation.classification)),
+      action: DurableTerm.atom_from_binary!(operation.action, :activity_operation),
+      classification:
+        if(operation.classification,
+          do:
+            DurableTerm.atom_from_binary!(
+              operation.classification,
+              :activity_classification
+            )
+        ),
       operator: operation.operator,
       reason: operation.reason,
       retry_policy: policy_view(decode(operation.retry_policy)),

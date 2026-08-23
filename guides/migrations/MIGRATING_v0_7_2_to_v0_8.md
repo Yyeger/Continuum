@@ -42,8 +42,11 @@ Timers armed before the migration keep `owner_seq = NULL` and fire through the
 old full-history lookup, so no backfill is needed and no in-flight timer is
 disturbed. Rows written after it take two indexed reads.
 
-**If you skip this migration**, timers still fire correctly — every row simply
-takes the old path.
+The migration is required before deploying v0.8. The runtime writes
+`owner_seq` when it arms a timer and reads it when a timer fires, so deploying
+the new code against the v0.7.2 schema makes those operations fail with an
+undefined-column error. The fallback applies to timer *rows created before the
+migration*, not to a database where the column itself is absent.
 
 ## New: `activity_all/1`
 
@@ -174,10 +177,12 @@ permanently.
 
 - **Journaled terms decode with `:safe`.** Every read path now goes through
   `Continuum.DurableTerm.decode!/1`, which never creates atoms and raises
-  `Continuum.DurableTermError` rather than leaking `ArgumentError`. Every atom
-  Continuum journals comes from compiled code, so this is transparent — unless
-  workflow code journaled a dynamically constructed atom (`String.to_atom/1` on
-  external input), which was never durable across nodes in the first place.
+  `Continuum.DurableTermError` rather than leaking `ArgumentError`. On a cold
+  node it loads modules declared by deployed OTP applications and retries, so
+  atoms from compiled workflow and activity code remain transparent without
+  trusting database text. A dynamically constructed atom (`String.to_atom/1`
+  on external input) remains invalid because no receiving node can know it from
+  deployed code.
 
 - **A batch activity's terminal event appends at the tail.** `activity_all/1`
   members cannot claim `seq + 1`, which belongs to the next member's schedule

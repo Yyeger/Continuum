@@ -155,6 +155,30 @@ defmodule Mix.Tasks.ContinuumReplayTest do
     Mix.shell(Mix.Shell.Process)
   end
 
+  test "--no-snapshot reloads the complete event history" do
+    run_id = completed_run()
+    instance = Instance.default()
+    run = Repo.get!(Run, run_id)
+    events = Postgres.load(instance, run_id)
+
+    assert {:ok, snapshot} =
+             Continuum.Snapshot.compact(run_id, run.version_hash, events)
+
+    :ok = Postgres.take_snapshot!(instance, snapshot)
+
+    Mix.Task.rerun("continuum.replay", [
+      run_id,
+      "--repo",
+      "Continuum.Test.Repo",
+      "--no-snapshot"
+    ])
+
+    output = shell_output()
+    assert output =~ "outcome: completed"
+    assert output =~ "events: 1 (no snapshot)"
+    assert output =~ "agrees with the stored terminal result"
+  end
+
   defp completed_run do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(CompletingFlow, %{seed: 3}, journal: Postgres)

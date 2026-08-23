@@ -233,10 +233,7 @@ defmodule Continuum.Test do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     deadline = System.monotonic_time(:millisecond) + Keyword.get(opts, :timeout, 5_000)
 
-    case drive_until(instance, run_id, deadline, Keyword.get(opts, :batch_size, 10)) do
-      :ok -> Continuum.await(run_id, 1_000, journal: Journal.Postgres, instance: instance.name)
-      {:error, _reason} = error -> error
-    end
+    drive_to_result(instance, run_id, deadline, Keyword.get(opts, :batch_size, 10))
   end
 
   @doc """
@@ -331,14 +328,6 @@ defmodule Continuum.Test do
     :ok
   end
 
-  defp drive_until(
-         instance,
-         run_id,
-         deadline,
-         batch_size,
-         states \\ ~w(completed failed cancelled)
-       )
-
   defp drive_until(instance, run_id, deadline, batch_size, states) do
     cond do
       run_state(instance, run_id) in states and settled?(instance, run_id, states) ->
@@ -354,14 +343,52 @@ defmodule Continuum.Test do
     end
   end
 
-  # Return only once the run has *stayed* in the requested state through a tick
-  # with nothing dispatched. A run reads "suspended" the instant its state
-  # column is written, while its engine may still be finishing the statement —
-  # and `crash!/2` kills that engine, which under SQL Sandbox shared mode would
-  # take the shared connection down with it.
+  # Poll through the public await surface so `continue_as_new` chains remain
+  # one logical run to the driver. Looking only at the root row stops as soon
+  # as it stores `{:continued, next_run_id}`, leaving the successor undispatched
+  # in the disabled-poller test setup this helper exists for.
+  defp drive_to_result(instance, run_id, deadline, batch_size) do
+    case Continuum.await(run_id, 0, journal: Journal.Postgres, instance: instance.name) do
+      {:error, :timeout} ->
+        if System.monotonic_time(:millisecond) > deadline do
+          {:error, :timeout}
+        else
+          tick(instance, batch_size)
+          Process.sleep(5)
+          drive_to_result(instance, run_id, deadline, batch_size)
+        end
+
+      result ->
+        result
+    end
+  end
+
+  # Return only once the engine has finished the callback that wrote the
+  # requested state. A run reads "suspended" as soon as the journal transaction
+  # commits, while its engine may still be unwinding the statement — and
+  # `crash!/2` would then kill a process still using the SQL Sandbox connection.
+  # `:sys.get_state/2` serializes behind that callback instead of guessing with
+  # a sleep.
   defp settled?(instance, run_id, states) do
-    Process.sleep(15)
-    run_state(instance, run_id) in states
+    run_state(instance, run_id) in states and local_engine_settled?(instance, run_id, states)
+  end
+
+  defp local_engine_settled?(instance, run_id, states) do
+    case Registry.lookup(instance.registry, run_id) do
+      [] ->
+        true
+
+      [{pid, _value} | _rest] ->
+        pid
+        |> :sys.get_state(1_000)
+        |> Map.fetch!(:status)
+        |> to_string()
+        |> Kernel.in(states)
+    end
+  catch
+    :exit, {:noproc, _} -> true
+    :exit, {:timeout, _} -> false
+    :exit, _reason -> true
   end
 
   defp tick(instance, batch_size) do

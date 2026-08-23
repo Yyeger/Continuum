@@ -11,7 +11,7 @@ row metadata on `continuum_runs`, not a separate process tree.
   )
 ```
 
-`Continuum.query/1` and `Continuum.Observer.list_runs/1` default to the
+`Continuum.list_runs/1` and `Continuum.Observer.list_runs/1` default to the
 `"default"` namespace. Pass `namespace: "tenant-a"` to list or search another
 namespace.
 

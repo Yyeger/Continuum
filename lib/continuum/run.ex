@@ -3,7 +3,7 @@ defmodule Continuum.Run do
   Stable public projection of one durable workflow run.
 
   This struct is returned by `Continuum.get_run/2` and in
-  `Continuum.query/1` pages. Internal Ecto schemas remain private.
+  `Continuum.list_runs/1` pages. Internal Ecto schemas remain private.
   """
 
   @type t :: %__MODULE__{

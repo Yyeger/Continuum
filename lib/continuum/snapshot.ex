@@ -247,6 +247,7 @@ defmodule Continuum.Snapshot do
          command_id: event.command_id,
          command_ids: Enum.map([event | schedules], & &1.command_id),
          shape: Enum.map([event | schedules], &activity_shape(&1.mfa)),
+         input_hashes: Enum.map([event | schedules], &Map.fetch!(&1, :input_hash)),
          results: results,
          advance_by: 2 * (length(schedules) + 1)
        }, 2 * (length(schedules) + 1)}

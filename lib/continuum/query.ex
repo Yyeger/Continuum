@@ -483,7 +483,9 @@ defmodule Continuum.Query do
   # encoded bytes in SQL, so unlike the filter in `apply_state/2` it stays
   # correct under any payload encoding.
   defp display_state("failed", :cancelled), do: :cancelled
-  defp display_state(state, _error), do: String.to_atom(state)
+
+  defp display_state(state, _error),
+    do: DurableTerm.atom_from_binary!(state, :run_state)
 
   defp positive_integer(value, _fallback) when is_integer(value) and value > 0, do: value
 

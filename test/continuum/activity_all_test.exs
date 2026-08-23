@@ -197,6 +197,22 @@ defmodule Continuum.ActivityAllTest do
                Continuum.Replay.run(SameMfaFlow, %{}, remaining, snapshot: forged)
     end
 
+    test "raises drift when batch arguments change behind a snapshot" do
+      original = %{a: 100, b: 200, sku: "original"}
+      changed = %{a: 999, b: 200, sku: "changed"}
+
+      {:ok, run_id} = Test.start_synchronous(FanOutFlow, original)
+      {:ok, _} = Continuum.await(run_id, 1_000)
+
+      history = Test.history(run_id)
+      hash = FanOutFlow.__continuum_workflow__().version_hash
+      {:ok, snapshot} = Continuum.Snapshot.compact(run_id, hash, history)
+      remaining = Enum.drop(history, snapshot.through_seq + 1)
+
+      assert {:error, {:error, %Continuum.ReplayDriftError{}, _stack}} =
+               Continuum.Replay.run(FanOutFlow, changed, remaining, snapshot: snapshot)
+    end
+
     test "raises drift when a non-batch step sits where the batch does" do
       {:ok, run_id} = Test.start_synchronous(SameMfaFlow, %{})
       {:ok, _} = Continuum.await(run_id, 1_000)

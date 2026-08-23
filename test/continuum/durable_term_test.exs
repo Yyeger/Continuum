@@ -69,4 +69,34 @@ defmodule Continuum.DurableTermTest do
     assert {:error, %DurableTermError{kind: :undecodable}} =
              DurableTerm.decode(<<131, 99, 0, 0>>)
   end
+
+  test "restores an existing atom without creating one from journal text" do
+    assert DurableTerm.atom_from_binary!("ok") == :ok
+    assert DurableTerm.module_from_binary!("Continuum.DurableTerm") == Continuum.DurableTerm
+
+    name = "continuum_unknown_journal_atom_#{System.unique_integer([:positive])}"
+
+    assert_raise DurableTermError, ~r/unknown journal atom/, fn ->
+      DurableTerm.atom_from_binary!(name, :event_type)
+    end
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+  end
+
+  test "event types decode through a closed vocabulary" do
+    assert Continuum.EventType.from_string!("activity_completed") == :activity_completed
+    assert Continuum.EventType.to_string!(:activity_completed) == "activity_completed"
+
+    name = "unknown_event_#{System.unique_integer([:positive])}"
+
+    assert_raise DurableTermError, ~r/unknown journal atom/, fn ->
+      Continuum.EventType.from_string!(name)
+    end
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+
+    assert_raise ArgumentError, ~r/unknown Continuum journal event type/, fn ->
+      Continuum.EventType.to_string!(:not_a_journal_event)
+    end
+  end
 end

@@ -24,6 +24,8 @@ See [the migration guide](guides/migrations/MIGRATING_v0_7_2_to_v0_8.md).
   member's index is part of its command identity and its arguments are hashed
   into the schedule event, the way `child_started` already content-addresses its
   input. A partly completed batch suspends without advancing the cursor.
+- Batch snapshots retain those per-member input hashes and validate them on
+  replay, so compaction preserves the event path's argument-drift detection.
 
 ### Offline replay
 
@@ -31,7 +33,9 @@ See [the migration guide](guides/migrations/MIGRATING_v0_7_2_to_v0_8.md).
   `mix continuum.replay <run_id>` on top of it. Point it at a wedged run and get
   back the terminal result, the suspend reason, or the exact cursor where code
   and history disagree. `--against` rehearses a code change against a run
-  already in flight; `--no-snapshot` checks a snapshot against its own events.
+  already in flight; `--no-snapshot` checks the same run from events alone.
+- `--no-snapshot` loads the complete event history rather than discarding the
+  snapshot after its covered prefix has already been trimmed.
 - Added `Continuum.Runtime.Journal.ReadOnly`, which raises on every callback,
   and made `Continuum.Runtime.Effect` refuse to compute a live tail against it.
   Both stock adapters mutate on the path the code called replay — the in-memory
@@ -59,6 +63,8 @@ See [the migration guide](guides/migrations/MIGRATING_v0_7_2_to_v0_8.md).
   `drive_until_state/3`, `crash!/2`, `expire_lease!/2`, `elapse_timers!/2` — so a
   crash-resume test needs no `Continuum.Runtime.*` module. `:journal` accepts
   `:postgres` and `:in_memory` shorthands.
+- The durable driver follows `continue_as_new` successors until the logical run
+  finishes, including when background pollers are disabled.
 - Added `guides/testing.md`, `guides/replay.md`, and the first tests in the
   example app: in-memory unit tests that need no database at all.
 
@@ -97,6 +103,12 @@ See [the migration guide](guides/migrations/MIGRATING_v0_7_2_to_v0_8.md).
   rather than leaking `ArgumentError` on corrupt bytes. This turned from an
   internal concern into a prerequisite the moment `mix continuum.replay` made
   decoding production bytes a documented operator workflow.
+- On a cold node, a safe-decode miss loads atoms from modules declared by
+  deployed OTP applications and retries once. Database strings are converted
+  only to existing atoms, and event types use a closed vocabulary, so this
+  preserves cross-node histories without reopening atom creation from rows.
+- Raised the development/test Bandit floor to 1.12.5, which patches
+  EEF-CVE-2026-74836 and EEF-CVE-2026-75484 in its HTTP/2 implementation.
 
 ## v0.7.2 — 2026-08-19 — "Determinism and operability fixes"
 

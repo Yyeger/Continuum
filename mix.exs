@@ -41,7 +41,7 @@ defmodule Continuum.MixProject do
       {:phoenix_html, dependency_version("~> 4.0", "4.0.0"), optional: true},
       {:phoenix_live_view, dependency_version(">= 1.2.9 and < 2.0.0", "1.2.9"), optional: true},
       {:oban, dependency_version("~> 2.20", "2.20.0"), optional: true},
-      {:bandit, dependency_version("~> 1.12.4", "1.12.4"), only: [:dev, :test], optional: true},
+      {:bandit, dependency_version("~> 1.12.5", "1.12.5"), only: [:dev, :test], optional: true},
       {:lazy_html, dependency_version(">= 0.1.0", "0.1.0"), only: :test},
       {:stream_data, dependency_version("~> 1.1", "1.1.0"), only: [:dev, :test]},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}

@@ -45,7 +45,13 @@ if Code.ensure_loaded?(Oban.Worker) do
     end
 
     defp fetch_arg(args, key, default) when is_binary(key) do
-      Map.get(args, key, Map.get(args, String.to_atom(key), default))
+      case Map.fetch(args, key) do
+        {:ok, value} ->
+          value
+
+        :error ->
+          Map.get(args, Continuum.DurableTerm.atom_from_binary!(key, :oban_argument), default)
+      end
     end
 
     defp owner(instance, job_id) do

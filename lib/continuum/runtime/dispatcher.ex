@@ -189,7 +189,7 @@ defmodule Continuum.Runtime.Dispatcher do
        ]) do
     %{
       run_id: run_id,
-      workflow_module: Module.concat([workflow]),
+      workflow_module: DurableTerm.module_from_binary!(workflow, :workflow),
       workflow: workflow,
       version_hash: version_hash,
       input: decode_term(input),

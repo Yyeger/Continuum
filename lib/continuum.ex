@@ -19,7 +19,7 @@ defmodule Continuum do
     * `signal/3` — deliver an external signal to a running workflow
     * `cancel/2` — cancel a running workflow
     * `await/2` — block until a workflow completes (test/synchronous use)
-    * `query/1` and `get_run/2` — inspect durable runs
+    * `list_runs/1` and `get_run/2` — inspect durable runs
     * `set_attributes/3` — externally update run search attributes
     * `now/0`, `uuid4/0`, `random/0`, `side_effect/1` — deterministic primitives
       callable from workflow code

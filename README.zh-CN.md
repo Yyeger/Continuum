@@ -173,7 +173,7 @@ end
 - **命名空间** —— 用于列表/查询的软租户边界；单个运行的操作仍以全局 `run_id`
   为键。
 - **搜索属性与结构化查询** —— `attributes:` / `Continuum.set_attributes/3`，
-  以及 `Continuum.query/1,2`。
+  以及 `Continuum.list_runs/1,2`。
 - **集群感知的唤醒路由** —— 基于 `:pg` 实现跨节点唤醒。Postgres 租约与隔离令牌
   仍是写入的唯一权威。
 

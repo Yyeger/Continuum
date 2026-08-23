@@ -51,4 +51,3 @@ so a distinct module is what closes those routes; a flag on `Postgres` would not
 
 `Continuum.Replay.run/4` is the same kernel for a history you already hold, and
 `Continuum.Test.replay/4` delegates to it.
-

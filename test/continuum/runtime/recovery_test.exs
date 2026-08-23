@@ -162,7 +162,8 @@ defmodule Continuum.Runtime.RecoveryTest do
     assert {:ok, %{timers: 1}} = Recovery.recover_once()
 
     recovered = Repo.one!(from(r in Run, where: r.id == ^run_id))
-    assert DateTime.compare(recovered.next_wakeup_at, DateTime.utc_now()) != :gt
+    %{rows: [[database_now]]} = Repo.query!("SELECT clock_timestamp()")
+    assert DateTime.compare(recovered.next_wakeup_at, database_now) != :gt
   end
 
   defp future_time do

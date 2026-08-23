@@ -552,7 +552,7 @@ defmodule Continuum.Health do
         %{
           task_id: task_id,
           run_id: run_id,
-          state: String.to_atom(state),
+          state: DurableTerm.atom_from_binary!(state, :run_state),
           attempt: attempt,
           heartbeat_at: heartbeat_at,
           heartbeat_age_ms: age_ms(now, heartbeat_at),

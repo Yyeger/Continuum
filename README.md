@@ -187,7 +187,7 @@ end
 - **Namespaces** — a soft tenant boundary for list/query; single-run operations
   stay keyed by global `run_id`.
 - **Search attributes and structured queries** — `attributes:` /
-  `Continuum.set_attributes/3` plus `Continuum.query/1,2`.
+  `Continuum.set_attributes/3` plus `Continuum.list_runs/1,2`.
 - **Cluster-aware wake routing** over `:pg` for cross-node wakeups. The Postgres
   lease and fencing token remain the sole authority for writes.
 
