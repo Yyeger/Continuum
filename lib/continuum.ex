@@ -476,14 +476,49 @@ defmodule Continuum do
       Continuum.__log__(
         unquote(level),
         unquote(message),
+        [],
+        unquote(Macro.escape(command))
+      )
+    end
+  end
+
+  @doc """
+  Emit a replay-safe workflow log breadcrumb with structured metadata.
+
+      Continuum.log(:info, "payment accepted", order_id: order.id, cents: total)
+
+  Metadata is a keyword list. It is journaled with the event, passed to
+  `Logger` alongside Continuum's own `continuum_*` keys, and included in the
+  `[:continuum, :workflow, :log]` telemetry measurement metadata.
+
+  Because it is journaled, metadata must survive the journal: values are
+  validated with `Continuum.DurableTerm`, so a PID, reference, port, or
+  function is rejected at the call rather than silently written and
+  meaningless on replay. Metadata is also part of what replay matches, exactly
+  as the message already is — changing it on a run in flight is drift, not a
+  silent no-op.
+
+  A `log/2` call journals the same event it always did: the metadata key is
+  omitted entirely when the list is empty, so existing histories and golden
+  fixtures are unaffected.
+  """
+  @doc since: "0.8.0"
+  defmacro log(level, message, metadata) do
+    command = command_base(__CALLER__, :workflow_log)
+
+    quote do
+      Continuum.__log__(
+        unquote(level),
+        unquote(message),
+        unquote(metadata),
         unquote(Macro.escape(command))
       )
     end
   end
 
   @doc false
-  def __log__(level, message, command_base) do
-    Effect.run({:workflow_log, level, message}, {:command, command_base})
+  def __log__(level, message, metadata, command_base) do
+    Effect.run({:workflow_log, level, message, metadata}, {:command, command_base})
   end
 
   @doc """

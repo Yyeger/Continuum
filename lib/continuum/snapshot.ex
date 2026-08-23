@@ -129,8 +129,14 @@ defmodule Continuum.Snapshot do
     one_step(event, :side_effect, kind, payload)
   end
 
+  # The shape has to agree with `Effect.effect_shape/1`: a `log/2` event carries
+  # no metadata key and keeps the two-element shape, so snapshots taken before
+  # `log/3` existed still match.
   defp step_from(%{type: :workflow_log, level: level, message: message} = event, _rest) do
-    one_step(event, :workflow_log, {level, message}, :ok)
+    case Map.get(event, :metadata, []) do
+      [] -> one_step(event, :workflow_log, {level, message}, :ok)
+      metadata -> one_step(event, :workflow_log, {level, message, metadata}, :ok)
+    end
   end
 
   defp step_from(%{type: :activity_completed, mfa: mfa, payload: payload} = event, _rest) do

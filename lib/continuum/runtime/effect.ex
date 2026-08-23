@@ -26,7 +26,7 @@ defmodule Continuum.Runtime.Effect do
           {:activity, {module(), atom(), list()}, keyword()}
           | {:await_signal, atom(), keyword()}
           | {:timer, pos_integer()}
-          | {:workflow_log, Logger.level(), binary()}
+          | {:workflow_log, Logger.level(), binary(), keyword()}
           | {:side_effect, atom()}
 
   @suspend_token :continuum_suspend
@@ -151,8 +151,8 @@ defmodule Continuum.Runtime.Effect do
     maybe_wrap_activity(raw, effect, opts, command_id)
   end
 
-  def run({:workflow_log, level, message} = effect, {:command, command_base}) do
-    validate_log!(level, message)
+  def run({:workflow_log, level, message, metadata} = effect, {:command, command_base}) do
+    validate_log!(level, message, metadata)
     advance(effect, fn -> :ok end, fn _ctx -> command_base end)
   end
 
@@ -766,7 +766,7 @@ defmodule Continuum.Runtime.Effect do
     suspend!(:awaiting_timer)
   end
 
-  defp compute_live({:workflow_log, _level, _message}), do: :ok
+  defp compute_live({:workflow_log, _level, _message, _metadata}), do: :ok
 
   defp journal_live!(ctx, effect, result, command_id) do
     event = encode_event(effect, result, ctx.cursor, command_id)
@@ -1046,20 +1046,30 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
-  defp live_tail!(ctx, {:workflow_log, level, message} = effect, _live_compute, command_id) do
+  defp live_tail!(
+         ctx,
+         {:workflow_log, level, message, metadata} = effect,
+         _live_compute,
+         command_id
+       ) do
     journal_live!(ctx, effect, :ok, command_id)
 
-    Logger.log(level, message,
-      continuum_run_id: ctx.run_id,
-      continuum_workflow: ctx.workflow_module,
-      continuum_replay: false
+    Logger.log(
+      level,
+      message,
+      Keyword.merge(metadata,
+        continuum_run_id: ctx.run_id,
+        continuum_workflow: ctx.workflow_module,
+        continuum_replay: false
+      )
     )
 
     Telemetry.execute([:continuum, :workflow, :log], %{count: 1}, %{
       run_id: ctx.run_id,
       workflow: ctx.workflow_module,
       level: level,
-      message: message
+      message: message,
+      metadata: metadata
     })
 
     :ok
@@ -1877,14 +1887,18 @@ defmodule Continuum.Runtime.Effect do
     %{type: :side_effect, kind: kind, payload: result, command_id: command_id, seq: seq}
   end
 
-  defp encode_event({:workflow_log, level, message}, _result, seq, command_id) do
-    %{
+  # An empty metadata list omits the key entirely, so a `log/2` call journals
+  # byte-identical events to the ones it wrote before `log/3` existed.
+  defp encode_event({:workflow_log, level, message, metadata}, _result, seq, command_id) do
+    event = %{
       type: :workflow_log,
       level: level,
       message: message,
       command_id: command_id,
       seq: seq
     }
+
+    if metadata == [], do: event, else: Map.put(event, :metadata, metadata)
   end
 
   defp encode_event({:activity, {mod, fun, args}, _opts}, result, seq, command_id) do
@@ -1937,11 +1951,12 @@ defmodule Continuum.Runtime.Effect do
 
   defp match_event(
          _ctx,
-         %{type: :workflow_log, level: level, message: message},
-         {:workflow_log, level, message},
+         %{type: :workflow_log, level: level, message: message} = event,
+         {:workflow_log, level, message, metadata},
          _command_id
-       ),
-       do: {:ok, :ok}
+       ) do
+    if Map.get(event, :metadata, []) == metadata, do: {:ok, :ok}, else: :mismatch
+  end
 
   defp match_event(
          ctx,
@@ -2200,7 +2215,10 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp effect_shape({:side_effect, kind}), do: {:side_effect, kind}
-  defp effect_shape({:workflow_log, level, message}), do: {:workflow_log, {level, message}}
+  defp effect_shape({:workflow_log, level, message, []}), do: {:workflow_log, {level, message}}
+
+  defp effect_shape({:workflow_log, level, message, metadata}),
+    do: {:workflow_log, {level, message, metadata}}
 
   defp effect_shape({:activity, {mod, fun, args}, _opts}) do
     {:activity, {mod, fun, length(args || [])}}
@@ -2243,6 +2261,16 @@ defmodule Continuum.Runtime.Effect do
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  defp validate_log!(level, message, metadata) do
+    unless Keyword.keyword?(metadata) do
+      raise ArgumentError,
+            "workflow log metadata must be a keyword list, got: #{inspect(metadata)}"
+    end
+
+    Continuum.DurableTerm.validate!(metadata, :log_metadata)
+    validate_log!(level, message)
   end
 
   defp validate_log!(level, message) do
