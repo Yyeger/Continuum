@@ -113,7 +113,7 @@ defmodule Continuum.QueryTest do
     Repo.update_all(from(r in Run, where: r.id in ^ids), set: [started_at: timestamp])
 
     assert {:ok, first} = Continuum.list_runs(order_by: {:asc, :started_at}, per_page: 2)
-    assert length(first.entries) == 2
+    assert [_, _] = first.entries
     assert is_binary(first.next_cursor)
 
     assert {:ok, second} =

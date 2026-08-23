@@ -32,7 +32,7 @@ defmodule Continuum.ReplayTest do
       {:ok, _} = Continuum.await(run_id, 1_000)
 
       events = InMemory.load(Continuum.Runtime.Instance.default(), run_id)
-      assert length(events) == 2
+      assert [_, _] = events
       assert Enum.all?(events, &(&1.type == :side_effect))
       assert Enum.all?(events, &(is_tuple(&1.command_id) and tuple_size(&1.command_id) >= 5))
       assert Enum.uniq_by(events, & &1.command_id) == events

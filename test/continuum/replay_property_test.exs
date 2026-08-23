@@ -318,7 +318,7 @@ defmodule Continuum.ReplayPropertyTest do
       {schedules, terminals} = Enum.split(history, 3)
 
       assert Enum.map(schedules, & &1.type) == List.duplicate(:activity_batch_scheduled, 3)
-      assert length(terminals) == 3
+      assert [_, _, _] = terminals
 
       for permuted <- permutations(terminals) do
         forged = schedules ++ resequence(permuted, 3)

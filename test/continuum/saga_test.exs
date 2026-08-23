@@ -133,8 +133,12 @@ defmodule Continuum.SagaTest do
     compensations = Enum.filter(history, &(&1.type == :compensation_completed))
 
     # Two distinct targets, each compensated exactly once.
-    assert length(compensations) == 2
-    assert compensations |> Enum.map(& &1.target_activity_id) |> Enum.uniq() |> length() == 2
+    assert [_, _] = compensations
+
+    assert [_, _] =
+             compensations
+             |> Enum.map(& &1.target_activity_id)
+             |> Enum.uniq()
   end
 
   test "rescue + compensate_all/0 compensates in LIFO order" do

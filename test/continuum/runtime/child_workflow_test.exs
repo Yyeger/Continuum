@@ -185,7 +185,7 @@ defmodule Continuum.Runtime.ChildWorkflowTest do
              Continuum.await(parent_id, 3_000, journal: Postgres)
 
     assert results == Enum.map(1..5, &{:ok, {:leaf, &1}})
-    assert length(children_of(parent_id)) == 5
+    assert [_, _, _, _, _] = children_of(parent_id)
     assert Enum.all?(children_of(parent_id), &(&1.state == "completed"))
   end
 

@@ -50,7 +50,7 @@ defmodule Continuum.Replay.PostgresTest do
       {:ok, _} = Continuum.await(run_id, 1_000, journal: Postgres)
 
       events = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
-      assert length(events) == 2
+      assert [_, _] = events
       assert Enum.all?(events, &(&1.type == :side_effect))
     end
 

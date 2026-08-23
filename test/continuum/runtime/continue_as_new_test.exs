@@ -84,7 +84,7 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     pump(root)
 
     runs = chain_runs(root)
-    assert length(runs) == 3
+    assert [_, _, _] = runs
     assert runs |> Enum.map(& &1.correlation) |> Enum.uniq() == [root]
 
     by_pred = Map.new(runs, &{&1.continued_from, &1})
@@ -154,7 +154,7 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
     pump(root)
 
     runs = chain_runs(root)
-    assert length(runs) == 3
+    assert [_, _, _] = runs
     # Exactly one successor of run2 (cycle 3) — no duplicate from the crash.
     assert Repo.aggregate(from(r in Run, where: r.continued_from_run_id == ^run2), :count) == 1
 
@@ -174,7 +174,7 @@ defmodule Continuum.Runtime.ContinueAsNewTest do
 
     # Every run in the child's chain carries the parent linkage.
     child_runs = Repo.all(from(r in Run, where: r.parent_run_id == ^parent_id, select: r.id))
-    assert length(child_runs) == 3
+    assert [_, _, _] = child_runs
   end
 
   test "paranoid verify_run! re-replays a continued run to its sentinel" do

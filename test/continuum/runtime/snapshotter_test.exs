@@ -177,7 +177,7 @@ defmodule Continuum.Runtime.SnapshotterTest do
     assert {nil, events} =
              Postgres.load_with_snapshot(Instance.default(), run_id, lease_token(run_id))
 
-    assert length(events) == 3
+    assert [_, _, _] = events
 
     assert {:ok, {:ok, 6}} =
              Continuum.Test.replay(SnapshotFlow, %{steps: steps}, events, journal: Postgres)
@@ -192,7 +192,7 @@ defmodule Continuum.Runtime.SnapshotterTest do
         assert {nil, events} =
                  Postgres.load_with_snapshot(Instance.default(), run_id, lease_token(run_id))
 
-        assert length(events) == 3
+        assert [_, _, _] = events
       end)
 
     assert log =~ "undecodable"

@@ -81,8 +81,8 @@ defmodule Continuum.Runtime.ParallelCompensationTest do
     scheduled_indexes = indexes(types, "compensation_scheduled")
     completed_indexes = indexes(types, "compensation_completed")
 
-    assert length(scheduled_indexes) == 2
-    assert length(completed_indexes) == 2
+    assert [_, _] = scheduled_indexes
+    assert [_, _] = completed_indexes
     assert Enum.max(scheduled_indexes) < Enum.min(completed_indexes)
   end
 

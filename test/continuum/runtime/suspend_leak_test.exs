@@ -308,7 +308,7 @@ defmodule Continuum.Runtime.SuspendLeakTest do
             try do
               {:ok, :fine}
             rescue
-              _e -> {:error, :rescued}
+              RuntimeError -> {:error, :rescued}
             end
           end
         end

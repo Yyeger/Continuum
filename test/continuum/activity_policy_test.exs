@@ -150,7 +150,7 @@ defmodule Continuum.ActivityPolicyTest do
     delays = Enum.map(1..100, fn _ -> Policy.backoff_ms(retry, 1) end)
 
     assert Enum.all?(delays, &(&1 in 100..125))
-    assert Enum.uniq(delays) |> length() > 1
+    assert [_, _ | _] = Enum.uniq(delays)
   end
 
   test "retry jitter survives at max backoff" do
@@ -160,7 +160,7 @@ defmodule Continuum.ActivityPolicyTest do
     delays = Enum.map(1..200, fn _ -> Policy.backoff_ms(retry, 10) end)
 
     assert Enum.all?(delays, &(&1 in 950..1_000))
-    assert length(Enum.uniq(delays)) > 1
+    assert [_, _ | _] = Enum.uniq(delays)
     assert Enum.max(delays) <= 1_000
   end
 
@@ -169,7 +169,7 @@ defmodule Continuum.ActivityPolicyTest do
     delays = Enum.map(1..200, fn _ -> Policy.backoff_ms(retry, 1) end)
 
     assert Enum.all?(delays, &(&1 in 750..1_000))
-    assert length(Enum.uniq(delays)) > 1
+    assert [_, _ | _] = Enum.uniq(delays)
   end
 
   test "a jitter window wider than max backoff still respects the cap" do
@@ -177,7 +177,7 @@ defmodule Continuum.ActivityPolicyTest do
     delays = Enum.map(1..200, fn _ -> Policy.backoff_ms(retry, 1) end)
 
     assert Enum.all?(delays, &(&1 in 0..200))
-    assert length(Enum.uniq(delays)) > 1
+    assert [_, _ | _] = Enum.uniq(delays)
   end
 
   defp assert_policy_failure_without_task(workflow, input, field) do

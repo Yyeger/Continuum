@@ -150,7 +150,7 @@ defmodule Continuum.AstCheckTest do
         end
 
       assert {:error, violations} = AstCheck.scan(ast)
-      assert length(violations) == 10
+      assert Enum.count_until(violations, 11) == 10
       assert Enum.all?(violations, &(elem(&1.mfa, 0) == :ets))
       assert Enum.all?(violations, &String.contains?(&1.hint, "ETS bypasses the journal"))
     end
@@ -170,7 +170,7 @@ defmodule Continuum.AstCheckTest do
         end
 
       assert {:error, violations} = AstCheck.scan(ast)
-      assert length(violations) == 9
+      assert Enum.count_until(violations, 10) == 9
       assert Enum.all?(violations, &(elem(&1.mfa, 0) == File))
       assert Enum.all?(violations, &String.contains?(&1.hint, "file system access"))
     end
@@ -497,7 +497,7 @@ defmodule Continuum.AstCheckTest do
         end
 
       assert {:error, violations} = AstCheck.scan(ast)
-      assert length(violations) == 2
+      assert [_, _] = violations
 
       mfas = Enum.map(violations, & &1.mfa)
       assert {DateTime, :utc_now} in mfas

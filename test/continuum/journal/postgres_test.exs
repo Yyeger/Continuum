@@ -318,7 +318,7 @@ defmodule Continuum.Journal.PostgresTest do
 
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
       :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, 42)
-      assert length(Postgres.load(Continuum.Runtime.Instance.default(), run_id)) == 1
+      assert [_event] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
     end
 
     test "append! with mismatched lease_token raises" do
@@ -393,7 +393,7 @@ defmodule Continuum.Journal.PostgresTest do
 
       event = %{type: :side_effect, kind: :now, payload: 1, seq: 0}
       :ok = Postgres.append!(Continuum.Runtime.Instance.default(), run_id, event, nil)
-      assert length(Postgres.load(Continuum.Runtime.Instance.default(), run_id)) == 1
+      assert [_event] = Postgres.load(Continuum.Runtime.Instance.default(), run_id)
     end
 
     test "append! with nil lease_token raises for leased runs" do
