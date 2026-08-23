@@ -86,6 +86,7 @@ defmodule Continuum.MixProject do
         "guides/signal-contracts.md",
         "guides/replay-safe-logging.md",
         "guides/public-types.md",
+        "guides/testing.md",
         "guides/configuration.md",
         "guides/search-and-query.md",
         "guides/sagas.md",

@@ -135,7 +135,8 @@ defmodule Continuum.Runtime.Journal.InMemory do
     case Continuum.Runtime.Engine.start_run(child.workflow, child.input,
            run_id: child.child_run_id,
            journal: __MODULE__,
-           instance: instance.name
+           instance: instance.name,
+           activities: Map.get(child, :activity_stubs, %{})
          ) do
       {:ok, _run_id} -> :ok
       {:error, reason} -> raise JournalError, op: :start_child!, reason: reason

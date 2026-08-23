@@ -1172,7 +1172,11 @@ defmodule Continuum.Runtime.Effect do
       input: input,
       parent_command_id: :erlang.term_to_binary(command_id),
       trace_context: ctx.trace_context,
-      started_event: event
+      started_event: event,
+      # Inherited so a fan-out is testable: an in-memory child starts its own
+      # engine, and without the parent's stubs it would call the real activity
+      # bodies. The Postgres adapter ignores this — stubs are refused there.
+      activity_stubs: ctx.activity_stubs
     }
 
     :ok =

@@ -7,11 +7,21 @@ defmodule ContinuumExampleOrders.Application do
   def start(_type, _args) do
     setup_open_telemetry()
 
-    children =
-      [
-        ContinuumExampleOrders.Repo,
-        {Phoenix.PubSub, name: ContinuumExampleOrders.PubSub}
-      ] ++
+    children = [{Phoenix.PubSub, name: ContinuumExampleOrders.PubSub}] ++ infrastructure()
+
+    Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: ContinuumExampleOrders.Supervisor
+    )
+  end
+
+  # `mix test` runs in-memory unit tests that need neither Postgres nor a web
+  # server, so the test environment supervises neither. Everything else runs the
+  # full tree, with the named Continuum instance started after the Repo — the
+  # required order for Postgres-backed runtime pollers.
+  defp infrastructure do
+    if Application.get_env(:continuum_example_orders, :start_infrastructure?, true) do
+      [ContinuumExampleOrders.Repo] ++
         Continuum.children(
           name: :continuum_example_orders,
           repo: ContinuumExampleOrders.Repo,
@@ -21,14 +31,10 @@ defmodule ContinuumExampleOrders.Application do
             ContinuumExampleOrders.SubscriptionFlow
           ]
         ) ++
-        [
-          ContinuumExampleOrdersWeb.Endpoint
-        ]
-
-    Supervisor.start_link(children,
-      strategy: :one_for_one,
-      name: ContinuumExampleOrders.Supervisor
-    )
+        [ContinuumExampleOrdersWeb.Endpoint]
+    else
+      []
+    end
   end
 
   @impl true

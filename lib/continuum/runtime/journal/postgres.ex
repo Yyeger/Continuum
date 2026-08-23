@@ -368,7 +368,6 @@ defmodule Continuum.Runtime.Journal.Postgres do
   holds no lease and must not disturb the one the run has.
   """
   @doc since: "0.8.0"
-  @spec load_for_replay(Instance.t(), binary()) :: {Continuum.Snapshot.t() | nil, [map()]}
   def load_for_replay(%Instance{} = instance, run_id) do
     with_repo(instance, fn ->
       snapshot = latest_snapshot(run_id)
