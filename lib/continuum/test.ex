@@ -29,6 +29,36 @@ defmodule Continuum.Test do
 
   @doc """
   Start a workflow run synchronously against the in-memory journal.
+
+  Activities run inline in the engine process — no worker pool, no retry, no
+  timeout. Child workflows run inline too, as their own in-memory engines.
+
+  ## Stubbing activities
+
+  Pass `:activities` to stand in for activity bodies, so a unit test can drive
+  a workflow's branches without the activity's real dependencies:
+
+      Continuum.Test.start_synchronous(Checkout, order,
+        activities: %{
+          {Payments, :charge} => fn _order -> {:ok, "ch_test"} end,
+          {Shipping, :book} => {:error, :out_of_stock}
+        }
+      )
+
+  Keys are `{Module, :function}`, or `{Module, :function, arity}` when one
+  module exports the same activity name at several arities; the more specific
+  key wins. A value that is a function of the activity's arity is called with
+  the activity's arguments, and any other value is returned as-is.
+
+  Stub returns are validated with `Continuum.DurableTerm`, because in-memory
+  writes otherwise skip that check — a stub returning a PID would pass the unit
+  test and be rejected in production.
+
+  Stubs are refused on the Postgres journal: a durable activity runs in a
+  worker process out of a claimed task row, which a stub cannot reach.
+  They also cannot influence command identity, which is computed at macro
+  expansion from the call site, so a stubbed run journals the same command ids
+  as a real one.
   """
   @spec start_synchronous(module(), term(), keyword()) :: {:ok, binary()} | {:error, term()}
   def start_synchronous(workflow_module, input, opts \\ []) do

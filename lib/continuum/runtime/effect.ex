@@ -655,8 +655,14 @@ defmodule Continuum.Runtime.Effect do
     # as in production.
     outcome =
       try do
-        {:ok, apply(mod, fun, inline_activity_args(mod, args, ctx))}
+        {:ok, run_inline_activity(ctx, mod, fun, args)}
       rescue
+        # A stub that raises is a valid way to drive a failure branch, so it
+        # normalizes like a real activity. A stub with the wrong arity or an
+        # unjournalable return is a bug in the test, not an activity failure.
+        stub_error in Continuum.ActivityStubError ->
+          reraise stub_error, __STACKTRACE__
+
         exception ->
           {:error,
            Continuum.Runtime.ActivityWorker.normalize_error(
@@ -1108,8 +1114,9 @@ defmodule Continuum.Runtime.Effect do
 
     result =
       try do
-        {:ok, apply(mod, fun, inline_activity_args(mod, args, ctx))}
+        {:ok, run_inline_activity(ctx, mod, fun, args)}
       rescue
+        stub_error in Continuum.ActivityStubError -> reraise stub_error, __STACKTRACE__
         error -> {:error, error}
       catch
         kind, reason -> {:error, {kind, reason}}
@@ -2009,6 +2016,18 @@ defmodule Continuum.Runtime.Effect do
   defp normalize_activity_queue!(queue) do
     raise ArgumentError,
           "activity queue must be a non-empty atom/string of at most 128 bytes, got: #{inspect(queue)}"
+  end
+
+  # A stub stands in for the activity body only. It is resolved *after* the
+  # command id has been assigned and *before* the result is journaled, so a
+  # stubbed run produces the same command identity and the same event shape as
+  # a real one — the history a stubbed test writes is a history production
+  # could have written.
+  defp run_inline_activity(ctx, mod, fun, args) do
+    case Continuum.Runtime.ActivityStubs.fetch(ctx.activity_stubs, mod, fun, args) do
+      {:ok, stub} -> Continuum.Runtime.ActivityStubs.invoke!(stub, args)
+      :error -> apply(mod, fun, inline_activity_args(mod, args, ctx))
+    end
   end
 
   defp inline_activity_args(mod, args, ctx) do

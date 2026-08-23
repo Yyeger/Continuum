@@ -3,8 +3,8 @@ defmodule Continuum.Runtime.Context do
   Per-run effect context, kept in the workflow process's process dictionary.
 
   The context holds the journal handle, the current cursor (how many events
-  have been replayed so far), per-callsite command ordinals, the run id, and
-  the lease token. It is
+  have been replayed so far), per-callsite command ordinals, the run id, the
+  lease token, and — for in-memory test runs only — any activity stubs. It is
   established by `Continuum.Runtime.Engine` before invoking the user's
   `run/1` and unset on suspend or completion.
   """
@@ -25,6 +25,7 @@ defmodule Continuum.Runtime.Context do
     command_counts: %{},
     patch_decisions: %{},
     snapshot_steps: %{},
+    activity_stubs: %{},
     history_offset: 0,
     compensation_stack: [],
     suspending: nil
@@ -44,6 +45,7 @@ defmodule Continuum.Runtime.Context do
           command_counts: map(),
           patch_decisions: map(),
           snapshot_steps: map(),
+          activity_stubs: map(),
           history_offset: non_neg_integer(),
           compensation_stack: [{term(), {module(), atom(), list()}}],
           suspending: term() | nil

@@ -27,6 +27,7 @@ defmodule Continuum.Runtime.Engine do
     :cancel_requested_at,
     :trace_context,
     :resume?,
+    :activity_stubs,
     :workflow,
     :version_hash,
     :status,
@@ -432,6 +433,13 @@ defmodule Continuum.Runtime.Engine do
     Code.ensure_loaded(journal)
     trace_context = initial_trace_context(opts)
 
+    opts =
+      Keyword.put(
+        opts,
+        :activities,
+        Continuum.Runtime.ActivityStubs.validate!(Keyword.get(opts, :activities, %{}), journal)
+      )
+
     start_result =
       if Keyword.get(opts, :resume, false) do
         {:ok, nil}
@@ -492,6 +500,7 @@ defmodule Continuum.Runtime.Engine do
       cancel_requested_at: cancel_requested_at,
       trace_context: trace_context,
       resume?: Keyword.get(opts, :resume, false),
+      activity_stubs: Keyword.get(opts, :activities, %{}),
       workflow: Keyword.get(opts, :workflow),
       version_hash: Keyword.get(opts, :version_hash),
       status: :running,
@@ -683,7 +692,8 @@ defmodule Continuum.Runtime.Engine do
       lease_token: state.lease_token,
       trace_context: state.trace_context,
       instance: state.instance,
-      journal: state.journal
+      journal: state.journal,
+      activity_stubs: state.activity_stubs || %{}
     }
 
     Context.put(ctx)
