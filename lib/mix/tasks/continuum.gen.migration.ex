@@ -5,6 +5,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
       mix continuum.gen.migration
       mix continuum.gen.migration --from 0.6.1
       mix continuum.gen.migration --from 0.6.4
+      mix continuum.gen.migration --from 0.7.1
+      mix continuum.gen.migration --from 0.7.2
 
   Writes a single migration file under `priv/repo/migrations/` (or whatever
   is configured for your repo) that creates: `continuum_runs`,
@@ -62,9 +64,15 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     {name, upgrade_0_7_1_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
   end
 
+  defp migration("0.7.2", repo) do
+    name = "upgrade_continuum_v0_7_2_to_v0_8"
+    {name, upgrade_0_7_2_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
+  end
+
   defp migration(version, _repo) do
     Mix.raise(
-      "unsupported Continuum upgrade source #{inspect(version)}; supported: 0.6.1, 0.6.4, 0.7.1"
+      "unsupported Continuum upgrade source #{inspect(version)}; " <>
+        "supported: 0.6.1, 0.6.4, 0.7.1, 0.7.2"
     )
   end
 
@@ -583,6 +591,35 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           remove_if_exists :lease_acquired_at, :utc_datetime_usec
           remove_if_exists :error_stacktrace, :bytea
           remove_if_exists :cancel_requested_at, :utc_datetime_usec
+        end
+      end
+    end
+    """
+  end
+
+  defp upgrade_0_7_2_source(module_name) do
+    """
+    defmodule #{module_name} do
+      use Ecto.Migration
+
+      # The seq of the event that armed the timer — the `timer_started`, or the
+      # `signal_awaited` for a signal timeout. Without it, firing a timer had to
+      # load and decode the run's entire event history to find the owning event,
+      # inside the `FOR UPDATE` transaction: quadratic on exactly the workload
+      # timers exist for, a `timer(days(30))` in a loop.
+      #
+      # Nullable on purpose. Timers armed before this migration keep the old
+      # full-history lookup, so no backfill is required and no in-flight timer
+      # is disturbed.
+      def up do
+        alter table(:continuum_timers) do
+          add(:owner_seq, :bigint)
+        end
+      end
+
+      def down do
+        alter table(:continuum_timers) do
+          remove(:owner_seq)
         end
       end
     end

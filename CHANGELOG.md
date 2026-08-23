@@ -1,5 +1,103 @@
 # Changelog
 
+## v0.8.0 — 2026-08-23 — "Finish the foundations"
+
+Everything the engine could already do, you can now reach. The batch scheduler,
+the lease-free replay engine, and in-memory child workflows all existed; each
+had exactly one caller. This release turns them into surface a user can type.
+
+See [the migration guide](guides/migrations/MIGRATING_v0_7_2_to_v0_8.md).
+
+### Parallel activities
+
+- Added `activity_all/1`: schedule several activities under one run lock, wait
+  for all of them, and get results back in declared order whatever order they
+  finish in. Each element is exactly what the matching `activity/2` call would
+  have returned, so a partial failure is a value you pattern-match rather than a
+  `mode:` option.
+- Batch members journal a new `activity_batch_scheduled` event type, and
+  `Continuum.Snapshot` compacts a whole batch into one step. Reusing
+  `activity_scheduled` would have made the pair matcher fail on the *next*
+  member's command id, and compaction errors propagate — snapshots for the run
+  would have silently stopped advancing forever.
+- Replay reassociates terminals by command id, never by history position: the
+  member's index is part of its command identity and its arguments are hashed
+  into the schedule event, the way `child_started` already content-addresses its
+  input. A partly completed batch suspends without advancing the cursor.
+
+### Offline replay
+
+- Added `Continuum.Replay`, the replay loop with the runtime removed, and
+  `mix continuum.replay <run_id>` on top of it. Point it at a wedged run and get
+  back the terminal result, the suspend reason, or the exact cursor where code
+  and history disagree. `--against` rehearses a code change against a run
+  already in flight; `--no-snapshot` checks a snapshot against its own events.
+- Added `Continuum.Runtime.Journal.ReadOnly`, which raises on every callback,
+  and made `Continuum.Runtime.Effect` refuse to compute a live tail against it.
+  Both stock adapters mutate on the path the code called replay — the in-memory
+  one runs a real activity body inline past the journaled tail, and the Postgres
+  one consumes a pending signal row to resolve a tail await. `Effect` tells them
+  apart by journal module identity, so this takes a distinct module rather than
+  a flag.
+- **`Continuum.Test.replay/4` is read-only as a result.** Stepping past the end
+  of the history now reports `{:suspended, {:history_exhausted, _}}` instead of
+  executing the next activity for real. That was always the documented contract.
+
+### Workflow test kit
+
+- Added activity stubbing to `Continuum.Test.start_synchronous/3` via
+  `:activities`. Stubs are resolved after the command id is assigned, so a
+  stubbed run journals byte-identical command identity to a real one; their
+  returns are validated with `Continuum.DurableTerm`; and they are refused
+  outright on the Postgres journal.
+- Child workflows now run on the in-memory journal, behind two new optional
+  `Continuum.Runtime.Journal` callbacks (`start_child!/4`,
+  `await_child_terminal!/6`) rather than as an `Effect` special case. An
+  adapter-parity test asserts in-memory and Postgres child event streams are
+  identical modulo run ids and the generated-entrypoint module.
+- Added a public durable driver — `Continuum.Test.drive/2`,
+  `drive_until_state/3`, `crash!/2`, `expire_lease!/2`, `elapse_timers!/2` — so a
+  crash-resume test needs no `Continuum.Runtime.*` module. `:journal` accepts
+  `:postgres` and `:in_memory` shorthands.
+- Added `guides/testing.md`, `guides/replay.md`, and the first tests in the
+  example app: in-memory unit tests that need no database at all.
+
+### Logging and queries
+
+- Added `Continuum.log/3` with journaled, `DurableTerm`-validated metadata,
+  merged into `Logger` metadata and reported in telemetry. A `log/2` call is
+  unchanged on disk — the key is omitted when the list is empty — so existing
+  histories, snapshots, and golden fixtures still match.
+- Renamed `Continuum.query/1,2` to `Continuum.list_runs/1,2`. The old names
+  delegate and warn; they will be removed in v0.9. `query/3` is reserved for a
+  per-run named read, which post-freeze could only be told apart from a
+  paginated row search by a first-argument guard.
+
+### Performance and resource use
+
+- Recorded the arming event's `seq` on `continuum_timers` so firing a timer
+  takes two indexed reads instead of loading and decoding the run's whole event
+  history inside the `FOR UPDATE` transaction. Timers armed before the migration
+  keep the old lookup; no backfill.
+- Bounded the snapshotter's per-run event counter. It previously kept an entry
+  forever for every path other than "a snapshot was taken", including every run
+  that completes below its threshold.
+- Bounded the locally-registered run ids the dispatcher and recovery ship to
+  Postgres, and sent them as `uuid` rather than casting `id` per row. The
+  exclusion is an optimisation over a correctness path (`Engine.adopt_lease/4`)
+  that already exists.
+- Stopped rewriting unchanged version-registry `persistent_term`s. A fresh
+  durable start performed at least three writes, each scheduling a literal-area
+  collection that scans every process which may reference the old term.
+
+### Safety
+
+- Routed every journal read through `Continuum.DurableTerm.decode!/1`, which
+  decodes with `:safe` and so never creates atoms, and raises a structured error
+  rather than leaking `ArgumentError` on corrupt bytes. This turned from an
+  internal concern into a prerequisite the moment `mix continuum.replay` made
+  decoding production bytes a documented operator workflow.
+
 ## v0.7.2 — 2026-08-19 — "Determinism and operability fixes"
 
 ### Determinism enforcement

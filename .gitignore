@@ -1,6 +1,9 @@
 /_build/
 /cover/
 /deps/
+ci/downstream_consumer/_build/
+ci/downstream_consumer/deps/
+ci/downstream_consumer/mix.lock
 /doc/
 /.fetch
 erl_crash.dump
