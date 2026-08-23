@@ -161,6 +161,343 @@ defmodule Continuum.Runtime.Effect do
   end
 
   @doc """
+  Schedule a batch of activities and return their results in declared order.
+
+  The public surface is `activity_all/1` in `Continuum.Workflow`.
+
+  All members of a batch are scheduled under one `lock_and_validate_run!`, then
+  the run suspends once. Terminals arrive in whatever order the workers finish,
+  so replay reassociates them by `command_id` rather than by history position:
+  the command base carries each member's index, and the journaled
+  `input_hash` is compared on replay the way `child_started` compares its own.
+  Position alone would hand `Pricing.quote(a)` the result of `Pricing.quote(c)`
+  for three same-MFA calls whose terminals landed out of order, and the
+  commutative matcher would consume all three without raising.
+  """
+  @doc since: "0.8.0"
+  def run_all(mfas, {:command, command_base}) when is_list(mfas) do
+    effect = {:activity_batch, mfas}
+    ctx = fetch_context!(effect)
+    {ctx, items} = batch_items(ctx, mfas, command_base)
+    Context.put(ctx)
+
+    case snapshot_step(ctx, ctx.cursor) do
+      {:ok, step} ->
+        replay_batch_snapshot_step!(ctx, step, items)
+
+      :none ->
+        case history_event(ctx, ctx.cursor) do
+          :compacted_gap ->
+            raise Continuum.ReplayDriftError,
+              run_id: ctx.run_id,
+              cursor: ctx.cursor,
+              expected: :snapshot_step,
+              actual: effect
+
+          nil ->
+            live_activity_batch!(ctx, items)
+
+          _event ->
+            replay_activity_batch!(ctx, items)
+        end
+    end
+  end
+
+  # The index lives in the command base so two members with the same MFA are
+  # distinguishable; the input hash lives in the event and is compared on
+  # replay, so argument drift is loud without argument *values* becoming part
+  # of command identity (which they are not for a plain `activity`).
+  defp batch_items(ctx, mfas, command_base) do
+    mfas
+    |> Enum.with_index()
+    |> Enum.map_reduce(ctx, fn {{mod, fun, args}, index}, acc ->
+      {acc, command_id} = assign_command_id(acc, :erlang.append_element(command_base, index))
+
+      {%{
+         mfa: {mod, fun, args},
+         index: index,
+         command_id: command_id,
+         input_hash: hash_term({mod, fun, args})
+       }, acc}
+    end)
+    |> then(fn {items, ctx} -> {ctx, items} end)
+  end
+
+  defp live_activity_batch!(
+         %{journal: Continuum.Runtime.Journal.ReadOnly} = ctx,
+         items
+       ) do
+    refuse_live!(ctx, {:activity_batch, Enum.map(items, & &1.mfa)})
+  end
+
+  defp live_activity_batch!(%{journal: Continuum.Runtime.Journal.Postgres} = ctx, items) do
+    scheduled = Enum.map(items, &batch_schedule(ctx, &1))
+
+    :ok =
+      Continuum.Runtime.Journal.Postgres.schedule_activity_batch!(
+        ctx.instance,
+        ctx.run_id,
+        scheduled,
+        ctx.lease_token
+      )
+
+    Enum.each(scheduled, fn %{event: event, task: task} ->
+      Telemetry.execute([:continuum, :activity, :scheduled], %{}, %{
+        run_id: ctx.run_id,
+        task_id: task.id,
+        mfa: event.mfa,
+        seq: event.seq
+      })
+    end)
+
+    suspend!({:activity_batch_pending, Enum.map(scheduled, & &1.task.id)})
+  end
+
+  # In-memory batches run inline in declared order, which is one valid arrival
+  # order, and journal the same two-phase event stream a durable batch does —
+  # so a history captured in memory replays through the same loop.
+  defp live_activity_batch!(ctx, items) do
+    ctx =
+      Enum.reduce(items, ctx, fn item, acc ->
+        event = %{
+          type: :activity_batch_scheduled,
+          task_id: nil,
+          mfa: item.mfa,
+          index: item.index,
+          input_hash: item.input_hash,
+          command_id: item.command_id,
+          seq: acc.cursor
+        }
+
+        append_batch_event!(acc, event)
+      end)
+
+    {results, ctx} =
+      Enum.map_reduce(items, ctx, fn item, acc ->
+        {mod, fun, args} = item.mfa
+        result = inline_batch_result(acc, mod, fun, args)
+        {result, append_batch_event!(acc, batch_terminal_event(item, result, acc.cursor))}
+      end)
+
+    Context.put(ctx)
+    results
+  end
+
+  defp inline_batch_result(ctx, mod, fun, args) do
+    run_inline_activity(ctx, mod, fun, args)
+  rescue
+    stub_error in Continuum.ActivityStubError ->
+      reraise stub_error, __STACKTRACE__
+
+    exception ->
+      {:error,
+       Continuum.Runtime.ActivityWorker.normalize_error(
+         {:activity_exception, exception, __STACKTRACE__}
+       )}
+  catch
+    :throw, {@suspend_token, _} = token ->
+      throw(token)
+
+    :throw, {:continuum_continued_as_new, _} = token ->
+      throw(token)
+
+    kind, reason ->
+      {:error,
+       Continuum.Runtime.ActivityWorker.normalize_error(
+         {:activity_catch, kind, reason, __STACKTRACE__}
+       )}
+  end
+
+  defp batch_terminal_event(item, {:error, error}, seq) do
+    %{
+      type: :activity_failed,
+      mfa: item.mfa,
+      error: error,
+      attempt: 1,
+      command_id: item.command_id,
+      seq: seq
+    }
+  end
+
+  defp batch_terminal_event(item, result, seq) do
+    %{
+      type: :activity_completed,
+      mfa: item.mfa,
+      payload: result,
+      command_id: item.command_id,
+      seq: seq
+    }
+  end
+
+  defp append_batch_event!(ctx, event) do
+    :ok = apply(ctx.journal, :append!, [ctx.instance, ctx.run_id, event, ctx.lease_token])
+
+    ctx
+    |> Context.append_history(event)
+    |> Map.put(:cursor, ctx.cursor + 1)
+  end
+
+  defp batch_schedule(ctx, item) do
+    task_id = Ecto.UUID.generate()
+    {mod, _fun, args} = item.mfa
+    policy = activity_policy(mod, args, [])
+    seq = ctx.cursor + item.index
+
+    event = %{
+      type: :activity_batch_scheduled,
+      task_id: task_id,
+      mfa: item.mfa,
+      index: item.index,
+      input_hash: item.input_hash,
+      command_id: item.command_id,
+      seq: seq
+    }
+
+    task = %{
+      id: task_id,
+      seq: seq,
+      mfa: item.mfa,
+      opts: [],
+      retry: Continuum.Activity.Policy.retry_options(policy),
+      timeout_ms: policy.timeout_ms,
+      idempotency_key: policy.idempotency_key,
+      context?: activity_context?(mod),
+      queue: activity_queue(mod, []),
+      priority: activity_priority(mod, []),
+      command_id: item.command_id,
+      parallel_batch?: true
+    }
+
+    %{event: event, task: task}
+  end
+
+  defp replay_activity_batch!(ctx, items) do
+    with {:ok, cursor} <- replay_batch_schedules(ctx, items),
+         {:ok, cursor, results} <-
+           replay_batch_terminals(ctx, cursor, Map.new(items, &{&1.command_id, &1}), %{}) do
+      # The cursor moves only once the whole batch is accounted for: a partly
+      # completed batch must replay from its first schedule next time, not from
+      # the middle of itself.
+      Context.put(%{ctx | cursor: cursor})
+      Enum.map(items, &Map.fetch!(results, &1.command_id))
+    else
+      :pending ->
+        suspend!({:activity_batch_pending, Enum.map(items, & &1.command_id)})
+
+      {:mismatch, event} ->
+        raise Continuum.ReplayDriftError,
+          run_id: ctx.run_id,
+          cursor: ctx.cursor,
+          expected: event,
+          actual: {:activity_batch, Enum.map(items, & &1.mfa)}
+    end
+  end
+
+  defp replay_batch_schedules(ctx, items) do
+    Enum.reduce_while(items, {:ok, ctx.cursor}, fn item, {:ok, cursor} ->
+      case history_event(ctx, cursor) do
+        %{type: :activity_batch_scheduled} = event ->
+          if batch_schedule_matches?(event, item),
+            do: {:cont, {:ok, cursor + 1}},
+            else: {:halt, {:mismatch, event}}
+
+        nil ->
+          {:halt, :pending}
+
+        other ->
+          {:halt, {:mismatch, other}}
+      end
+    end)
+  end
+
+  defp batch_schedule_matches?(event, item) do
+    command_matches?(event, item.command_id) and
+      Map.get(event, :index) == item.index and
+      batch_input_matches?(event, item) and
+      same_activity?(Map.get(event, :mfa), item.mfa)
+  end
+
+  # `nil` keeps histories journaled before the hash was captured replayable,
+  # matching how `child_started` treats a missing `input_hash`.
+  defp batch_input_matches?(event, item) do
+    case Map.get(event, :input_hash) do
+      nil -> true
+      hash -> hash == item.input_hash
+    end
+  end
+
+  defp same_activity?({mod, fun, _args}, {mod, fun, _other}), do: true
+  defp same_activity?(_journaled, _commanded), do: false
+
+  defp replay_batch_terminals(_ctx, cursor, pending, results) when map_size(pending) == 0 do
+    {:ok, cursor, results}
+  end
+
+  defp replay_batch_terminals(ctx, cursor, pending, results) do
+    case history_event(ctx, cursor) do
+      %{type: :activity_completed, payload: payload} = event ->
+        pop_batch_terminal(ctx, cursor, pending, results, event, payload)
+
+      %{type: :activity_failed, error: error} = event ->
+        pop_batch_terminal(ctx, cursor, pending, results, event, {:error, error})
+
+      nil ->
+        :pending
+
+      other ->
+        {:mismatch, other}
+    end
+  end
+
+  defp pop_batch_terminal(ctx, cursor, pending, results, event, result) do
+    command_id = Map.get(event, :command_id)
+
+    case Map.pop(pending, command_id) do
+      {nil, _pending} ->
+        {:mismatch, event}
+
+      {item, pending} ->
+        if same_activity?(Map.get(event, :mfa), item.mfa) do
+          replay_batch_terminals(
+            ctx,
+            cursor + 1,
+            pending,
+            Map.put(results, command_id, result)
+          )
+        else
+          {:mismatch, event}
+        end
+    end
+  end
+
+  defp replay_batch_snapshot_step!(ctx, %{effect_type: :activity_batch} = step, items) do
+    expected_ids = Enum.map(items, & &1.command_id)
+    expected_shape = Enum.map(items, fn item -> activity_shape(item.mfa) end)
+
+    if Map.get(step, :command_ids) == expected_ids and Map.get(step, :shape) == expected_shape do
+      Context.put(%{ctx | cursor: ctx.cursor + Map.fetch!(step, :advance_by)})
+      results = Map.fetch!(step, :results)
+      Enum.map(expected_ids, &Map.fetch!(results, &1))
+    else
+      raise_batch_snapshot_drift(ctx, step, items)
+    end
+  end
+
+  defp replay_batch_snapshot_step!(ctx, step, items) do
+    raise_batch_snapshot_drift(ctx, step, items)
+  end
+
+  defp raise_batch_snapshot_drift(ctx, step, items) do
+    raise Continuum.ReplayDriftError,
+      run_id: ctx.run_id,
+      cursor: ctx.cursor,
+      expected: step,
+      actual: {:activity_batch, Enum.map(items, & &1.mfa)}
+  end
+
+  defp activity_shape({mod, fun, args}), do: {mod, fun, length(args || [])}
+
+  @doc """
   Run the compensation of one successful compensated activity.
 
   Schedules `ref.compensate` through the activity worker (Postgres) or runs it

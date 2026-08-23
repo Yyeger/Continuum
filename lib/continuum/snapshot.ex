@@ -221,6 +221,32 @@ defmodule Continuum.Snapshot do
     activity_step(event, event, rest, 1)
   end
 
+  # A batch compacts to ONE step covering all 2N of its events. Reusing
+  # `:activity_scheduled` for batch members would send the pair matcher into
+  # `activity_step/4`, whose first guard is `same_command?/2` against the next
+  # event — which for a batch is the *next member's* schedule, with a different
+  # command id. That returns `{:error, {:command_id_mismatch, _}}`, and
+  # `compact_events/3` propagates errors, so snapshots for the run would
+  # silently stop advancing forever: one warning per attempt, on exactly the
+  # long-running workflows snapshots exist for.
+  defp step_from(%{type: :activity_batch_scheduled} = event, rest) do
+    {schedules, after_schedules} = batch_schedules(event, rest)
+
+    with :ok <- contiguous?([event | schedules]),
+         {:ok, terminals} <- batch_terminals(after_schedules, length(schedules) + 1),
+         {:ok, results} <- batch_results([event | schedules], terminals) do
+      {:ok,
+       %{
+         effect_type: :activity_batch,
+         command_id: event.command_id,
+         command_ids: Enum.map([event | schedules], & &1.command_id),
+         shape: Enum.map([event | schedules], &activity_shape(&1.mfa)),
+         results: results,
+         advance_by: 2 * (length(schedules) + 1)
+       }, 2 * (length(schedules) + 1)}
+    end
+  end
+
   defp step_from(%{type: :signal_awaited} = event, rest) do
     with {:ok, next} <- next_event(event, rest),
          :ok <- same_command?(event, next) do
@@ -289,6 +315,60 @@ defmodule Continuum.Snapshot do
        }, advance_by}
     end
   end
+
+  # Only one batch can be in flight at a time — the run suspends until every
+  # member is terminal — so a contiguous run of schedule events is exactly one
+  # batch.
+  defp batch_schedules(_event, rest) do
+    Enum.split_while(rest, &(&1.type == :activity_batch_scheduled))
+  end
+
+  defp contiguous?(events) do
+    events
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.reduce_while(:ok, fn [a, b], :ok ->
+      if b.seq == a.seq + 1,
+        do: {:cont, :ok},
+        else: {:halt, {:error, {:non_contiguous_pair, a.seq, b.seq}}}
+    end)
+  end
+
+  defp batch_terminals(events, count) do
+    terminals = Enum.take(events, count)
+
+    cond do
+      length(terminals) < count ->
+        {:incomplete, {:activity_batch, count, length(terminals)}}
+
+      Enum.all?(terminals, &(&1.type in [:activity_completed, :activity_failed])) ->
+        {:ok, terminals}
+
+      true ->
+        {:error, {:activity_batch_winner_mismatch, hd(events).seq}}
+    end
+  end
+
+  defp batch_results(schedules, terminals) do
+    expected = MapSet.new(schedules, & &1.command_id)
+
+    Enum.reduce_while(terminals, {:ok, %{}}, fn terminal, {:ok, results} ->
+      command_id = Map.get(terminal, :command_id)
+
+      cond do
+        not MapSet.member?(expected, command_id) ->
+          {:halt, {:error, {:activity_batch_command_mismatch, terminal.seq}}}
+
+        Map.has_key?(results, command_id) ->
+          {:halt, {:error, {:activity_batch_duplicate_terminal, terminal.seq}}}
+
+        true ->
+          {:cont, {:ok, Map.put(results, command_id, terminal_result(terminal))}}
+      end
+    end)
+  end
+
+  defp terminal_result(%{type: :activity_completed, payload: payload}), do: payload
+  defp terminal_result(%{type: :activity_failed, error: error}), do: {:error, error}
 
   defp not_parallel_compensation_batch?(%{type: :compensation_scheduled}),
     do: {:incomplete, :parallel_compensation_batch}

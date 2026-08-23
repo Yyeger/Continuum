@@ -279,6 +279,93 @@ defmodule Continuum.ReplayPropertyTest do
     |> Base.encode16(case: :lower)
   end
 
+  defmodule BatchPropertyActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def step(n), do: {:ok, n * 2}
+  end
+
+  defmodule BatchPropertyFlow do
+    use Continuum.Workflow, version: 1
+
+    def run(input) do
+      {:ok,
+       activity_all([
+         BatchPropertyActivity.step(input.a),
+         BatchPropertyActivity.step(input.b),
+         BatchPropertyActivity.step(input.c)
+       ])}
+    end
+  end
+
+  # Terminals land in whatever order the workers finish, so every arrival order
+  # of the same batch must replay to the same results *in declared order*. With
+  # three same-MFA members and distinct inputs, reassociating by history
+  # position instead of command id hands each member someone else's result and
+  # the commutative matcher consumes all three without raising.
+  property "activity_all replays identically under every terminal arrival order" do
+    check all(values <- uniq_list_of(integer(1..1_000), length: 3), max_runs: 20) do
+      Continuum.Test.reset_in_memory!()
+
+      [a, b, c] = values
+      input = %{a: a, b: b, c: c}
+      expected = {:ok, [{:ok, a * 2}, {:ok, b * 2}, {:ok, c * 2}]}
+
+      {:ok, run_id} = Continuum.Test.start_synchronous(BatchPropertyFlow, input)
+      assert {:ok, %{state: :completed, result: ^expected}} = Continuum.await(run_id, 1_000)
+
+      history = Continuum.Test.history(run_id)
+      {schedules, terminals} = Enum.split(history, 3)
+
+      assert Enum.map(schedules, & &1.type) == List.duplicate(:activity_batch_scheduled, 3)
+      assert length(terminals) == 3
+
+      for permuted <- permutations(terminals) do
+        forged = schedules ++ resequence(permuted, 3)
+
+        assert Continuum.Test.assert_replays(BatchPropertyFlow, input, forged) == expected
+        assert_snapshot_replays(BatchPropertyFlow, input, forged, expected)
+      end
+    end
+  end
+
+  # A batch whose terminals have not all landed must suspend and leave the
+  # cursor where it was — replaying from the middle of a batch next time would
+  # hand the workflow a partial result list.
+  property "a partly completed activity_all suspends without advancing the cursor" do
+    check all(values <- uniq_list_of(integer(1..1_000), length: 3), max_runs: 10) do
+      Continuum.Test.reset_in_memory!()
+
+      [a, b, c] = values
+      input = %{a: a, b: b, c: c}
+
+      {:ok, run_id} = Continuum.Test.start_synchronous(BatchPropertyFlow, input)
+      {:ok, _} = Continuum.await(run_id, 1_000)
+
+      history = Continuum.Test.history(run_id)
+      {schedules, terminals} = Enum.split(history, 3)
+
+      for landed <- 0..2 do
+        partial = schedules ++ resequence(Enum.take(terminals, landed), 3)
+
+        assert {:suspended, {:activity_batch_pending, _}} =
+                 Continuum.Test.replay(BatchPropertyFlow, input, partial)
+      end
+    end
+  end
+
+  defp permutations([]), do: [[]]
+
+  defp permutations(list) do
+    for element <- list, rest <- permutations(list -- [element]), do: [element | rest]
+  end
+
+  defp resequence(events, offset) do
+    events
+    |> Enum.with_index(offset)
+    |> Enum.map(fn {event, seq} -> Map.put(event, :seq, seq) end)
+  end
+
   defp assert_snapshot_replays(_workflow, _input, [], _expected), do: :ok
 
   defp assert_snapshot_replays(workflow, input, history, expected) do
@@ -290,11 +377,20 @@ defmodule Continuum.ReplayPropertyTest do
 
     for threshold <- thresholds do
       prefix = Enum.take(history, threshold)
-      {:ok, snapshot} = Continuum.Snapshot.compact("property-snapshot", version_hash, prefix)
-      remaining = Enum.drop(history, snapshot.through_seq + 1)
 
-      assert {:ok, ^expected} =
-               Continuum.Test.replay(workflow, input, remaining, snapshot: snapshot)
+      case Continuum.Snapshot.compact("property-snapshot", version_hash, prefix) do
+        {:ok, snapshot} ->
+          remaining = Enum.drop(history, snapshot.through_seq + 1)
+
+          assert {:ok, ^expected} =
+                   Continuum.Test.replay(workflow, input, remaining, snapshot: snapshot)
+
+        # A prefix cut inside a batch (or any other multi-event step) compacts
+        # to nothing rather than erroring. Replaying from events alone must
+        # still reach the same result.
+        {:skip, :no_complete_steps} ->
+          assert Continuum.Test.assert_replays(workflow, input, history) == expected
+      end
     end
   end
 

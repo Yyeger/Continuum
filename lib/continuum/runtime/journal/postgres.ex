@@ -862,11 +862,26 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   def schedule_compensations!(%Instance{} = instance, run_id, scheduled, lease_token) do
     with_repo(instance, fn ->
-      schedule_compensations_with_repo!(run_id, scheduled, lease_token)
+      schedule_activity_batch_with_repo!(run_id, scheduled, lease_token, :compensation)
     end)
   end
 
-  defp schedule_compensations_with_repo!(run_id, scheduled, lease_token) do
+  @doc """
+  Schedule a batch of activities and their events under one run lock.
+
+  The same transaction as `schedule_compensations!/4`, parameterized by kind:
+  every event and task in `scheduled` lands, or none of them does. A batch that
+  committed halfway would replay as a batch whose members disagree about
+  whether they were ever scheduled.
+  """
+  @doc since: "0.8.0"
+  def schedule_activity_batch!(%Instance{} = instance, run_id, scheduled, lease_token) do
+    with_repo(instance, fn ->
+      schedule_activity_batch_with_repo!(run_id, scheduled, lease_token, :activity)
+    end)
+  end
+
+  defp schedule_activity_batch_with_repo!(run_id, scheduled, lease_token, kind) do
     result =
       repo().transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
@@ -907,7 +922,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             :ok
           else
             {:error, changeset} ->
-              repo().rollback({:compensation_batch_schedule_failed, changeset})
+              repo().rollback({:"#{kind}_batch_schedule_failed", changeset})
           end
         end)
 
@@ -919,7 +934,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       {:error, reason} ->
-        raise JournalError, op: :schedule_compensations!, reason: reason
+        raise JournalError, op: :"schedule_#{kind}_batch!", reason: reason
     end
   end
 
@@ -1069,7 +1084,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       mfa: task.mfa,
       payload: result,
       command_id: Map.get(task, :command_id),
-      seq: task.seq + 1
+      seq: activity_terminal_seq(task)
     }
   end
 
@@ -1084,7 +1099,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
       error: error,
       attempt: task.attempt,
       command_id: Map.get(task, :command_id),
-      seq: task.seq + 1
+      seq: activity_terminal_seq(task)
     }
 
     activity_task_result!(
@@ -2513,6 +2528,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp decode_snapshot(%Snapshot{payload: payload}) do
     Continuum.Snapshot.decode(payload)
   end
+
+  # A batch member cannot claim `seq + 1`: that position belongs to the next
+  # member's schedule event. Batch terminals append at the tail instead, in the
+  # order the workers actually finish, and replay reassociates by command id.
+  defp activity_terminal_seq(%{parallel_batch?: true}), do: nil
+  defp activity_terminal_seq(task), do: task.seq + 1
 
   defp compensation_terminal_seq(%{parallel_batch?: true}), do: nil
   defp compensation_terminal_seq(task), do: task.seq + 1

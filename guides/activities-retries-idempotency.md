@@ -3,6 +3,67 @@
 Activities are where side effects belong. Workflow code decides what should
 happen; activity code talks to the outside world.
 
+## Running activities in parallel
+
+`activity_all/1` schedules several activities at once and waits for all of
+them. Results come back in the order you declared them, whatever order they
+finish in:
+
+```elixir
+def run(order) do
+  [price, hold, tax] =
+    activity_all([
+      Pricing.quote(order),
+      Inventory.reserve(order.sku),
+      Tax.calculate(order)
+    ])
+
+  ...
+end
+```
+
+Every member is scheduled in one transaction under one run lock, and the run
+suspends once — not once per activity. Each member is an ordinary activity
+task: it gets its own retries, timeout, queue, priority, and idempotency key
+from its `use Continuum.Activity` options.
+
+### Partial failure is a value, not a mode
+
+Each element is exactly what the matching `activity/2` call would have
+returned, so an activity that exhausts its retries contributes an
+`{:error, reason}` entry and the others are unaffected. There is deliberately
+no `mode: :all_or_nothing` option — you pattern-match the list:
+
+```elixir
+case activity_all([Pricing.quote(order), Inventory.reserve(order.sku)]) do
+  [{:ok, price}, {:ok, hold}] ->
+    ship(price, hold)
+
+  results ->
+    {:error, Enum.filter(results, &match?({:error, _}, &1))}
+end
+```
+
+### What the macro requires
+
+The argument must be a **literal list of activity calls** written at the call
+site. Each element's `{module, function, arity}` is part of the batch's command
+identity, computed at macro expansion, so it cannot come from a variable.
+`activity_all(calls)` is a compile error, with a message saying why.
+
+Batch members take no per-activity options, `compensate:` included. Use
+sequential `activity/2` calls for a step that needs a compensation.
+
+### How it stays replay-safe
+
+Terminals land in whatever order the workers finish, so the journal cannot rely
+on position. Each member's index is part of its command identity, and each
+member's arguments are hashed into its schedule event; replay reassociates
+results by command id and checks the hash, the way `child_started` does. A
+batch whose terminals have not all landed suspends without advancing the
+cursor, so it replays from its first member next time rather than from the
+middle of itself.
+
 ## Progress and cooperative cancellation
 
 Long-running activities can opt into a runtime context:

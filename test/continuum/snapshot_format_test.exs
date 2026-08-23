@@ -54,6 +54,140 @@ defmodule Continuum.SnapshotFormatTest do
     assert step.advance_by == 4
   end
 
+  describe "activity_all batches" do
+    test "compact into one step covering all 2N events" do
+      assert {:ok, %Snapshot{through_seq: 5, steps_by_seq: steps}} =
+               Snapshot.compact("batch-run", <<1>>, batch_events())
+
+      assert map_size(steps) == 1
+      assert %{0 => step} = steps
+      assert step.effect_type == :activity_batch
+      assert step.advance_by == 6
+      assert step.command_ids == [command_id(0), command_id(1), command_id(2)]
+      assert step.shape == List.duplicate({__MODULE__, :activity, 1}, 3)
+
+      assert step.results == %{
+               command_id(0) => {:ok, :a},
+               command_id(1) => {:ok, :b},
+               command_id(2) => {:ok, :c}
+             }
+    end
+
+    test "compact the same way regardless of terminal arrival order" do
+      {schedules, terminals} = Enum.split(batch_events(), 3)
+
+      shuffled = schedules ++ resequence(Enum.reverse(terminals), 3)
+
+      assert {:ok, %Snapshot{steps_by_seq: %{0 => step}}} =
+               Snapshot.compact("batch-run", <<1>>, shuffled)
+
+      assert step.results == %{
+               command_id(0) => {:ok, :a},
+               command_id(1) => {:ok, :b},
+               command_id(2) => {:ok, :c}
+             }
+    end
+
+    # The distinction that matters: a partial batch is `:incomplete`, which
+    # stops compaction cleanly, not `:error`, which `compact_events/3`
+    # propagates and which would stop snapshots for the run advancing forever.
+    test "a prefix cut inside a batch skips rather than erroring" do
+      for landed <- 0..2 do
+        prefix = Enum.take(batch_events(), 3 + landed)
+
+        assert {:skip, :no_complete_steps} = Snapshot.compact("batch-run", <<1>>, prefix)
+      end
+    end
+
+    test "a batch followed by another step still compacts the later step" do
+      tail = [
+        %{type: :side_effect, seq: 6, kind: :now, payload: 7, command_id: command_id(9)}
+      ]
+
+      assert {:ok, %Snapshot{through_seq: 6, steps_by_seq: steps}} =
+               Snapshot.compact("batch-run", <<1>>, batch_events() ++ tail)
+
+      assert Map.keys(steps) |> Enum.sort() == [0, 6]
+    end
+
+    test "a terminal that belongs to no member of the batch is an error" do
+      {schedules, terminals} = Enum.split(batch_events(), 3)
+
+      foreign =
+        terminals
+        |> List.replace_at(1, %{
+          type: :activity_completed,
+          seq: 4,
+          mfa: {__MODULE__, :activity, [1]},
+          payload: {:ok, :foreign},
+          command_id: command_id(99)
+        })
+
+      assert {:error, {:activity_batch_command_mismatch, 4}} =
+               Snapshot.compact("batch-run", <<1>>, schedules ++ foreign)
+    end
+  end
+
+  defp batch_events do
+    mfa = {__MODULE__, :activity, [1]}
+
+    [
+      %{
+        type: :activity_batch_scheduled,
+        seq: 0,
+        mfa: mfa,
+        index: 0,
+        input_hash: "h0",
+        command_id: command_id(0)
+      },
+      %{
+        type: :activity_batch_scheduled,
+        seq: 1,
+        mfa: mfa,
+        index: 1,
+        input_hash: "h1",
+        command_id: command_id(1)
+      },
+      %{
+        type: :activity_batch_scheduled,
+        seq: 2,
+        mfa: mfa,
+        index: 2,
+        input_hash: "h2",
+        command_id: command_id(2)
+      },
+      %{
+        type: :activity_completed,
+        seq: 3,
+        mfa: mfa,
+        payload: {:ok, :a},
+        command_id: command_id(0)
+      },
+      %{
+        type: :activity_completed,
+        seq: 4,
+        mfa: mfa,
+        payload: {:ok, :b},
+        command_id: command_id(1)
+      },
+      %{
+        type: :activity_completed,
+        seq: 5,
+        mfa: mfa,
+        payload: {:ok, :c},
+        command_id: command_id(2)
+      }
+    ]
+  end
+
+  defp resequence(events, offset) do
+    events
+    |> Enum.with_index(offset)
+    |> Enum.map(fn {event, seq} -> Map.put(event, :seq, seq) end)
+  end
+
+  defp command_id(index), do: {:activity_batch, __MODULE__, :run, 12, <<1>>, index, 0}
+
   defp snapshot do
     %Snapshot{
       run_id: "snapshot-format-test",

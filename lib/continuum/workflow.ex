@@ -74,6 +74,44 @@ defmodule Continuum.Workflow do
   end
 
   @doc """
+  Macro: schedule several activities at once and wait for all of them.
+
+      [quote_a, quote_b] = activity_all([Pricing.quote(a), Pricing.quote(b)])
+
+  Results come back in the order the activities were declared, regardless of
+  the order they finish in. Each element is exactly what the corresponding
+  `activity/2` call would have returned, so a failed activity contributes an
+  `{:error, reason}` entry and the rest of the batch is unaffected. There is
+  deliberately no `mode:` option: a partial failure is an ordinary value you
+  pattern-match, not a control-flow mode.
+
+      case activity_all([Pricing.quote(a), Inventory.reserve(b)]) do
+        [{:ok, price}, {:ok, hold}] -> ship(price, hold)
+        results -> {:error, Enum.filter(results, &match?({:error, _}, &1))}
+      end
+
+  The argument must be a **literal list of activity calls** written at the call
+  site: each element's `{module, function, arity}` is part of the batch's
+  command identity, computed at macro expansion, so it cannot come from a
+  variable.
+
+  Batch members take no per-activity options in v0.8 — including `compensate:`.
+  Use sequential `activity/2` calls when a step needs a compensation.
+  """
+  @doc since: "0.8.0"
+  defmacro activity_all(calls) do
+    items = parse_activity_batch!(calls, __CALLER__)
+    command = command_base(__CALLER__, :activity_batch, Enum.map(items, & &1.shape))
+
+    quote do
+      Continuum.Runtime.Effect.run_all(
+        unquote(Enum.map(items, & &1.mfa)),
+        {:command, unquote(Macro.escape(command))}
+      )
+    end
+  end
+
+  @doc """
   Macro: wait for an external signal, optionally with a timeout.
 
       await signal(:approved)
@@ -342,6 +380,7 @@ defmodule Continuum.Workflow do
         only: [
           activity: 1,
           activity: 2,
+          activity_all: 1,
           await: 1,
           timer: 1,
           compensate: 1,
@@ -390,6 +429,44 @@ defmodule Continuum.Workflow do
 
   defp parse_signal_args([name]), do: {name, []}
   defp parse_signal_args([name, opts]), do: {name, opts}
+
+  defp parse_activity_batch!(calls, caller) when is_list(calls) do
+    if calls == [] do
+      raise ArgumentError, "activity_all/1 expects at least one activity call"
+    end
+
+    Enum.map(calls, &parse_activity_batch_call!(&1, caller))
+  end
+
+  defp parse_activity_batch!(other, _caller) do
+    raise ArgumentError,
+          "activity_all/1 expects a literal list of activity calls written at the call " <>
+            "site, because each element's {module, function, arity} is part of the batch's " <>
+            "command identity. Got: #{Macro.to_string(other)}"
+  end
+
+  defp parse_activity_batch_call!(
+         {{:., _, [{:__aliases__, _, _} = mod_alias, fun]}, _, args},
+         caller
+       ) do
+    %{
+      shape: {Macro.expand(mod_alias, caller), fun, length(args || [])},
+      mfa: quote(do: {unquote(mod_alias), unquote(fun), unquote(args)})
+    }
+  end
+
+  defp parse_activity_batch_call!({{:., _, [mod, fun]}, _, args}, _caller) do
+    %{
+      shape: {mod, fun, length(args || [])},
+      mfa: quote(do: {unquote(mod), unquote(fun), unquote(args)})
+    }
+  end
+
+  defp parse_activity_batch_call!(other, _caller) do
+    raise ArgumentError,
+          "activity_all/1 expects each element to be an activity call like " <>
+            "`Payments.charge(order)`. Got: #{Macro.to_string(other)}"
+  end
 
   defp command_base(env, type, shape) do
     {type, env.module, env.function, env.line, hash_term(shape)}

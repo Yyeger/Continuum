@@ -672,6 +672,9 @@ defmodule Continuum.AstCheck do
         {:activity, meta, args}, acc when is_list(args) ->
           {{:__continuum_skipped_activity__, meta, []}, acc}
 
+        {:activity_all, meta, args}, acc when is_list(args) ->
+          {{:__continuum_skipped_activity__, meta, []}, acc}
+
         # `child Mod.run(args)` names a child workflow, not a helper call.
         {:child, meta, args}, acc when is_list(args) ->
           {{:__continuum_skipped_child__, meta, []}, acc}

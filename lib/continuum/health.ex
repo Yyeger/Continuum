@@ -249,6 +249,7 @@ defmodule Continuum.Health do
                  CASE
                    WHEN r.state = 'stuck_unknown_version' THEN 'unknown_version'
                    WHEN latest.event_type = 'activity_scheduled' THEN 'activity'
+                   WHEN latest.event_type = 'activity_batch_scheduled' THEN 'activity_batch'
                    WHEN latest.event_type = 'compensation_scheduled' THEN 'compensation'
                    WHEN latest.event_type = 'timer_started' THEN 'timer'
                    WHEN latest.event_type = 'signal_awaited' THEN 'signal'

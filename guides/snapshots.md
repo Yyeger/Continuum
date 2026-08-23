@@ -42,6 +42,10 @@ Resolution order is workflow option, then runtime/app configuration, then
 Continuum compacts completed effect shapes only:
 
 - `side_effect` and fast-path `signal_received` become one compacted step.
+- a run of `activity_batch_scheduled` events plus one terminal per member —
+  an `activity_all/1` batch — becomes a single `:activity_batch` step carrying
+  every member's result keyed by command id, so the step replays whatever order
+  the terminals actually landed in.
 - `activity_scheduled` plus `activity_completed` or `activity_failed` become
   one compacted activity step.
 - `signal_awaited` plus the winning `signal_received` or timeout `timer_fired`
