@@ -85,7 +85,7 @@ defmodule Continuum.Test do
   def load_history!(path) do
     path
     |> File.read!()
-    |> :erlang.binary_to_term()
+    |> Continuum.DurableTerm.decode!()
   end
 
   @doc """

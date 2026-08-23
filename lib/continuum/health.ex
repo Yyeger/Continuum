@@ -12,6 +12,7 @@ defmodule Continuum.Health do
   operator, so a stale repair cannot overwrite newer runtime authority.
   """
 
+  alias Continuum.DurableTerm
   alias Continuum.Runtime.{Engine, Instance}
   alias Continuum.Schema.{HealthReview, WorkflowVersion}
 
@@ -1079,7 +1080,7 @@ defmodule Continuum.Health do
   defp decode_term(nil), do: nil
 
   defp decode_term(binary) when is_binary(binary) do
-    :erlang.binary_to_term(binary)
+    DurableTerm.decode!(binary)
   rescue
     _ -> {:decode_error, Base.encode16(binary, case: :lower)}
   end

@@ -7,6 +7,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   require Logger
 
   alias Continuum.{
+    DurableTerm,
     Oban,
     Runtime.ActivityWorker.Worker,
     Runtime.Instance,
@@ -585,7 +586,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     "#{node()}/#{instance.name}/#{inspect(self())}:activity"
   end
 
-  defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
+  defp decode_term(binary) when is_binary(binary), do: DurableTerm.decode!(binary)
   defp decode_term(other), do: other
 
   defp schedule_poll(interval_ms) do

@@ -2727,7 +2727,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp decode_term(nil), do: nil
-  defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
+  defp decode_term(binary) when is_binary(binary), do: DurableTerm.decode!(binary)
   defp decode_term(other), do: other
 
   defp broadcast_failed(_instance, _run_id, {_kind, _reason, stacktrace})

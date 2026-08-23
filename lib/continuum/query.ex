@@ -9,6 +9,7 @@ defmodule Continuum.Query do
 
   import Ecto.Query
 
+  alias Continuum.DurableTerm
   alias Continuum.Runtime.Instance
   alias Continuum.Schema.Run
 
@@ -472,7 +473,7 @@ defmodule Continuum.Query do
   end
 
   defp decode_term(binary) do
-    :erlang.binary_to_term(binary)
+    DurableTerm.decode!(binary)
   rescue
     error -> {:decode_error, error}
   end

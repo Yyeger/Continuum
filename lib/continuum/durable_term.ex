@@ -23,6 +23,36 @@ defmodule Continuum.DurableTerm do
     end
   end
 
+  @doc """
+  Decode a term Continuum wrote across a journal boundary.
+
+  Decoding is `:safe`, so it refuses to create atoms the node has never defined.
+  Every atom Continuum journals originates in compiled workflow, activity, or
+  runtime code, and that code has to be loaded for the value to be meaningful
+  anyway, so a refusal means one of three things: the stored bytes are corrupt,
+  they were written by code this node does not have, or workflow code journaled
+  a dynamically constructed atom — which was never replay-durable, because the
+  atom does not exist on a node that has not run the same input.
+
+  Raises `Continuum.DurableTermError` rather than leaking `ArgumentError` from
+  `:erlang.binary_to_term/2`.
+  """
+  @spec decode!(binary()) :: term()
+  def decode!(binary) when is_binary(binary) do
+    :erlang.binary_to_term(binary, [:safe])
+  rescue
+    ArgumentError ->
+      reraise %DurableTermError{path: nil, kind: :undecodable}, __STACKTRACE__
+  end
+
+  @doc "Non-raising `decode!/1`."
+  @spec decode(binary()) :: {:ok, term()} | {:error, DurableTermError.t()}
+  def decode(binary) when is_binary(binary) do
+    {:ok, decode!(binary)}
+  rescue
+    error in DurableTermError -> {:error, error}
+  end
+
   @doc false
   def format_path([root | segments]) do
     Enum.reduce(segments, Atom.to_string(root), fn

@@ -99,7 +99,7 @@ defmodule Continuum.Schedules do
       run_id: schedule.run_id,
       workflow: schedule.workflow,
       version_hash: schedule.version_hash,
-      input: :erlang.binary_to_term(schedule.input),
+      input: DurableTerm.decode!(schedule.input),
       namespace: schedule.namespace,
       attributes: schedule.attributes,
       scheduled_at: schedule.scheduled_at,

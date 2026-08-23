@@ -7,6 +7,7 @@ defmodule Continuum.Runtime.ScheduleRunner do
   import Ecto.Query
 
   alias Continuum.Activity.Policy
+  alias Continuum.DurableTerm
   alias Continuum.Runtime.{Engine, Instance}
   alias Continuum.Schema.{Run, Schedule}
 
@@ -113,7 +114,7 @@ defmodule Continuum.Runtime.ScheduleRunner do
       run_id: run_id,
       workflow: workflow,
       version_hash: version_hash,
-      input: :erlang.binary_to_term(input),
+      input: DurableTerm.decode!(input),
       namespace: namespace,
       attributes: attributes || %{},
       trace_context: trace_context,

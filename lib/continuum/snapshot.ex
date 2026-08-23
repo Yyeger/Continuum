@@ -44,7 +44,7 @@ defmodule Continuum.Snapshot do
   @doc "Decode a stored snapshot payload."
   @spec decode(binary()) :: t()
   def decode(binary) when is_binary(binary) do
-    case :erlang.binary_to_term(binary) do
+    case Continuum.DurableTerm.decode!(binary) do
       {@envelope_tag, @format_version, %__MODULE__{} = snapshot} ->
         snapshot
 

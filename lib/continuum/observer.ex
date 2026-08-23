@@ -8,9 +8,10 @@ defmodule Continuum.Observer do
   an authenticated admin scope.
 
   Query helpers in this module are Phoenix-independent and operate on the
-  configured Continuum instance repo. Event payloads are decoded with
-  `:erlang.binary_to_term/1` because Continuum stores its own trusted journal
-  data as `bytea`; the Observer is not a boundary for untrusted database writes.
+  configured Continuum instance repo. Event payloads are decoded through
+  `Continuum.DurableTerm.decode!/1`, which never creates atoms; the Observer is
+  not a boundary for untrusted database writes, but a corrupt payload surfaces
+  as a `{:decode_error, _}` cell rather than as an atom-table leak.
   """
 
   import Ecto.Query
@@ -302,7 +303,7 @@ defmodule Continuum.Observer do
   defp decode_term(nil), do: nil
 
   defp decode_term(binary) when is_binary(binary) do
-    :erlang.binary_to_term(binary)
+    Continuum.DurableTerm.decode!(binary)
   rescue
     error -> {:decode_error, error}
   end

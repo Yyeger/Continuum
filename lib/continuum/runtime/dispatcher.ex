@@ -11,7 +11,14 @@ defmodule Continuum.Runtime.Dispatcher do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Runtime.Lease, Telemetry}
+  alias Continuum.{
+    DurableTerm,
+    Runtime.Engine,
+    Runtime.Instance,
+    Runtime.Journal,
+    Runtime.Lease,
+    Telemetry
+  }
 
   @default_interval_ms 1_000
   @default_batch_size 10
@@ -274,7 +281,7 @@ defmodule Continuum.Runtime.Dispatcher do
   end
 
   defp decode_term(nil), do: nil
-  defp decode_term(binary) when is_binary(binary), do: :erlang.binary_to_term(binary)
+  defp decode_term(binary) when is_binary(binary), do: DurableTerm.decode!(binary)
   defp decode_term(other), do: other
 
   defp schedule_poll(interval_ms) do

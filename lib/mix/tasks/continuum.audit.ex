@@ -137,7 +137,7 @@ defmodule Mix.Tasks.Continuum.Audit do
       )
     )
     |> Enum.map(fn event ->
-      payload = :erlang.binary_to_term(event.payload)
+      payload = Continuum.DurableTerm.decode!(event.payload)
       %{run_id: event.run_id, inserted_at: event.inserted_at, command_id: payload.command_id}
     end)
     |> Enum.group_by(& &1.run_id)
