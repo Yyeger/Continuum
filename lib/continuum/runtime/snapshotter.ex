@@ -8,6 +8,15 @@ defmodule Continuum.Runtime.Snapshotter do
 
   @default_max_size_bytes 1_000_000
 
+  # The per-run event counter is an optimisation, not state anything depends
+  # on: losing one costs a deferred snapshot, nothing more. It is bounded with
+  # a two-generation cache rather than a termination hook because every path
+  # that is *not* "a snapshot was taken" used to keep its entry forever —
+  # including `threshold == :infinity`, and including every run that completes
+  # below its threshold, which is most of them. A hook on the terminal paths
+  # would still miss runs lost to a node crash or finished on another node.
+  @tracked_runs 10_000
+
   def start_link(opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     GenServer.start_link(__MODULE__, opts, name: instance.snapshotter)
@@ -42,7 +51,14 @@ defmodule Continuum.Runtime.Snapshotter do
   def init(opts) do
     opts = Continuum.Config.validate_component!(:snapshotter, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
-    {:ok, %{instance: instance, config: config(opts, instance), run_counts: %{}}}
+
+    {:ok,
+     %{
+       instance: instance,
+       config: config(opts, instance),
+       run_counts: %{},
+       previous_run_counts: %{}
+     }}
   end
 
   @impl true
@@ -70,34 +86,63 @@ defmodule Continuum.Runtime.Snapshotter do
          not Continuum.VersionRegistry.any_snapshot_threshold?(state.instance) do
       state
     else
-      {threshold, run_counts} = threshold_and_count(state, run_id, config)
+      {entry, state} = tracked_entry(state, run_id, config)
 
-      case threshold do
+      case entry.threshold do
         :infinity ->
-          %{state | run_counts: run_counts}
+          state
 
         threshold ->
-          count = get_in(run_counts, [run_id, :count]) + 1
+          count = entry.count + 1
 
           if count >= threshold do
             take_snapshot(state.instance, run_id, lease_token, config)
-            %{state | run_counts: Map.delete(run_counts, run_id)}
+            forget(state, run_id)
           else
-            %{state | run_counts: put_in(run_counts, [run_id, :count], count)}
+            track(state, run_id, %{entry | count: count})
           end
       end
     end
   end
 
-  defp threshold_and_count(state, run_id, config) do
+  defp tracked_entry(state, run_id, config) do
     case Map.get(state.run_counts, run_id) do
-      %{threshold: threshold} ->
-        {threshold, state.run_counts}
+      %{} = entry ->
+        {entry, state}
 
       nil ->
-        threshold = threshold_for_new_run(state.instance, run_id, config)
-        {threshold, Map.put(state.run_counts, run_id, %{threshold: threshold, count: 0})}
+        case Map.get(state.previous_run_counts, run_id) do
+          # Promote from the previous generation rather than re-reading the
+          # run's threshold: the count is still meaningful.
+          %{} = entry ->
+            {entry, track(state, run_id, entry)}
+
+          nil ->
+            entry = %{threshold: threshold_for_new_run(state.instance, run_id, config), count: 0}
+            {entry, track(state, run_id, entry)}
+        end
     end
+  end
+
+  # Two generations, rotated when the live one fills: bounded at 2x
+  # `@tracked_runs` entries, O(1) per write, and no stale keys to reconcile.
+  # An evicted run simply starts counting again.
+  defp track(state, run_id, entry) do
+    run_counts = Map.put(state.run_counts, run_id, entry)
+
+    if map_size(run_counts) >= @tracked_runs do
+      %{state | run_counts: %{}, previous_run_counts: run_counts}
+    else
+      %{state | run_counts: run_counts}
+    end
+  end
+
+  defp forget(state, run_id) do
+    %{
+      state
+      | run_counts: Map.delete(state.run_counts, run_id),
+        previous_run_counts: Map.delete(state.previous_run_counts, run_id)
+    }
   end
 
   defp threshold_for_new_run(instance, run_id, config) do
