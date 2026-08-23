@@ -54,7 +54,8 @@ defmodule Continuum.Oban do
       _ -> raise ArgumentError, "invalid legacy Continuum instance identifier"
     end
   rescue
-    _ -> raise ArgumentError, "invalid legacy Continuum instance identifier"
+    _error ->
+      reraise ArgumentError, "invalid legacy Continuum instance identifier", __STACKTRACE__
   end
 
   def decode_instance(_encoded), do: raise(ArgumentError, "invalid Continuum instance identifier")
@@ -93,7 +94,8 @@ defmodule Continuum.Oban do
        when is_binary(name) and byte_size(name) <= @max_instance_bytes do
     String.to_existing_atom(name)
   rescue
-    ArgumentError -> raise ArgumentError, "unknown Continuum instance atom: #{inspect(name)}"
+    ArgumentError ->
+      reraise ArgumentError, "unknown Continuum instance atom: #{inspect(name)}", __STACKTRACE__
   end
 
   defp existing_instance_atom!(_name),

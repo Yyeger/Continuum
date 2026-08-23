@@ -109,6 +109,7 @@ defmodule Continuum.AstCheckTest do
     test "rejects Logger process metadata mutation" do
       ast =
         quote do
+          # credo:disable-for-next-line Credo.Check.Warning.MissedMetadataKeyInLoggerConfig
           Logger.metadata(run: 1)
           Logger.reset_metadata()
           Logger.put_process_level(self(), :debug)
