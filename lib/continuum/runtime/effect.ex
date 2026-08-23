@@ -44,6 +44,17 @@ defmodule Continuum.Runtime.Effect do
     throw({@suspend_token, reason})
   end
 
+  # Read-only replay never computes a live tail. Every `live_*` entry point
+  # below refuses first, because refusing at the journal would be too late: the
+  # in-memory activity path runs the real MFA *before* it appends, and the
+  # Postgres await path consumes a pending signal row *inside* the same
+  # transaction that reads it. `Continuum.Runtime.Journal.ReadOnly` still
+  # raises on every callback as the backstop for a path added later that skips
+  # one of these clauses.
+  defp refuse_live!(ctx, effect) do
+    suspend!({:history_exhausted, %{cursor: ctx.cursor, effect: effect}})
+  end
+
   defp continue_throw!(next_run_id) do
     mark_control_throw({:continued_as_new, next_run_id})
     throw({:continuum_continued_as_new, next_run_id})
@@ -430,6 +441,15 @@ defmodule Continuum.Runtime.Effect do
 
     Context.put(new_ctx)
     apply(ctx.journal, :append!, [ctx.instance, ctx.run_id, event, ctx.lease_token])
+  end
+
+  defp live_tail!(
+         %{journal: Continuum.Runtime.Journal.ReadOnly} = ctx,
+         effect,
+         _live_compute,
+         _command_id
+       ) do
+    refuse_live!(ctx, effect)
   end
 
   defp live_tail!(
@@ -1020,6 +1040,14 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp live_compensation!(
+         %{journal: Continuum.Runtime.Journal.ReadOnly} = ctx,
+         effect,
+         _command_id
+       ) do
+    refuse_live!(ctx, effect)
+  end
+
+  defp live_compensation!(
          %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
          {:compensation, target_id, {mod, _fun, args} = mfa},
          command_id
@@ -1159,6 +1187,16 @@ defmodule Continuum.Runtime.Effect do
     child_run_id
   end
 
+  defp live_start_child!(
+         %{journal: Continuum.Runtime.Journal.ReadOnly} = ctx,
+         workflow,
+         input,
+         opts,
+         _command_id
+       ) do
+    refuse_live!(ctx, {:start_child, workflow, input, opts})
+  end
+
   defp live_start_child!(_ctx, _workflow, _input, _opts, _command_id) do
     raise "child workflows require the Postgres journal (start_child is durable-only)"
   end
@@ -1190,6 +1228,10 @@ defmodule Continuum.Runtime.Effect do
       :pending ->
         suspend!({:await_child, ref.child_run_id})
     end
+  end
+
+  defp live_await_child!(%{journal: Continuum.Runtime.Journal.ReadOnly} = ctx, ref, _command_id) do
+    refuse_live!(ctx, {:await_child, ref.child_run_id})
   end
 
   defp live_await_child!(_ctx, _ref, _command_id) do
@@ -1252,6 +1294,10 @@ defmodule Continuum.Runtime.Effect do
     })
 
     continue_throw!(next_run_id)
+  end
+
+  defp live_continue_as_new!(%{journal: Continuum.Runtime.Journal.ReadOnly} = ctx, input, _cid) do
+    refuse_live!(ctx, {:continue_as_new, input})
   end
 
   defp live_continue_as_new!(_ctx, _input, _command_id) do
