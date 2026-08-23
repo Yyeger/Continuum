@@ -1257,10 +1257,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         %{successor_task_id: successor_id, lineage_id: lineage_id, run_id: task.run_id}
       end)
 
-    case result do
-      {:ok, retry} -> {:ok, retry}
-      {:error, reason} -> {:error, reason}
-    end
+    result
   end
 
   defp retry_activity_task_with_repo!(task, error, backoff_ms, lease_token) do

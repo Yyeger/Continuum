@@ -121,13 +121,10 @@ defmodule Continuum.Partitions do
          {:ok, start_month} <- resolve_start_month(repo, Keyword.get(opts, :start_month)) do
       timeout = Keyword.get(opts, :timeout, 30_000)
 
-      case repo.transaction(
-             fn -> maintain(repo, instance_name, start_month, months, lock) end,
-             timeout: timeout
-           ) do
-        {:ok, summary} -> {:ok, summary}
-        {:error, reason} -> {:error, reason}
-      end
+      repo.transaction(
+        fn -> maintain(repo, instance_name, start_month, months, lock) end,
+        timeout: timeout
+      )
     end
   end
 

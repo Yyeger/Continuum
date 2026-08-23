@@ -1177,7 +1177,11 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp extract_traceparent(%{} = carrier) do
-    carrier["traceparent"] || carrier[:traceparent]
+    case carrier do
+      %{"traceparent" => value} -> value
+      %{traceparent: value} -> value
+      _other -> nil
+    end
   end
 
   defp extract_traceparent(carrier) when is_list(carrier) do

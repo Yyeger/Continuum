@@ -91,7 +91,11 @@ defmodule Mix.Tasks.Continuum.Partitions.Create do
 
   defp validate_args!(rest, invalid) do
     if invalid != [], do: Mix.raise("invalid options: #{format_invalid(invalid)}")
-    if length(rest) > 1, do: Mix.raise("expected at most one YYYY-MM month argument")
+
+    case rest do
+      [_first, _second | _rest] -> Mix.raise("expected at most one YYYY-MM month argument")
+      _rest -> :ok
+    end
   end
 
   defp format_invalid(invalid) do

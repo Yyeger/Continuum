@@ -29,9 +29,6 @@ defmodule Continuum.Oban do
 
       changeset = apply(worker, :new, [args, job_opts(opts)])
       apply(oban, :insert, [oban_name(opts), changeset, []])
-    else
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

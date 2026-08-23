@@ -2210,7 +2210,14 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp command_matches?(event, command_id) do
-    case Map.get(event, :command_id) || Map.get(event, "command_id") do
+    event_command_id =
+      case event do
+        %{command_id: value} -> value
+        %{"command_id" => value} -> value
+        _other -> nil
+      end
+
+    case event_command_id do
       nil -> true
       ^command_id -> true
       _other -> false
