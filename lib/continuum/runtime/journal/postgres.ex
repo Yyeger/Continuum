@@ -2182,13 +2182,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
         seq: seq
       })
 
-    with {1, _} <-
-           repo().update_all(
-             from(s in Signal, where: s.id == ^signal.id and s.delivered == false),
-             set: [delivered: true]
-           ) do
-      {:ok, payload, winner_event}
-    else
+    case repo().update_all(
+           from(s in Signal, where: s.id == ^signal.id and s.delivered == false),
+           set: [delivered: true]
+         ) do
+      {1, _} -> {:ok, payload, winner_event}
       {0, _} -> repo().rollback({:signal_consume_failed, :already_delivered})
     end
   end

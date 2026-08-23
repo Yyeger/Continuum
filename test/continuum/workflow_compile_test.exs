@@ -344,6 +344,7 @@ defmodule Continuum.WorkflowCompileTest do
             use Continuum.Pure
 
             def guarded(fun) do
+              # credo:disable-for-next-line Credo.Check.Readability.PreferImplicitTry
               try do
                 fun.()
               catch

@@ -1,9 +1,9 @@
 defmodule Continuum.Runtime.SignalRouterTest do
   use Continuum.Test.DataCase, async: false
 
+  alias Continuum.Runtime.Instance
   alias Continuum.Runtime.Journal.Postgres
   alias Continuum.Runtime.TimerWheel
-  alias Continuum.Runtime.Instance
   alias Continuum.Schema.{Event, Run, Signal, Timer}
 
   setup do

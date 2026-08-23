@@ -112,6 +112,7 @@ defmodule Continuum.Runtime.SuspendLeakTest do
           use Continuum.Workflow, version: 1
 
           def run(_input) do
+            # credo:disable-for-next-line Credo.Check.Readability.PreferImplicitTry
             try do
               :ok
             catch
@@ -171,6 +172,7 @@ defmodule Continuum.Runtime.SuspendLeakTest do
           use Continuum.Workflow, version: 1
 
           def run(_input) do
+            # credo:disable-for-next-line Credo.Check.Readability.PreferImplicitTry
             try do
               :ok
             catch
@@ -305,6 +307,7 @@ defmodule Continuum.Runtime.SuspendLeakTest do
           use Continuum.Workflow, version: 1
 
           def run(_input) do
+            # credo:disable-for-next-line Credo.Check.Readability.PreferImplicitTry
             try do
               {:ok, :fine}
             rescue

@@ -33,23 +33,25 @@ defmodule Mix.Tasks.Continuum.Runs.Prune do
       |> Keyword.put(:older_than_days, parse_older_than(opts[:older_than]))
       |> Keyword.put(:idempotency_policy, parse_idempotency_policy(opts[:idempotency_policy]))
 
-    with {:ok, plan} <- Continuum.Pruner.plan(opts) do
-      print_plan(plan, Keyword.get(opts, :execute, false))
+    case Continuum.Pruner.plan(opts) do
+      {:ok, plan} ->
+        print_plan(plan, Keyword.get(opts, :execute, false))
 
-      if Keyword.get(opts, :execute, false) do
-        case Continuum.Pruner.execute(plan, opts) do
-          {:ok, result} ->
-            Mix.shell().info(
-              "Deleted #{result.deleted_run_count} runs and " <>
-                "#{result.deleted_idempotency_count} idempotency records"
-            )
+        if Keyword.get(opts, :execute, false) do
+          case Continuum.Pruner.execute(plan, opts) do
+            {:ok, result} ->
+              Mix.shell().info(
+                "Deleted #{result.deleted_run_count} runs and " <>
+                  "#{result.deleted_idempotency_count} idempotency records"
+              )
 
-          {:error, reason} ->
-            Mix.raise("run pruning failed: #{inspect(reason)}")
+            {:error, reason} ->
+              Mix.raise("run pruning failed: #{inspect(reason)}")
+          end
         end
-      end
-    else
-      {:error, reason} -> Mix.raise("run pruning plan failed: #{inspect(reason)}")
+
+      {:error, reason} ->
+        Mix.raise("run pruning plan failed: #{inspect(reason)}")
     end
   end
 

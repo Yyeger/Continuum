@@ -10,8 +10,8 @@ defmodule Continuum.Test.ClusterCase do
       import Continuum.Test.ClusterCase
 
       alias Continuum.Runtime.{ActivityWorker, Dispatcher, Engine, Journal, Recovery}
-      alias Continuum.Test.{ClusterFlows, Repo}
       alias Continuum.Schema.{ActivityTask, Event, Run}
+      alias Continuum.Test.{ClusterFlows, Repo}
 
       import Ecto.Query
 

@@ -3,8 +3,8 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   require Logger
 
-  alias Continuum.{DurableTerm, Runtime.Engine, Runtime.Journal, Telemetry}
   alias Continuum.Activity.Context, as: ActivityContext
+  alias Continuum.{DurableTerm, Runtime.Engine, Runtime.Journal, Telemetry}
 
   @max_error_bytes 65_536
   @max_error_text_bytes 4_096

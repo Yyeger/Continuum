@@ -278,8 +278,8 @@ end
 defmodule Continuum.Runtime.LeaseHeartbeaterTest do
   use Continuum.Test.DataCase, async: false
 
-  alias Continuum.Runtime.Journal.Postgres
   alias Continuum.Runtime.{Instance, Lease}
+  alias Continuum.Runtime.Journal.Postgres
   alias Continuum.Runtime.Lease.Heartbeater
   alias Continuum.Schema.Run
 

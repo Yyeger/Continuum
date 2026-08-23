@@ -338,9 +338,7 @@ defmodule Continuum.AstCheck do
   """
   @spec format([violation()]) :: String.t()
   def format(violations) do
-    violations
-    |> Enum.map(&format_violation/1)
-    |> Enum.join("\n\n")
+    Enum.map_join(violations, "\n\n", &format_violation/1)
   end
 
   @doc """
@@ -355,8 +353,7 @@ defmodule Continuum.AstCheck do
     calls =
       ast
       |> external_calls(env)
-      |> Enum.reject(&(&1.module == env.module))
-      |> Enum.reject(&trusted_helper_module?/1)
+      |> Enum.reject(&(&1.module == env.module or trusted_helper_module?(&1)))
       |> Enum.uniq_by(& &1.module)
 
     case {untrusted_call_severity(), calls} do

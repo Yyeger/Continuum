@@ -35,8 +35,9 @@ defmodule Mix.Tasks.Continuum.Partitions.DropOld do
     expired =
       repo
       |> partitions()
-      |> Enum.filter(&old_managed_partition?(&1, current_month, cutoff_date))
-      |> Enum.filter(&fully_expired?(repo, &1))
+      |> Enum.filter(
+        &(old_managed_partition?(&1, current_month, cutoff_date) and fully_expired?(repo, &1))
+      )
 
     Enum.each(expired, fn partition ->
       if dry_run? do

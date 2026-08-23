@@ -410,9 +410,8 @@ defmodule Continuum.Query do
   end
 
   defp normalize_attributes(attributes) do
-    with {:ok, json} <- encode_json(attributes),
-         {:ok, decoded} <- Jason.decode(json) do
-      {:ok, decoded}
+    with {:ok, json} <- encode_json(attributes) do
+      Jason.decode(json)
     end
   end
 

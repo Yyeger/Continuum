@@ -123,36 +123,34 @@ defmodule Continuum.Runtime.ScheduleRunner do
   end
 
   defp start_schedule(instance, schedule) do
-    cond do
-      instance.repo.exists?(from(r in Run, where: r.id == ^schedule.run_id)) ->
-        mark_started(instance, schedule)
+    if instance.repo.exists?(from(r in Run, where: r.id == ^schedule.run_id)) do
+      mark_started(instance, schedule)
+    else
+      case Continuum.VersionRegistry.resolve(
+             schedule.workflow,
+             schedule.version_hash,
+             instance
+           ) do
+        {:ok, %{entrypoint: entrypoint}} ->
+          opts = [
+            instance: instance,
+            journal: Continuum.Runtime.Journal.Postgres,
+            run_id: schedule.run_id,
+            namespace: schedule.namespace,
+            attributes: schedule.attributes,
+            trace_context: schedule.trace_context,
+            idempotency_key: "schedule:#{schedule.id}"
+          ]
 
-      true ->
-        case Continuum.VersionRegistry.resolve(
-               schedule.workflow,
-               schedule.version_hash,
-               instance
-             ) do
-          {:ok, %{entrypoint: entrypoint}} ->
-            opts = [
-              instance: instance,
-              journal: Continuum.Runtime.Journal.Postgres,
-              run_id: schedule.run_id,
-              namespace: schedule.namespace,
-              attributes: schedule.attributes,
-              trace_context: schedule.trace_context,
-              idempotency_key: "schedule:#{schedule.id}"
-            ]
+          case Engine.start_run(entrypoint, schedule.input, opts) do
+            {:ok, _run_id} -> mark_started(instance, schedule)
+            {:error, {:already_started, _run_id}} -> mark_started(instance, schedule)
+            {:error, reason} -> retry_later(instance, schedule, reason)
+          end
 
-            case Engine.start_run(entrypoint, schedule.input, opts) do
-              {:ok, _run_id} -> mark_started(instance, schedule)
-              {:error, {:already_started, _run_id}} -> mark_started(instance, schedule)
-              {:error, reason} -> retry_later(instance, schedule, reason)
-            end
-
-          {:error, reason} ->
-            retry_later(instance, schedule, reason)
-        end
+        {:error, reason} ->
+          retry_later(instance, schedule, reason)
+      end
     end
   rescue
     error -> retry_later(instance, schedule, error)

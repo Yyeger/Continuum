@@ -635,24 +635,22 @@ defmodule Continuum.Runtime.Engine do
   def handle_info({:continuum_cancel_requested, _run_id}, state), do: {:noreply, state}
 
   defp honor_cancel_request(state) do
-    try do
-      :ok = cancel_run(state)
-      state = %{state | status: :cancelled, error: :cancelled}
-      Telemetry.execute([:continuum, :run, :cancelled], %{}, run_metadata(state))
+    :ok = cancel_run(state)
+    state = %{state | status: :cancelled, error: :cancelled}
+    Telemetry.execute([:continuum, :run, :cancelled], %{}, run_metadata(state))
+    untrack_lease(state)
+    {:stop, :normal, state}
+  rescue
+    error in Continuum.Runtime.JournalError ->
+      # Run already terminal or lease rotated between the heartbeat and this
+      # message — nothing left to cancel.
+      Logger.debug(
+        "Workflow #{state.run_id} cancel request not applicable: " <>
+          Exception.message(error)
+      )
+
       untrack_lease(state)
       {:stop, :normal, state}
-    rescue
-      error in Continuum.Runtime.JournalError ->
-        # Run already terminal or lease rotated between the heartbeat and this
-        # message — nothing left to cancel.
-        Logger.debug(
-          "Workflow #{state.run_id} cancel request not applicable: " <>
-            Exception.message(error)
-        )
-
-        untrack_lease(state)
-        {:stop, :normal, state}
-    end
   end
 
   defp clear_durable_wake(%{journal: Postgres} = state) do
@@ -672,9 +670,8 @@ defmodule Continuum.Runtime.Engine do
   # ---------------------------------------------------------------------------
 
   defp attempt_run(state) do
-    with {:ok, state} <- resolve_workflow_entrypoint(state) do
-      attempt_resolved_run(state)
-    else
+    case resolve_workflow_entrypoint(state) do
+      {:ok, state} -> attempt_resolved_run(state)
       {:error, error, state} -> unknown_version(state, error)
     end
   end
@@ -952,17 +949,19 @@ defmodule Continuum.Runtime.Engine do
 
     case journal do
       Continuum.Runtime.Journal.Postgres ->
-        with {:ok, lease} <-
-               Lease.acquire(run_id,
-                 owner:
-                   Keyword.get_lazy(opts, :lease_owner, fn -> Lease.owner(instance.name) end),
-                 repo: instance.repo,
-                 ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
-               ) do
-          Continuum.Runtime.Journal.Postgres.cancel_run!(instance, run_id, lease.token)
-        else
-          {:error, :not_acquired} -> not_acquired_error(instance, run_id)
-          {:error, reason} -> {:error, reason}
+        case Lease.acquire(run_id,
+               owner: Keyword.get_lazy(opts, :lease_owner, fn -> Lease.owner(instance.name) end),
+               repo: instance.repo,
+               ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
+             ) do
+          {:ok, lease} ->
+            Continuum.Runtime.Journal.Postgres.cancel_run!(instance, run_id, lease.token)
+
+          {:error, :not_acquired} ->
+            not_acquired_error(instance, run_id)
+
+          {:error, reason} ->
+            {:error, reason}
         end
 
       _other ->
