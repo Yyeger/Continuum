@@ -50,6 +50,7 @@ jobs:
       - run: mix deps.get
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
+      - run: mix credo --strict
       - run: mix test
       - name: Paranoid replay sweep
         if: matrix.name == 'latest' && github.event_name != 'pull_request'

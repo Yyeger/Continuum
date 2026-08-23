@@ -44,7 +44,8 @@ defmodule Continuum.MixProject do
       {:bandit, dependency_version("~> 1.12.5", "1.12.5"), only: [:dev, :test], optional: true},
       {:lazy_html, dependency_version(">= 0.1.0", "0.1.0"), only: :test},
       {:stream_data, dependency_version("~> 1.1", "1.1.0"), only: [:dev, :test]},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:ex_slop, "~> 0.4.4", only: [:dev, :test], runtime: false}
     ]
   end
 
