@@ -23,10 +23,10 @@ defmodule Continuum.NamespaceTest do
     assert Repo.one!(from(r in Run, where: r.id == ^default_id)).namespace == "default"
     assert Repo.one!(from(r in Run, where: r.id == ^tenant_id)).namespace == "tenant-a"
 
-    assert {:ok, %{entries: default_entries}} = Continuum.query()
+    assert {:ok, %{entries: default_entries}} = Continuum.list_runs()
     assert Enum.map(default_entries, & &1.run_id) == [default_id]
 
-    assert {:ok, %{entries: tenant_entries}} = Continuum.query(namespace: "tenant-a")
+    assert {:ok, %{entries: tenant_entries}} = Continuum.list_runs(namespace: "tenant-a")
     assert Enum.map(tenant_entries, & &1.run_id) == [tenant_id]
 
     assert {:ok, %{entries: observer_entries}} =

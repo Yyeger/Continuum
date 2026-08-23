@@ -18,11 +18,11 @@ replay.
 
 ## Structured Queries
 
-Use `Continuum.query/1` with a closed `:where` spec:
+Use `Continuum.list_runs/1` with a closed `:where` spec:
 
 ```elixir
 {:ok, page} =
-  Continuum.query(
+  Continuum.list_runs(
     where: [
       {:eq, :state, :suspended},
       {:eq, [:attributes, "region"], "eu"},

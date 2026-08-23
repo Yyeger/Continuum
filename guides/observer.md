@@ -59,7 +59,7 @@ The underlying `Continuum.Query` API supports nested, type-preserving attribute
 filters without abandoning the generated JSONB GIN index:
 
 ```elixir
-Continuum.query(
+Continuum.list_runs(
   where: [{:eq, [:attributes, :customer, :profile, :tier], 4}],
   cursor: previous_page.next_cursor
 )

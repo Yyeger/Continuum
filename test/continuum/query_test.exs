@@ -35,10 +35,10 @@ defmodule Continuum.QueryTest do
     )
 
     assert {:ok, %{entries: [%{run_id: ^cancelled, state: :cancelled}]}} =
-             Continuum.query(where: [{:eq, :state, :cancelled}])
+             Continuum.list_runs(where: [{:eq, :state, :cancelled}])
 
     assert {:ok, %{entries: [%{run_id: ^failed, state: :failed}]}} =
-             Continuum.query(where: [{:eq, :state, :failed}])
+             Continuum.list_runs(where: [{:eq, :state, :failed}])
   end
 
   test "the legacy cancel promotion moves failed + :cancelled rows into the cancelled filter" do
@@ -51,7 +51,7 @@ defmodule Continuum.QueryTest do
 
     # Pre-migration shape: the row is a failure as far as the state column goes,
     # and only the decoded payload says otherwise.
-    assert {:ok, %{entries: []}} = Continuum.query(where: [{:eq, :state, :cancelled}])
+    assert {:ok, %{entries: []}} = Continuum.list_runs(where: [{:eq, :state, :cancelled}])
 
     Repo.query!(
       "UPDATE continuum_runs SET state = 'cancelled' WHERE state = 'failed' AND error = $1",
@@ -59,9 +59,9 @@ defmodule Continuum.QueryTest do
     )
 
     assert {:ok, %{entries: [%{run_id: ^legacy, state: :cancelled}]}} =
-             Continuum.query(where: [{:eq, :state, :cancelled}])
+             Continuum.list_runs(where: [{:eq, :state, :cancelled}])
 
-    assert {:ok, %{entries: []}} = Continuum.query(where: [{:eq, :state, :failed}])
+    assert {:ok, %{entries: []}} = Continuum.list_runs(where: [{:eq, :state, :failed}])
   end
 
   test "queries by state, timestamps, ordering, and JSONB attributes" do
@@ -79,7 +79,7 @@ defmodule Continuum.QueryTest do
     )
 
     assert {:ok, page} =
-             Continuum.query(
+             Continuum.list_runs(
                where: [
                  {:eq, [:attributes, "region"], "eu"},
                  {:gte, :started_at, ~U[2026-06-01 00:00:00Z]}
@@ -92,7 +92,7 @@ defmodule Continuum.QueryTest do
 
     assert [%{run_id: ^older, state: :suspended, attributes: %{"region" => "eu"}}] = page.entries
 
-    assert {:ok, page} = Continuum.query(where: [{:in, :state, ["completed", "suspended"]}])
+    assert {:ok, page} = Continuum.list_runs(where: [{:in, :state, ["completed", "suspended"]}])
     assert Enum.map(page.entries, & &1.run_id) |> Enum.sort() == Enum.sort([older, newer])
   end
 
@@ -112,12 +112,12 @@ defmodule Continuum.QueryTest do
     timestamp = ~U[2026-06-01 00:00:00Z]
     Repo.update_all(from(r in Run, where: r.id in ^ids), set: [started_at: timestamp])
 
-    assert {:ok, first} = Continuum.query(order_by: {:asc, :started_at}, per_page: 2)
+    assert {:ok, first} = Continuum.list_runs(order_by: {:asc, :started_at}, per_page: 2)
     assert length(first.entries) == 2
     assert is_binary(first.next_cursor)
 
     assert {:ok, second} =
-             Continuum.query(
+             Continuum.list_runs(
                order_by: {:asc, :started_at},
                per_page: 2,
                cursor: first.next_cursor
@@ -126,7 +126,7 @@ defmodule Continuum.QueryTest do
     paged_ids = Enum.map(first.entries ++ second.entries, & &1.run_id)
     assert paged_ids == Enum.sort(ids)
     assert second.next_cursor == nil
-    assert {:error, :invalid_cursor} = Continuum.query(cursor: "forged")
+    assert {:error, :invalid_cursor} = Continuum.list_runs(cursor: "forged")
   end
 
   test "attribute equality keeps JSON types and uses the GIN containment index" do
@@ -134,10 +134,10 @@ defmodule Continuum.QueryTest do
     string_id = insert_run!(%{}, %{"customer_tier" => "4"})
 
     assert {:ok, %{entries: [%{run_id: ^number_id}]}} =
-             Continuum.query(where: [{:eq, [:attributes, :customer_tier], 4}])
+             Continuum.list_runs(where: [{:eq, [:attributes, :customer_tier], 4}])
 
     assert {:ok, %{entries: [%{run_id: ^string_id}]}} =
-             Continuum.query(where: [{:eq, [:attributes, :customer_tier], "4"}])
+             Continuum.list_runs(where: [{:eq, [:attributes, :customer_tier], "4"}])
 
     Repo.query!("SET LOCAL enable_seqscan = off")
 
@@ -157,13 +157,13 @@ defmodule Continuum.QueryTest do
     string_id = insert_run!(%{}, %{customer: %{profile: %{tier: "4"}}})
 
     assert {:ok, %{entries: [%{run_id: ^number_id}]}} =
-             Continuum.query(where: [{:eq, [:attributes, :customer, :profile, :tier], 4}])
+             Continuum.list_runs(where: [{:eq, [:attributes, :customer, :profile, :tier], 4}])
 
     assert {:ok, %{entries: [%{run_id: ^string_id}]}} =
-             Continuum.query(where: [{:eq, [:attributes, :customer, :profile, :tier], "4"}])
+             Continuum.list_runs(where: [{:eq, [:attributes, :customer, :profile, :tier], "4"}])
 
     assert {:ok, %{entries: [%{run_id: ^string_id}]}} =
-             Continuum.query(where: [{:neq, [:attributes, :customer, :profile, :tier], 4}])
+             Continuum.list_runs(where: [{:neq, [:attributes, :customer, :profile, :tier], 4}])
   end
 
   test "can omit, cap, and redact decoded run payloads" do
@@ -195,7 +195,7 @@ defmodule Continuum.QueryTest do
     assert run.attributes == %{"region" => "eu", "customer_tier" => 4}
 
     assert {:ok, page} =
-             Continuum.query(where: [{:eq, [:attributes, :customer_tier], 4}])
+             Continuum.list_runs(where: [{:eq, [:attributes, :customer_tier], 4}])
 
     assert [%{run_id: ^run_id}] = page.entries
     assert Repo.aggregate(Event, :count) == 0
@@ -203,7 +203,7 @@ defmodule Continuum.QueryTest do
 
   test "rejects invalid query fields and non JSON attributes" do
     assert {:error, {:invalid_field, :missing}} =
-             Continuum.query(where: [{:eq, :missing, "x"}])
+             Continuum.list_runs(where: [{:eq, :missing, "x"}])
 
     assert {:error, {:invalid_json, _reason}} =
              Continuum.set_attributes(Ecto.UUID.generate(), %{bad: self()})
@@ -222,5 +222,29 @@ defmodule Continuum.QueryTest do
       )
 
     run_id
+  end
+
+  test "the deprecated query/1,2 names still delegate to list_runs" do
+    # `query/1,2` are reserved for a per-run named read (v0.10), which could
+    # only be told apart from a paginated row search by a first-argument guard
+    # once the API freezes. They stay as deprecated delegates for one release.
+    # Called through `apply/3` so this test does not emit the deprecation
+    # warning it exists to prove is there.
+    assert apply(Continuum, :query, [[per_page: 1]]) == Continuum.list_runs(per_page: 1)
+
+    assert apply(Continuum, :query, [Continuum, [per_page: 1]]) ==
+             Continuum.list_runs(Continuum, per_page: 1)
+
+    assert {:docs_v1, _, _, _, _, _, docs} = Code.fetch_docs(Continuum)
+
+    for arity <- [1, 2] do
+      assert Enum.any?(docs, fn
+               {{:function, :query, ^arity}, _line, _sig, _doc, meta} ->
+                 meta[:deprecated] =~ "list_runs"
+
+               _entry ->
+                 false
+             end)
+    end
   end
 end

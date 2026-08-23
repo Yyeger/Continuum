@@ -163,7 +163,7 @@ defmodule ContinuumExampleOrders.SmokeTest do
   defp query_runs!(workflow_opts, opts) do
     opts = Keyword.merge([instance: Keyword.fetch!(workflow_opts, :instance)], opts)
 
-    case Continuum.query(opts) do
+    case Continuum.list_runs(opts) do
       {:ok, page} -> page
       {:error, reason} -> raise "query failed: #{inspect(reason)}"
     end

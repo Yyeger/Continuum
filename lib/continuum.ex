@@ -315,24 +315,41 @@ defmodule Continuum do
   end
 
   @doc """
-  Query durable runs with a closed, structured query spec.
+  List durable runs with a closed, structured query spec.
 
   See `Continuum.Query` for supported `:where`, `:order_by`, and pagination
-  options. Querying requires a Postgres-backed Continuum instance.
+  options. Listing requires a Postgres-backed Continuum instance.
   """
-  @spec query(keyword()) :: {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
-  def query(opts \\ []) do
+  @doc since: "0.8.0"
+  @spec list_runs(keyword()) :: {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
+  def list_runs(opts \\ []) do
     Continuum.Query.list(opts)
   end
 
   @doc """
-  Query durable runs for a named Continuum instance.
+  List durable runs for a named Continuum instance.
   """
-  @spec query(atom() | Continuum.Runtime.Instance.t(), keyword()) ::
+  @doc since: "0.8.0"
+  @spec list_runs(atom() | Continuum.Runtime.Instance.t(), keyword()) ::
           {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
-  def query(instance, opts) do
+  def list_runs(instance, opts) do
     Continuum.Query.list(Keyword.put(opts, :instance, instance))
   end
+
+  @doc """
+  Deprecated. Use `list_runs/1`.
+  """
+  @deprecated "Use Continuum.list_runs/1 instead"
+  @spec query(keyword()) :: {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
+  def query(opts \\ []), do: list_runs(opts)
+
+  @doc """
+  Deprecated. Use `list_runs/2`.
+  """
+  @deprecated "Use Continuum.list_runs/2 instead"
+  @spec query(atom() | Continuum.Runtime.Instance.t(), keyword()) ::
+          {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
+  def query(instance, opts), do: list_runs(instance, opts)
 
   @doc """
   Load one durable run by id. Pass `namespace: expected_namespace` to reject a

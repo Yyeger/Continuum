@@ -4,7 +4,7 @@ Continuum returns stable structs for its primary read and lifecycle surfaces:
 
 ```elixir
 {:ok, %Continuum.Run{} = run} = Continuum.get_run(run_id)
-{:ok, %Continuum.Page{entries: runs}} = Continuum.query(per_page: 25)
+{:ok, %Continuum.Page{entries: runs}} = Continuum.list_runs(per_page: 25)
 %Continuum.Readiness{ready?: ready?} = Continuum.readiness()
 ```
 

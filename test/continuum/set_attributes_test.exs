@@ -30,7 +30,7 @@ defmodule Continuum.SetAttributesTest do
 
     assert :ok = Continuum.set_attributes(run_id, %{region: "us", plan: "pro"})
 
-    assert {:ok, page} = Continuum.query(where: [{:eq, [:attributes, "plan"], "pro"}])
+    assert {:ok, page} = Continuum.list_runs(where: [{:eq, [:attributes, "plan"], "pro"}])
     assert [%{run_id: ^run_id, attributes: %{"region" => "us", "plan" => "pro"}}] = page.entries
     assert Repo.aggregate(Event, :count) == 0
   end
