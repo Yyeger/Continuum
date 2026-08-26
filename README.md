@@ -7,16 +7,148 @@
 [![Documentation](https://img.shields.io/badge/hexdocs-docs-8e44ad.svg)](https://hexdocs.pm/continuum)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/Yyeger/Continuum/blob/main/LICENSE)
 
-**Continuum is a durable execution engine for Elixir.** Write a multi-step
-business process as straight-line Elixir code; failures, restarts, and node
-death cause the workflow to resume *exactly where it left off* with identical
-state, by replaying its event history through the same pure orchestration code.
+**Continuum lets an Elixir function survive your application crashing halfway
+through it.**
 
-It is OTP-native and Postgres-backed — no separate cluster service, no paid
-SaaS dependency, no polyglot SDK. Continuum lives in your application's
-supervision tree and uses the database you already run.
+```elixir
+def run(%{order_id: id, items: items}) do
+  {:ok, validated} = activity Validation.check(items)
+  {:ok, charge}    = activity Payments.charge(id, validated.total)
 
-## Why Continuum
+  # ─── kill -9 the entire VM right here ───
+
+  {:ok, shipment}  = activity Fulfillment.ship(id)
+  {:ok, %{charge: charge, shipment: shipment}}
+end
+```
+
+Kill the node on that middle line and nothing is lost and nothing is repeated.
+The process is gone; the *run* is not. A new VM picks the run up, executes
+`run/1` again from the top, replays the charge out of the journal instead of
+calling the payment gateway a second time, and carries on into `ship`.
+
+Continuum is a durable execution engine — Temporal's programming model, but
+OTP-native and Postgres-backed. No separate cluster service, no paid SaaS
+dependency, no polyglot SDK. It lives in your application's supervision tree
+and uses the database you already run.
+
+## See it happen
+
+`mix continuum.demo` is not a diagram. It runs that workflow against a real
+Postgres, and then really kills the BEAM.
+
+![Continuum surviving a hard crash mid-workflow](https://raw.githubusercontent.com/Yyeger/Continuum/main/dev/demo/continuum-demo.gif)
+
+What you just watched, in order:
+
+1. Start a checkout run.
+2. `ChargeCard` executes and commits its result to the journal.
+3. `:erlang.halt/1` — no graceful shutdown, no `terminate/2`, no cleanup.
+4. Start a **brand new** VM.
+5. Boot recovery and the dispatcher find a run leased by a node that no longer exists.
+6. The workflow body runs again from its first line — and the charge does **not** happen again.
+7. `ShipOrder` runs for the first time, and the run completes.
+
+```bash
+docker compose up -d              # Postgres on localhost:5433
+mix continuum.demo                # phase 1: charge the card, then kill the VM
+mix continuum.demo --resume       # phase 2: replay, ship, never re-charge
+```
+
+<details>
+<summary>The same demo as plain text, if your client blocks GIFs</summary>
+
+```text
+$ mix continuum.demo
+
+── phase 1 — a checkout that dies halfway through ────────────────────
+[demo] starting checkout for order #123 (4200 cents)
+
+[continuum] run ac7e3425 started
+[workflow] checkout started
+[continuum] activity scheduled: ContinuumDemo.ChargeCard.run
+[continuum] run ac7e3425 suspended — waiting on durable work
+[continuum] activity completed: ContinuumDemo.ChargeCard.run
+[workflow] card charged pay_5b1a7dbe
+
+[demo] *** KILLING THE BEAM (erlang:halt/1, no shutdown, no cleanup) ***
+[demo] the shipment has not been scheduled — the charge is already journaled
+
+
+$ mix continuum.demo --resume
+
+── phase 2 — a brand new VM picks the run back up ────────────────────
+[continuum] found run ac7e3425 in state=suspended, leased by a node that no longer exists
+
+── continuum_events for run ac7e3425 ─────────────────────────────────
+   0  18:09:44.495  workflow_log          %{message: "checkout started", ...}
+   1  18:09:44.498  activity_scheduled    %{mfa: {ContinuumDemo.ChargeCard, :run, ...}}
+   2  18:09:45.488  activity_completed    %{mfa: {ContinuumDemo.ChargeCard, :run, ...}}
+   3  18:09:45.505  workflow_log          %{message: "card charged pay_5b1a7dbe", ...}
+
+[demo] the charge is already journaled, so replay will not re-run it
+
+[continuum] dispatcher claimed 1 orphaned run(s) — lease had expired
+[continuum] run ac7e3425 resumed — replaying its journal from event 0
+[continuum] activity scheduled: ContinuumDemo.ShipOrder.run
+[continuum] activity completed: ContinuumDemo.ShipOrder.run
+[workflow] order shipped ship_c66c1cbb
+[continuum] run ac7e3425 completed
+
+[demo] this VM took 1.2s to finish someone else's work
+
+── verdict ───────────────────────────────────────────────────────────
+  ✓ card charged exactly once — 1 CHARGE line(s) in the ledger
+  ✓ order shipped exactly once — 1 SHIP line(s) in the ledger
+  ✓ replay stayed silent — this VM printed 1 workflow log line, not the 3 in the journal
+  ✓ the whole function body ran again, harmlessly — run/1 executed twice;
+    its side effects executed once each
+
+The function survived the VM dying halfway through it.
+```
+
+</details>
+
+The demo's activities append to `tmp/continuum_demo/ledger.log`, which stands in
+for the outside world. That file, not the log lines, is the actual claim:
+
+```text
+2026-08-26T18:09:45.486Z  CHARGE  order=123 payment=pay_5b1a7dbe cents=4200
+2026-08-26T18:10:07.132Z  SHIP    order=123 shipment=ship_c66c1cbb
+```
+
+One `CHARGE`. `ChargeCard` deliberately declares **no** idempotency key, so
+nothing deduplicated a second call to the gateway — there was no second call.
+
+Run `mix continuum.demo --observer` in a second terminal to watch the same
+journal fill in through the Observer LiveView while it happens, and
+`mix continuum.demo --help` for the rest. The workflow, the activities, and the
+kill switch are about 150 lines in [`dev/demo/`](https://github.com/Yyeger/Continuum/tree/main/dev/demo).
+
+## Why this works
+
+`run/1` is a pure function of its journal. Every effect — `activity`,
+`await signal`, `timer`, `Continuum.now/0`, even `Continuum.log/2` — goes through
+one bridge that either **replays** the recorded result sitting at the current
+cursor, or **suspends** the run to go produce a new one. Re-executing the body
+from the top is therefore free of side effects right up to the point where
+history ends.
+
+That only holds if the code *between* effects is deterministic, so Continuum
+does not ask you to be careful about it. A compile-time AST scanner rejects
+`DateTime.utc_now/0`, `:rand.uniform/0`, `:ets.*`, `send/2`, `File.*`, `Logger.*`
+and friends inside workflow code, each with a remediation hint naming the
+replacement. Every cursor position also carries a structured identity
+(`{kind, module, function, line, hash, ordinal}`), so editing a workflow under a
+run that is mid-flight raises a loud `Continuum.ReplayDriftError` instead of
+silently taking a different branch than the one that was journaled.
+
+Postgres is the only moving part — journal, lease store, timer wheel, and signal
+bus. Every write is a compare-and-set on a fencing token, so a node you thought
+was dead cannot come back and write into the history of a run somebody else has
+already taken over.
+
+## What you get
 
 Continuum is to durable execution what Phoenix is to web and Oban is to job
 queues: the obvious answer to *"how do I run a multi-step business process that
@@ -234,16 +366,17 @@ scope "/admin" do
 end
 ```
 
-To see the UI locally, the repo bundles a self-contained demo:
+To see the UI locally, run the crash demo's read-only Observer node:
 
 ```bash
 docker compose up -d
-MIX_ENV=test iex -S mix run dev/observer_demo.exs
-# then open http://localhost:4000/continuum
+mix continuum.demo --observer     # http://localhost:4000/continuum
 ```
 
-The demo seeds three runs in different states and prints iex helpers for
-spawning more, sending signals, and cancelling. See
+Leave it running in one terminal and drive `mix continuum.demo` /
+`mix continuum.demo --resume` in another: the run appears, stalls with a dead
+node's lease on it, and then completes under a different owner. That pane starts
+no dispatcher, so it watches rather than resuming the run itself. See
 [`guides/observer.md`](https://github.com/Yyeger/Continuum/blob/main/guides/observer.md) for production mount instructions.
 
 ## Documentation
@@ -287,6 +420,7 @@ mix compile --warnings-as-errors
 mix test                              # unit + integration suite
 mix test.cluster                      # real :peer cluster tests (run separately)
 mix format
+mix continuum.demo --help             # the crash-recovery demo
 ```
 
 ## License

@@ -125,6 +125,10 @@ defmodule Continuum.MixProject do
       "test.setup": ["ecto.drop --quiet", "ecto.create --quiet", "ecto.migrate --quiet"],
       "test.cluster": ["cmd env CONTINUUM_CLUSTER_TEST=1 mix test --only cluster test/cluster"],
       "docs.check": ["docs", "run ci/check_doc_links.exs"],
+      # The README's crash-recovery demo. `--no-start` so dev/demo/support.exs
+      # can load the workflow module before the runtime's version registry and
+      # dispatcher come up.
+      "continuum.demo": ["run --no-start dev/demo/demo.exs"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
     ]
   end
