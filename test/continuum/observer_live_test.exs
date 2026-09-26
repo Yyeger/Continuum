@@ -105,6 +105,32 @@ defmodule Continuum.ObserverLiveTest do
     assert html =~ ~s(<details class="co-payload">)
   end
 
+  test "run detail renders asynchronous replay diagnostics" do
+    {:ok, id} = Continuum.Test.start_postgres(SideEffectFlow, %{value: 17})
+    assert {:ok, _} = await_postgres(id)
+    {:ok, view, _html} = live(build_conn(), "/continuum/runs/#{id}")
+    view |> element("#co-replay-run") |> render_click()
+    html = render_async(view)
+    assert html =~ "Stored result agreement"
+    assert html =~ "Matches"
+    assert html =~ "Not used"
+    assert has_element?(view, "#co-replay-result")
+    assert has_element?(view, "#co-replay-detail")
+  end
+
+  test "host authorization hooks protect replay access on the run page" do
+    {:ok, id} = Continuum.Test.start_postgres(SideEffectFlow, %{value: 18})
+    assert {:ok, _} = await_postgres(id)
+
+    assert {:error, {:redirect, %{to: "/login"}}} =
+             live(build_conn(), "/guarded-continuum/runs/#{id}")
+
+    conn = init_test_session(build_conn(), %{"observer_allowed" => true})
+    {:ok, view, _html} = live(conn, "/guarded-continuum/runs/#{id}")
+    view |> element("#co-replay-run") |> render_click()
+    assert render_async(view) =~ "Matches"
+  end
+
   test "run detail renders latest activity progress" do
     {:ok, run_id} = Continuum.Test.start_postgres(SideEffectFlow, %{value: 5})
     assert {:ok, %{state: :completed}} = await_postgres(run_id)

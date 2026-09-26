@@ -2751,7 +2751,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
     {Continuum.EventType.to_string!(type), payload}
   end
 
-  defp decode_event(%Event{event_type: event_type, payload: payload, seq: seq}) do
+  @doc false
+  def decode_event(%Event{event_type: event_type, payload: payload, seq: seq}) do
     decoded = decode_term(payload)
     type = Continuum.EventType.from_string!(event_type)
 

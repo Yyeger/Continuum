@@ -25,6 +25,8 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
         |> assign(:signal_contracts, nil)
         |> assign(:signal_payload, "{}")
         |> assign(:event_cursor, nil)
+        |> assign(:replay_status, :idle)
+        |> assign(:replay_report, nil)
         |> load_run()
 
       {:ok, socket}
@@ -74,6 +76,34 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
 
     def handle_event("load-events", _params, socket) do
       {:noreply, load_more_events(socket)}
+    end
+
+    def handle_event("replay", _params, %{assigns: %{replay_status: :running}} = socket),
+      do: {:noreply, socket}
+
+    def handle_event("replay", _params, socket) do
+      run_id = socket.assigns.run_id
+      instance = socket.assigns.instance
+
+      {:noreply,
+       socket
+       |> assign(:replay_status, :running)
+       |> assign(:replay_report, nil)
+       |> start_async(:replay, fn ->
+         Continuum.Observer.replay_report(run_id, instance: instance)
+       end)}
+    end
+
+    @impl true
+    def handle_async(:replay, {:ok, result}, socket) do
+      {:noreply, socket |> assign(:replay_status, :finished) |> assign(:replay_report, result)}
+    end
+
+    def handle_async(:replay, {:exit, _reason}, socket) do
+      {:noreply,
+       socket
+       |> assign(:replay_status, :finished)
+       |> assign(:replay_report, {:error, :replay_failed})}
     end
 
     @impl true
@@ -144,6 +174,29 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
             </form>
           </section>
 
+          <section id="co-replay">
+            <h2>Replay diagnostics</h2>
+            <p>Compare recorded history with the run's workflow code. Replay does not execute activities or change the run.</p>
+            <button id="co-replay-run" phx-click="replay" disabled={@replay_status == :running}>
+              <%= if @replay_status == :running, do: "Replaying…", else: "Replay history" %>
+            </button>
+            <%= case @replay_report do %>
+              <% {:ok, report} -> %>
+                <dl id="co-replay-result">
+                  <dt>Outcome</dt><dd><%= report.outcome %></dd>
+                  <dt>Workflow version</dt><dd><code><%= report.version_hash %></code></dd>
+                  <dt>Resolved code</dt><dd><code><%= inspect(report.entrypoint) %></code></dd>
+                  <dt>Events loaded</dt><dd><%= report.event_count %></dd>
+                  <dt>Snapshot</dt><dd><%= if report.snapshot, do: "Used through event #{report.snapshot.through_seq}", else: "Not used" %></dd>
+                  <dt>Stored result agreement</dt><dd><%= agreement(report.agrees_with_stored_result?) %></dd>
+                </dl>
+                <pre id="co-replay-detail"><%= Continuum.Observer.pretty(report.detail) %></pre>
+              <% {:error, reason} -> %>
+                <p id="co-replay-error" role="alert">Replay unavailable: <%= Continuum.Observer.pretty(reason) %></p>
+              <% nil -> %>
+            <% end %>
+          </section>
+
           <section :if={@activities != []}>
             <h2>Activities</h2>
             <ol class="co-timeline co-activities">
@@ -186,6 +239,10 @@ if Code.ensure_loaded?(Phoenix.LiveView) do
       </main>
       """
     end
+
+    defp agreement(true), do: "Matches"
+    defp agreement(false), do: "Does not match"
+    defp agreement(nil), do: "Not applicable"
 
     defp load_run(socket) do
       run_id = socket.assigns.run_id

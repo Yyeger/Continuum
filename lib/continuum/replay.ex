@@ -114,9 +114,9 @@ defmodule Continuum.Replay do
   def of_run(run_id, opts \\ []) when is_binary(run_id) do
     instance = resolve_instance(opts)
 
-    with {:ok, run} <- fetch_run(instance, run_id),
-         {:ok, entrypoint} <- resolve_entrypoint(run, opts) do
-      {snapshot, events} = replay_history(instance, run_id, entrypoint, opts)
+    with {:ok, run} <- fetch_run(instance, run_id, opts),
+         {:ok, entrypoint} <- resolve_entrypoint(run, opts),
+         {:ok, {snapshot, events}} <- load_history(instance, run_id, entrypoint, opts) do
       input = Continuum.DurableTerm.decode!(run.input)
 
       outcome =
@@ -129,6 +129,12 @@ defmodule Continuum.Replay do
 
       {:ok, build_report(run, entrypoint, events, snapshot, outcome, opts)}
     end
+  end
+
+  defp load_history(instance, run_id, entrypoint, opts) do
+    if opts[:limits],
+      do: Continuum.Replay.BoundedHistory.load(instance, run_id, entrypoint, opts),
+      else: {:ok, replay_history(instance, run_id, entrypoint, opts)}
   end
 
   # ---------------------------------------------------------------------------
@@ -292,9 +298,15 @@ defmodule Continuum.Replay do
     end
   end
 
-  defp fetch_run(%{repo: nil}, _run_id), do: {:error, :no_repo}
+  defp fetch_run(%{repo: nil}, _run_id, _opts), do: {:error, :no_repo}
 
-  defp fetch_run(instance, run_id) do
+  defp fetch_run(instance, run_id, opts) do
+    if opts[:limits],
+      do: Continuum.Replay.BoundedHistory.fetch_run(instance, run_id, opts[:limits]),
+      else: fetch_unbounded_run(instance, run_id)
+  end
+
+  defp fetch_unbounded_run(instance, run_id) do
     case instance.repo.one(from(r in Run, where: r.id == ^run_id)) do
       nil -> {:error, {:run_not_found, run_id}}
       run -> {:ok, run}

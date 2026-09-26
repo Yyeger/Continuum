@@ -98,6 +98,24 @@ defmodule Continuum.Observer do
   end
 
   @doc """
+  Produces a read-only replay report with bounded work for the Observer.
+
+  Runs in an isolated worker and applies the configured Observer redactor to
+  reported results and diagnostics. Defaults: 2 seconds, 2,000 events, 8 MiB
+  combined encoded snapshot/history, and 64 KiB per input/result/event payload.
+  Options `:timeout_ms`, `:max_events`, `:max_history_bytes`, and
+  `:max_payload_bytes` may raise these up to 5 seconds, 10,000 events, 16 MiB,
+  and 1 MiB respectively. Oversized data is refused before transferring it
+  from PostgreSQL. A heap limit also bounds decoded data in the worker.
+
+  Accepts the instance, snapshot, against-module, and redactor options from
+  `Continuum.Replay.of_run/2`. This helper provides no independent authorization;
+  call it behind the same host authorization as the run detail view.
+  """
+  @spec replay_report(binary(), keyword()) :: {:ok, map()} | {:error, term()}
+  def replay_report(run_id, opts \\ []), do: Continuum.Observer.ReplayReport.run(run_id, opts)
+
+  @doc """
   Builds the operational health report shown by the Observer health panel.
   """
   @spec health(keyword()) :: {:ok, map()} | {:error, term()}

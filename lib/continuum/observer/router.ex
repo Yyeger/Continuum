@@ -20,6 +20,8 @@ defmodule Continuum.Observer.Router do
   Options:
 
     * `:instance` - Continuum instance name. Defaults to `Continuum`.
+    * `:on_mount` - host authentication/authorization hooks passed to the
+      LiveView session, including reconnects and replay diagnostics.
     * `:layout` - Optional `{Module, :function}` LiveView layout passed through
       to `Phoenix.LiveView.Router.live_session/3`. Use this when you need a
       custom HTML chrome around the Observer (for example to load the LV.js
@@ -47,6 +49,7 @@ defmodule Continuum.Observer.Router do
       end
 
     layout_ast = Macro.escape(layout)
+    on_mount = Keyword.get(opts, :on_mount, [])
 
     quote do
       scoped_base = Phoenix.Router.scoped_path(__MODULE__, unquote(base))
@@ -54,9 +57,9 @@ defmodule Continuum.Observer.Router do
 
       live_session_opts =
         if unquote(layout_ast) do
-          [session: session, layout: unquote(layout_ast)]
+          [session: session, layout: unquote(layout_ast), on_mount: unquote(on_mount)]
         else
-          [session: session]
+          [session: session, on_mount: unquote(on_mount)]
         end
 
       Phoenix.LiveView.Router.live_session :"continuum_observer_#{:erlang.phash2(scoped_base)}",

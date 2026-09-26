@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add asynchronous, read-only replay reports to Observer run details, including
+  drift, stored-result agreement, code resolution, and snapshot use. Database
+  reads, execution time, and worker memory are bounded; report payloads use the
+  Observer redactor. Router `on_mount:` hooks support host LiveView authorization.
+
 - Add recurring UTC interval schedules with separate durable definitions and
   occurrences, required overlap/missed policies, bounded catch-up, and
   list/inspect/pause/resume APIs. Existing schedule retries retain occurrence
