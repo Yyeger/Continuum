@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Encode `nil` workflow inputs as durable terms rather than SQL NULL, including
+  atomic ingress, recurring occurrences, child runs, and continuations.
+
 - Add asynchronous, read-only replay reports to Observer run details, including
   drift, stored-result agreement, code resolution, and snapshot use. Database
   reads, execution time, and worker memory are bounded; report payloads use the

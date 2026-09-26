@@ -2843,6 +2843,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp encode_term(term, root \\ :value)
+  defp encode_term(nil, :input), do: :erlang.term_to_binary(nil)
   defp encode_term(nil, _root), do: nil
 
   defp encode_term(term, root) do

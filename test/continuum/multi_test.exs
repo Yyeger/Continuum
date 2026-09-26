@@ -74,6 +74,16 @@ defmodule Continuum.MultiTest do
     refute Repo.exists?(from(k in RunIngressKey, where: k.run_id == ^id))
   end
 
+  test "nil is a durable input rather than a missing database value" do
+    multi = Continuum.Multi.enqueue(Ecto.Multi.new(), :workflow, Flow, nil)
+    assert {:ok, %{workflow: %{run_id: id}}} = Repo.transaction(multi)
+    assert is_binary(Repo.get!(Run, id).input)
+    assert Continuum.DurableTerm.decode!(Repo.get!(Run, id).input) == nil
+    assert {:ok, 1} = Dispatcher.dispatch_once()
+    assert {:ok, %{result: nil}} = Continuum.await(id, 1_000)
+    assert {:ok, %{agrees_with_stored_result?: true}} = Continuum.Observer.replay_report(id)
+  end
+
   test "duplicates return a stable root without aborting the surrounding transaction" do
     multi =
       Ecto.Multi.new()

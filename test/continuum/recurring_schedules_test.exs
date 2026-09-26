@@ -146,6 +146,19 @@ defmodule Continuum.RecurringSchedulesTest do
              create(DateTime.utc_now(), missed: :catch_up, max_catch_up: 0)
   end
 
+  test "recurring occurrences can start with a nil input" do
+    {:ok, id} =
+      Continuum.schedule_every(Flow, nil, 60_000,
+        starts_at: DateTime.add(DateTime.utc_now(), -1, :second),
+        overlap: :allow,
+        missed: :skip
+      )
+
+    assert {:ok, 1} = ScheduleRunner.dispatch_once()
+    [occurrence] = occurrences(id)
+    assert {:ok, %{result: nil}} = Continuum.await(occurrence.run_id, 1_000, journal: Postgres)
+  end
+
   defp create(first, opts),
     do:
       Continuum.schedule_every(
