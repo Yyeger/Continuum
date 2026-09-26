@@ -115,6 +115,22 @@ defmodule Mix.Tasks.Continuum.GcVersionsTest do
     |> Repo.insert!()
   end
 
+  test "paused recurring definitions retain their pinned version", %{current: current} do
+    {:ok, id} =
+      Continuum.schedule_every(CurrentFlow, :input, 60_000, overlap: :skip, missed: :skip)
+
+    :ok = Continuum.Schedules.pause_recurring(id)
+    hash = "paused-definition-version"
+    insert_version(current.workflow_string, hash, "OldRecurringFlow")
+
+    Repo.update_all(from(s in Continuum.Schema.RecurringSchedule, where: s.id == ^id),
+      set: [version_hash: hash]
+    )
+
+    Mix.Task.rerun("continuum.gc_versions", ["--repo", "Continuum.Test.Repo", "--execute"])
+    assert version_exists?(current.workflow_string, hash)
+  end
+
   defp insert_run(workflow, version_hash, state) do
     %Run{}
     |> Ecto.Changeset.change(%{

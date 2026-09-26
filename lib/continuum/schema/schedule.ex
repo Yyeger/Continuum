@@ -7,6 +7,8 @@ defmodule Continuum.Schema.Schedule do
 
   schema "continuum_schedules" do
     field(:run_id, :binary_id)
+    field(:recurring_schedule_id, :binary_id)
+    field(:occurrence_at, :utc_datetime_usec)
     field(:workflow, :string)
     field(:version_hash, :binary)
     field(:input, :binary)

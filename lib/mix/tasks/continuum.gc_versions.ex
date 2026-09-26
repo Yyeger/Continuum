@@ -6,7 +6,8 @@ defmodule Mix.Tasks.Continuum.GcVersions do
       mix continuum.gc_versions --repo MyApp.Repo --execute
 
   The task is a dry run by default. A workflow-version row is deletable only
-  when no non-terminal run references it and it is not one of the loaded
+  when no non-terminal run, pending occurrence, or recurring definition
+  references it and it is not one of the loaded
   versions registered in the current BEAM.
   """
   use Mix.Task
@@ -62,7 +63,7 @@ defmodule Mix.Tasks.Continuum.GcVersions do
 
       Mix.shell().info(
         "#{workflow}: #{length(versions)} versions, #{MapSet.size(loaded_hashes)} loaded, " <>
-          "#{MapSet.size(pinned_hashes)} pinned by non-terminal runs, " <>
+          "#{MapSet.size(pinned_hashes)} pinned by non-terminal runs or schedules, " <>
           "#{length(candidates)} candidates"
       )
 
@@ -94,7 +95,12 @@ defmodule Mix.Tasks.Continuum.GcVersions do
         )
       )
 
-    rows
+    schedules =
+      repo
+      |> Continuum.Versions.schedule_requirements()
+      |> Enum.map(&{&1.workflow, &1.version_hash})
+
+    (rows ++ schedules)
     |> Enum.group_by(fn {workflow, _hash} -> workflow end, fn {_workflow, hash} -> hash end)
     |> Map.new(fn {workflow, hashes} -> {workflow, MapSet.new(hashes)} end)
   end

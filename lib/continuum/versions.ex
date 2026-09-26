@@ -3,13 +3,14 @@ defmodule Continuum.Versions do
   Deployment preflight for workflow versions required by live runs.
 
   A release is ready only when every distinct `(workflow, version_hash)` used
-  by a non-terminal run resolves to a loaded entrypoint in the current BEAM.
+  by a non-terminal run, pending occurrence, or recurring definition resolves
+  to a loaded entrypoint in the current BEAM. Paused definitions still pin code.
   """
 
   import Ecto.Query
 
   alias Continuum.Runtime.Instance
-  alias Continuum.Schema.Run
+  alias Continuum.Schema.{RecurringSchedule, Run, Schedule}
 
   @non_terminal_states ~w(running suspended stuck_unknown_version)
 
@@ -17,6 +18,7 @@ defmodule Continuum.Versions do
           workflow: String.t(),
           version_hash: binary(),
           run_count: non_neg_integer(),
+          schedule_count: non_neg_integer(),
           oldest_started_at: DateTime.t() | nil,
           entrypoint: module() | nil,
           status: :loaded | :missing
@@ -53,7 +55,24 @@ defmodule Continuum.Versions do
             }
           )
         )
-        |> Enum.map(&classify_requirement(&1, manifest))
+        |> Enum.map(&Map.put(&1, :schedule_count, 0))
+        |> Kernel.++(schedule_requirements(instance.repo))
+        |> Enum.group_by(&{&1.workflow, &1.version_hash})
+        |> Enum.map(fn {_key, entries} ->
+          entries
+          |> hd()
+          |> Map.put(:run_count, Enum.sum(Enum.map(entries, & &1.run_count)))
+          |> Map.put(:schedule_count, Enum.sum(Enum.map(entries, & &1.schedule_count)))
+          |> Map.put(
+            :oldest_started_at,
+            entries
+            |> Enum.map(& &1.oldest_started_at)
+            |> Enum.reject(&is_nil/1)
+            |> Enum.min(DateTime, fn -> nil end)
+          )
+          |> classify_requirement(manifest)
+        end)
+        |> Enum.sort_by(&{&1.workflow, &1.version_hash})
 
       missing_count = Enum.count(requirements, &(&1.status == :missing))
       required_count = length(requirements)
@@ -69,6 +88,29 @@ defmodule Continuum.Versions do
     end
   rescue
     error -> {:error, error}
+  end
+
+  @doc false
+  def schedule_requirements(repo) do
+    queries = [
+      from(s in RecurringSchedule, where: s.state in ["active", "paused"]),
+      from(s in Schedule, where: s.state in ["scheduled", "starting"])
+    ]
+
+    Enum.flat_map(queries, fn query ->
+      repo.all(
+        from(s in query,
+          group_by: [s.workflow, s.version_hash],
+          select: %{
+            workflow: s.workflow,
+            version_hash: s.version_hash,
+            run_count: 0,
+            schedule_count: count(s.id),
+            oldest_started_at: nil
+          }
+        )
+      )
+    end)
   end
 
   defp loaded_manifest(instance) do

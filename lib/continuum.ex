@@ -253,6 +253,18 @@ defmodule Continuum do
   end
 
   @doc """
+  Creates a durable recurring UTC interval schedule.
+
+  See `Continuum.RecurringSchedules.create/4` for required overlap and missed
+  policies, catch-up bounds, and first-occurrence options. Inspect and manage
+  the definition through `Continuum.Schedules`.
+  """
+  @spec schedule_every(workflow_module(), input(), pos_integer(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def schedule_every(workflow_module, input, every_ms, opts \\ []),
+    do: Continuum.Schedules.every(workflow_module, input, every_ms, opts)
+
+  @doc """
   Deliver a signal to a running workflow. Signal payloads must not contain
   PIDs, references, ports, or functions.
   """

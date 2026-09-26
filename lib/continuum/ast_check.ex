@@ -105,6 +105,8 @@ defmodule Continuum.AstCheck do
     {Process, :exit} => "process mutation is non-deterministic; wrap in an activity",
     {Continuum, :start} =>
       "start root workflows outside workflow code; use await(child(MyWorkflow.run(input))) for children",
+    {Continuum, :schedule_every} =>
+      "create recurring schedules outside workflow code or through an activity",
     {Continuum, :signal} =>
       "signal/3 is a side effect; use activity(MyActivities.signal(run_id, name, payload))",
     {Continuum, :__generate_uuid4__} => "use Continuum.uuid4/0",
@@ -263,6 +265,8 @@ defmodule Continuum.AstCheck do
   # per-function hints above still win; this catches the rest of the module
   # without enumerating it (`:ets.select/2`, `File.rm_rf/1`, and so on).
   @forbidden_modules %{
+    Continuum.RecurringSchedules => "schedule operations bypass the journal; use an activity",
+    Continuum.Schedules => "schedule operations bypass the journal; use an activity",
     File => "file system access bypasses the journal; wrap in an activity",
     :file => "file system access bypasses the journal; wrap in an activity",
     :ets => "ETS bypasses the journal; wrap in an activity",

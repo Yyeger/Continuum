@@ -32,7 +32,8 @@ defmodule Continuum.Runtime.ScheduleRunner do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     batch_size = Keyword.get(opts, :batch_size, @default_batch_size)
 
-    with {:ok, schedules} <- claim(instance, batch_size) do
+    with {:ok, _count} <- Continuum.RecurringSchedules.materialize(instance, batch_size),
+         {:ok, schedules} <- claim(instance, batch_size) do
       Enum.each(schedules, &start_schedule(instance, &1))
       {:ok, length(schedules)}
     end
@@ -62,8 +63,6 @@ defmodule Continuum.Runtime.ScheduleRunner do
     schedule_poll(state.interval_ms)
     {:noreply, state}
   end
-
-  defp claim(%Instance{repo: nil}, _batch_size), do: {:error, :repo_not_configured}
 
   defp claim(instance, batch_size) when is_integer(batch_size) and batch_size > 0 do
     sql = """

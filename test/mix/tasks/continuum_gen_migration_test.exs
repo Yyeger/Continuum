@@ -50,6 +50,28 @@ defmodule Mix.Tasks.Continuum.Gen.MigrationTest do
 
       assert source =~ "create table(:continuum_activity_attempts"
       assert source =~ "create table(:continuum_activity_operations"
+      assert source =~ "create table(:continuum_recurring_schedules"
+      assert source =~ "continuum_schedule_occurrence_idx"
+    end)
+  end
+
+  test "generates the recurring schedule upgrade from 0.8.1 with reversible constraints" do
+    in_tmp(fn ->
+      Mix.Task.rerun("continuum.gen.migration", [
+        "--repo",
+        "Continuum.Test.Repo",
+        "--from",
+        "0.8.1"
+      ])
+
+      [path] = Path.wildcard("priv/test_repo/migrations/*_add_continuum_recurring_schedules.exs")
+      source = File.read!(path)
+      assert source =~ "create table(:continuum_recurring_schedules"
+      assert source =~ "continuum_recurring_contract"
+      assert source =~ "continuum_schedule_occurrence_idx"
+      assert source =~ "drop table(:continuum_recurring_schedules)"
+      assert source =~ "remove :recurring_schedule_id"
+      assert {:ok, _ast} = Code.string_to_quoted(source)
     end)
   end
 

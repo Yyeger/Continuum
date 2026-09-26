@@ -7,6 +7,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
       mix continuum.gen.migration --from 0.6.4
       mix continuum.gen.migration --from 0.7.1
       mix continuum.gen.migration --from 0.7.2
+      mix continuum.gen.migration --from 0.8.1
 
   Writes a single migration file under `priv/repo/migrations/` (or whatever
   is configured for your repo) that creates: `continuum_runs`,
@@ -69,10 +70,15 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     {name, upgrade_0_7_2_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
   end
 
+  defp migration("0.8.1", repo) do
+    name = "add_continuum_recurring_schedules"
+    {name, recurring_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
+  end
+
   defp migration(version, _repo) do
     Mix.raise(
       "unsupported Continuum upgrade source #{inspect(version)}; " <>
-        "supported: 0.6.1, 0.6.4, 0.7.1, 0.7.2"
+        "supported: 0.6.1, 0.6.4, 0.7.1, 0.7.2, 0.8.1"
     )
   end
 
@@ -246,6 +252,8 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
           ON continuum_schedules (scheduled_at, id)
           WHERE state IN ('scheduled', 'starting')
         \"\"\"
+
+        #{recurring_up_source()}
 
         execute \"\"\"
         CREATE TABLE continuum_events (
@@ -427,6 +435,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         drop_if_exists table(:continuum_timers)
         drop_if_exists table(:continuum_signals)
         drop_if_exists table(:continuum_events)
+        #{recurring_down_source()}
         drop_if_exists table(:continuum_schedules)
         drop_if_exists table(:continuum_run_ingress_keys)
         drop_if_exists table(:continuum_runs)
@@ -809,6 +818,68 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
         end
       end
     end
+    """
+  end
+
+  defp recurring_source(module_name) do
+    """
+    defmodule #{module_name} do
+      use Ecto.Migration
+      def up do
+        #{recurring_up_source()}
+      end
+      def down do
+        #{recurring_down_source()}
+      end
+    end
+    """
+  end
+
+  defp recurring_up_source do
+    """
+    create table(:continuum_recurring_schedules, primary_key: false) do
+      add :id, :uuid, primary_key: true
+      add :workflow, :text, null: false
+      add :version_hash, :bytea, null: false
+      add :input, :bytea, null: false
+      add :namespace, :text, null: false, default: "default"
+      add :attributes, :map, null: false, default: %{}
+      add :trace_context, :bytea
+      add :every_ms, :bigint, null: false
+      add :next_occurrence_at, :utc_datetime_usec, null: false
+      add :overlap_policy, :text, null: false
+      add :missed_policy, :text, null: false
+      add :max_catch_up, :integer, null: false, default: 10
+      add :state, :text, null: false, default: "active"
+      add :inserted_at, :utc_datetime_usec, null: false, default: fragment("now()")
+    end
+
+    create constraint(:continuum_recurring_schedules, :continuum_recurring_contract,
+      check: "every_ms >= 1000 AND max_catch_up BETWEEN 1 AND 100 AND overlap_policy IN ('allow', 'skip') AND missed_policy IN ('skip', 'catch_up') AND state IN ('active', 'paused')")
+    create index(:continuum_recurring_schedules, [:next_occurrence_at, :id],
+      where: "state = 'active'", name: :continuum_recurring_due_idx)
+
+    alter table(:continuum_schedules) do
+      add :recurring_schedule_id, references(:continuum_recurring_schedules, type: :uuid)
+      add :occurrence_at, :utc_datetime_usec
+    end
+    create unique_index(:continuum_schedules, [:recurring_schedule_id, :occurrence_at],
+      name: :continuum_schedule_occurrence_idx)
+    create constraint(:continuum_schedules, :continuum_schedule_occurrence_pair,
+      check: "(recurring_schedule_id IS NULL) = (occurrence_at IS NULL)")
+    """
+  end
+
+  defp recurring_down_source do
+    """
+    drop constraint(:continuum_schedules, :continuum_schedule_occurrence_pair)
+    drop index(:continuum_schedules, [:recurring_schedule_id, :occurrence_at],
+      name: :continuum_schedule_occurrence_idx)
+    alter table(:continuum_schedules) do
+      remove :occurrence_at
+      remove :recurring_schedule_id
+    end
+    drop table(:continuum_recurring_schedules)
     """
   end
 end

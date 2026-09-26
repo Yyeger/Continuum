@@ -1,6 +1,6 @@
 defmodule Continuum.Schedules do
   @moduledoc """
-  Durable one-shot workflow scheduling.
+  Durable one-shot and UTC interval workflow scheduling.
 
   Schedules preallocate a stable run ID. A runner may retry across any crash
   window, but the same scheduled occurrence can create at most one run.
@@ -10,6 +10,30 @@ defmodule Continuum.Schedules do
 
   alias Continuum.{DurableTerm, Runtime.Instance}
   alias Continuum.Schema.Schedule
+
+  @doc """
+  Creates a recurring UTC interval definition. See `Continuum.RecurringSchedules.create/4`
+  for overlap, missed-occurrence, and catch-up policies.
+  """
+  def every(workflow, input, every_ms, opts \\ []),
+    do: Continuum.RecurringSchedules.create(workflow, input, every_ms, opts)
+
+  @doc "Lists recurring definitions using bounded keyset pagination."
+  def list_recurring(opts \\ []), do: Continuum.RecurringSchedules.list(opts)
+
+  @doc "Loads one recurring definition."
+  def get_recurring(id, opts \\ []), do: Continuum.RecurringSchedules.get(id, opts)
+
+  @doc "Pauses future occurrence generation; existing occurrences keep their current state."
+  def pause_recurring(id, opts \\ []),
+    do: Continuum.RecurringSchedules.set_state(id, :paused, opts)
+
+  @doc "Resumes generation using the definition's recorded missed-occurrence policy."
+  def resume_recurring(id, opts \\ []),
+    do: Continuum.RecurringSchedules.set_state(id, :active, opts)
+
+  @doc "Lists a definition's occurrences, including overlap skips, using bounded pagination."
+  def list_occurrences(id, opts \\ []), do: Continuum.RecurringSchedules.occurrences(id, opts)
 
   @doc "Creates a durable one-shot schedule."
   @spec schedule_at(module(), term(), DateTime.t(), keyword()) ::
@@ -97,18 +121,23 @@ defmodule Continuum.Schedules do
     %{
       id: schedule.id,
       run_id: schedule.run_id,
+      recurring_schedule_id: schedule.recurring_schedule_id,
+      occurrence_at: schedule.occurrence_at,
       workflow: schedule.workflow,
       version_hash: schedule.version_hash,
       input: DurableTerm.decode!(schedule.input),
       namespace: schedule.namespace,
       attributes: schedule.attributes,
       scheduled_at: schedule.scheduled_at,
-      state: Continuum.DurableTerm.atom_from_binary!(schedule.state, :schedule_state),
+      state: decode_state(schedule.state),
       attempt: schedule.attempt,
       started_at: schedule.started_at,
       last_error: schedule.last_error
     }
   end
+
+  defp decode_state("skipped"), do: :skipped
+  defp decode_state(state), do: Continuum.DurableTerm.atom_from_binary!(state, :schedule_state)
 
   defp normalize_namespace(namespace) when is_binary(namespace) and byte_size(namespace) > 0,
     do: namespace

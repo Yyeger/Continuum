@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add recurring UTC interval schedules with separate durable definitions and
+  occurrences, required overlap/missed policies, bounded catch-up, and
+  list/inspect/pause/resume APIs. Existing schedule retries retain occurrence
+  identity. Pending occurrences and paused definitions pin workflow versions.
+  Existing installations need `mix continuum.gen.migration --from 0.8.1`
+  followed by `mix ecto.migrate` before starting the updated runtime.
+
 - Add `activity_map/3` for runtime-sized lists, with explicit bounded scheduling
   windows, ordered results, optional unique member keys, full input fingerprint
   validation, and event/snapshot replay. Existing worker limits, retries, fencing,
