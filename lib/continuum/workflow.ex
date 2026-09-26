@@ -542,9 +542,10 @@ defmodule Continuum.Workflow.BeforeCompile do
     snapshot_threshold = Module.get_attribute(env.module, :continuum_snapshot_threshold)
     signal_contracts = Module.get_attribute(env.module, :continuum_signal_contracts)
     patch_sites = Module.get_attribute(env.module, :continuum_patch_sites) |> Enum.reverse()
-    hash = compute_version_hash(env.module, signal_contracts)
+    definitions = Continuum.CodeIdentity.pin_helpers!(env.module, env)
+    hash = Continuum.CodeIdentity.hash(definitions, signal_contracts)
     generated_module = Module.concat(env.module, :"V_#{hash}")
-    generated_definitions = generated_definitions(env.module, generated_module)
+    generated_definitions = generated_definitions(definitions, env.module, generated_module)
 
     metadata = %{
       module: logical_workflow,
@@ -599,12 +600,9 @@ defmodule Continuum.Workflow.BeforeCompile do
     end
   end
 
-  defp generated_definitions(module, generated_module) do
-    module
-    |> Module.definitions_in()
-    |> Enum.sort()
-    |> Enum.flat_map(fn {name, arity} ->
-      case Module.get_definition(module, {name, arity}) do
+  defp generated_definitions(definitions, module, generated_module) do
+    Enum.flat_map(definitions, fn {{name, _arity}, definition} ->
+      case definition do
         {:v1, kind, _meta, clauses} when kind in [:def, :defp] ->
           Enum.map(clauses, &definition_ast(kind, name, &1, module, generated_module))
 
@@ -632,49 +630,6 @@ defmodule Continuum.Workflow.BeforeCompile do
     Macro.prewalk(ast, fn
       ^module -> generated_module
       other -> other
-    end)
-  end
-
-  defp compute_version_hash(module, signal_contracts) do
-    bodies =
-      module
-      |> Module.definitions_in()
-      |> Enum.sort()
-      |> Enum.flat_map(fn {name, arity} ->
-        case Module.get_definition(module, {name, arity}) do
-          {:v1, kind, _meta, clauses} ->
-            Enum.map(clauses, fn {_meta, args, guards, body} ->
-              {kind, name, arity, normalize(args), normalize(guards), normalize(body)}
-            end)
-
-          _ ->
-            []
-        end
-      end)
-
-    hash_input = if is_nil(signal_contracts), do: bodies, else: {bodies, signal_contracts}
-
-    hash_input
-    |> :erlang.term_to_binary([:deterministic])
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-  end
-
-  # Strip line metadata, keep structure. Elixir 1.20 changed the synthetic
-  # variable used when lowering `&local_fun/1` from `:capture` to `:"_&"` with
-  # an `:elixir_fn` context. The name is not source semantics, so canonicalize
-  # the new representation to the established form to keep durable workflow
-  # hashes stable across supported compiler versions.
-  defp normalize(ast) do
-    Macro.prewalk(ast, fn
-      {:"_&", _meta, :elixir_fn} ->
-        {:capture, [], nil}
-
-      {form, meta, args} when is_list(meta) ->
-        {form, [], args}
-
-      other ->
-        other
     end)
   end
 end

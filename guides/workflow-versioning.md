@@ -39,6 +39,35 @@ You can still use `workflow: MyApp.LogicalFlow` when several public modules
 should share a logical workflow identity, but ordinary version upgrades no
 longer require hand-written `V1`/`V2` wrapper modules.
 
+## Pure Helper Versions
+
+Static calls to modules using `Continuum.Pure` are pinned to generated helper
+entrypoints before the workflow is hashed. Pure helpers also pin their own
+static Pure dependencies. Changing a helper therefore changes the caller's
+workflow hash, including through transitive dependencies, and an old generated
+workflow continues calling its original helper implementation.
+
+Keep the generated helper BEAMs alongside the generated workflow BEAMs needed
+by in-flight runs. Helper metadata is a compile-time dependency, so changing
+a helper causes its callers to be recompiled by Mix. Define same-file helpers
+before their callers, or put them in separate files. An unresolved static
+helper is a compile error; it is never silently omitted from version identity.
+Dynamic calls and unmarked/allowlisted helpers remain outside Pure version
+pinning and retain their existing determinism diagnostics.
+
+### Upgrading from 0.8.1
+
+Workflows with no Pure calls retain their existing hashes. Workflows that call
+Pure helpers acquire new hashes on recompilation. Old hashes are not aliased
+to the new implementation: doing so would silently reinterpret old history.
+
+Pre-fix workflow entrypoints do not pin helpers. Drain their runs on the old
+release before upgrading, or keep workers running the complete old release
+(including its original helper modules) until those runs finish. Retaining
+only an old workflow BEAM alongside changed public helper modules is not
+sufficient for those legacy runs. New pinned versions can coexist when all
+their generated workflow and helper BEAMs are retained.
+
 ## Durable Registry
 
 Each Continuum instance supervises a registrar that upserts loaded workflow

@@ -13,14 +13,70 @@ defmodule Continuum.Pure do
 
   Trusted stdlib modules (`Enum`, `Map`, `String`, …) do not need this; see
   `Continuum.AstCheck.trusted_stdlib/0` for the baked-in allowlist.
+
+  Static Pure calls in generated workflow entrypoints are pinned to a
+  content-addressed helper implementation, including transitive Pure calls.
+  Keep these generated helper BEAMs with historical workflow versions. Define
+  same-file helpers before their callers, or place them in separate files.
   """
 
   defmacro __using__(_opts) do
     quote do
       @on_definition Continuum.Pure
+      @before_compile Continuum.Pure
 
       def __continuum_pure__, do: true
     end
+  end
+
+  @doc false
+  defmacro __before_compile__(env) do
+    definitions = Continuum.CodeIdentity.pin_helpers!(env.module, env)
+    hash = Continuum.CodeIdentity.hash(definitions)
+    entrypoint = Module.concat(env.module, :"V_#{hash}")
+
+    clauses =
+      Enum.flat_map(definitions, fn
+        {{name, _arity}, {:v1, kind, _meta, clauses}} when kind in [:def, :defp] ->
+          Enum.map(clauses, fn {meta, args, guards, body} ->
+            body = pin_self_calls(body, env.module, entrypoint)
+            head = {name, meta, args}
+
+            head =
+              if guards == [],
+                do: head,
+                else: {:when, meta, [head | List.flatten(guards)]}
+
+            {kind, meta, [head, [do: body]]}
+          end)
+
+        _ ->
+          []
+      end)
+
+    quote do
+      defmodule unquote(entrypoint) do
+        @moduledoc false
+        unquote_splicing(clauses)
+
+        def __continuum_pure_version__,
+          do: %{entrypoint: __MODULE__, version_hash: unquote(hash)}
+      end
+
+      @doc false
+      def __continuum_pure_version__,
+        do: %{entrypoint: unquote(entrypoint), version_hash: unquote(hash)}
+    end
+  end
+
+  defp pin_self_calls(ast, module, entrypoint) do
+    Macro.prewalk(ast, fn
+      {{:., dot_meta, [^module, fun]}, meta, args} when is_list(args) ->
+        {{:., dot_meta, [entrypoint, fun]}, meta, args}
+
+      node ->
+        node
+    end)
   end
 
   @doc false

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Include static `Continuum.Pure` dependencies in workflow identity and pin
+  their generated implementations transitively. Old pinned entrypoints keep
+  calling their original helper code after a helper changes. Unresolved
+  static helpers now fail compilation rather than producing order-dependent
+  hashes. Workflows without Pure calls retain their hashes; see the workflow
+  versioning guide for the required migration of legacy Pure-dependent runs.
+
 - Renew tracked run leases in bounded batches of 1,000, preserving per-run
   fencing, cancellation delivery, and transient-error handling. Heartbeats no
   longer issue one database round trip per durable run.
