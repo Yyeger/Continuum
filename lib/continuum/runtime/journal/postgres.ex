@@ -40,6 +40,31 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp start_run_with_repo(run_id, workflow, input, opts) do
+    {changeset, workflow, namespace, idempotency_key} = prepare_run(run_id, workflow, input, opts)
+
+    case Keyword.get(opts, :lease) do
+      nil ->
+        insert_run(
+          changeset,
+          run_id,
+          workflow,
+          namespace,
+          idempotency_key
+        )
+
+      lease_opts ->
+        insert_run_with_lease(
+          changeset,
+          run_id,
+          lease_opts,
+          workflow,
+          namespace,
+          idempotency_key
+        )
+    end
+  end
+
+  defp prepare_run(run_id, workflow, input, opts) do
     metadata = workflow_metadata(workflow)
     namespace = normalize_namespace(Keyword.get(opts, :namespace, "default"))
     idempotency_key = normalize_ingress_key(Keyword.get(opts, :idempotency_key))
@@ -63,26 +88,26 @@ defmodule Continuum.Runtime.Journal.Postgres do
         name: :continuum_runs_ingress_key_idx
       )
 
-    case Keyword.get(opts, :lease) do
-      nil ->
-        insert_run(
-          changeset,
-          run_id,
-          metadata.workflow,
-          namespace,
-          idempotency_key
-        )
+    {changeset, metadata.workflow, namespace, idempotency_key}
+  end
 
-      lease_opts ->
-        insert_run_with_lease(
-          changeset,
-          run_id,
-          lease_opts,
-          metadata.workflow,
-          namespace,
-          idempotency_key
-        )
-    end
+  @doc false
+  def enqueue_run(%Instance{} = instance, run_id, workflow, input, opts) do
+    with_repo(instance, fn ->
+      unless repo().in_transaction?(), do: raise(ArgumentError, "enqueue requires a transaction")
+      {changeset, workflow, namespace, key} = prepare_run(run_id, workflow, input, opts)
+
+      case reserve_ingress_key(namespace, workflow, key, run_id) do
+        :ok ->
+          case repo().insert(changeset) do
+            {:ok, _run} -> {:ok, %{run_id: run_id, status: :enqueued}}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:existing, existing_id} ->
+          {:ok, %{run_id: existing_id, status: :existing}}
+      end
+    end)
   end
 
   defp insert_run(changeset, run_id, workflow, namespace, idempotency_key) do
@@ -157,9 +182,16 @@ defmodule Continuum.Runtime.Journal.Postgres do
     end
   end
 
-  defp reserve_ingress_key!(_namespace, _workflow, nil, _run_id), do: :ok
+  defp reserve_ingress_key!(namespace, workflow, key, run_id) do
+    case reserve_ingress_key(namespace, workflow, key, run_id) do
+      :ok -> :ok
+      {:existing, existing_id} -> repo().rollback({:already_started, existing_id})
+    end
+  end
 
-  defp reserve_ingress_key!(namespace, workflow, idempotency_key, run_id) do
+  defp reserve_ingress_key(_namespace, _workflow, nil, _run_id), do: :ok
+
+  defp reserve_ingress_key(namespace, workflow, idempotency_key, run_id) do
     now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
     case repo().insert_all(
@@ -189,7 +221,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             )
           )
 
-        repo().rollback({:already_started, existing_id})
+        {:existing, existing_id}
     end
   end
 

@@ -37,11 +37,18 @@ is authorized by this milestone.
 
 ## Feature scope
 
-**No new feature milestone is accepted by this task.** F1–F4 in the review
+**The user has authorized F1–F4 as separate implementation steps.** These features
 (atomic application ingress, bounded dynamic fan-out, recurring schedules,
-and Observer replay diagnostics) remain proposals and are excluded from this
-implementation. So are other deferred features such as payload encryption,
-workflow queries, and heartbeat timeout enforcement.
+and Observer replay diagnostics) are the current feature scope. Other deferred features such as payload encryption,
+workflow queries, and heartbeat timeout enforcement remain excluded.
+
+- F1: atomic `Ecto.Multi` ingress, with rollback, duplicate, and post-commit dispatch checks.
+- F2: bounded dynamic activity fan-out with ordered results, input fingerprints,
+  crash-resume behavior, and snapshot support.
+- F3: UTC recurring definitions and occurrences, explicit overlap/missed policies,
+  bounded catch-up, and list/pause/resume/inspection APIs.
+- F4: read-only Observer replay reports with authorization, redaction, and
+  bounded work. Interactive stepping remains excluded.
 
 A future milestone should be selected using adopter feedback and name its user
 problem, compatibility cost, observable acceptance checks, and exclusions.

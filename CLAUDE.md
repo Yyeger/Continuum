@@ -40,10 +40,12 @@ A plan file, changelog entry, or general “looks good” is not authorization.
 
 ## Current scope
 
-C1–C5 and K1–K2 from the review are correctness fixes. Feature proposals F1–F4
-are excluded. The old v0.8 scope cap is a completed historical decision, not
-an instruction to implement its deferred items now. No next feature milestone
-has been approved by this task.
+C1–C5 and K1–K2 are completed correctness fixes. The user has now authorized
+F1–F4: atomic Multi ingress, bounded dynamic fan-out, recurring schedules, and
+Observer replay diagnostics. Implement each as a separate tested step and
+commit it. The old v0.8 scope cap is historical; additional feature candidates
+remain outside this scope. Keep `REVIEW_v0.8.1.md` local and ignored, and do not
+recreate `CONTRIBUTING.md`.
 
 ## Setup and verification
 
