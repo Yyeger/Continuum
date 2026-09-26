@@ -1133,6 +1133,16 @@ defmodule Continuum.Runtime.Journal.Postgres do
         if is_nil(task), do: repo().rollback(:activity_task_not_found)
         if task.state not in ["discarded", "dead_lettered"], do: repo().rollback(:not_discarded)
 
+        source = decode_term(task.mfa)
+
+        if Map.get(source, :kind) == :compensation do
+          repo().rollback(:compensation_retry_not_supported)
+        end
+
+        if Map.get(source, :parallel_batch?, false) do
+          repo().rollback(:activity_batch_retry_not_supported)
+        end
+
         lineage_id = task.lineage_id || task.id
 
         if repo().exists?(from(t in ActivityTask, where: t.parent_task_id == ^task.id)) do
@@ -1162,12 +1172,6 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
         unless terminal && terminal.event_type == "activity_failed" && max_seq == terminal.seq do
           repo().rollback(:failure_not_replay_tail)
-        end
-
-        source = decode_term(task.mfa)
-
-        if Map.get(source, :kind) == :compensation do
-          repo().rollback(:compensation_retry_not_supported)
         end
 
         successor_id = Ecto.UUID.generate()

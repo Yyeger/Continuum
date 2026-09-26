@@ -104,9 +104,14 @@ A manual retry preserves the original `activity_failed` event and appends an
 `activity_retry_scheduled` marker. Its successor task carries the same lineage
 id and the replacement policy. To avoid rewriting established workflow
 meaning, retry is accepted only when the failed activity is the replay tail of
-a failed root run. Completed runs, child runs, compensations, and histories
+a failed root run. Completed runs, child runs, activity batches, compensations, and histories
 that advanced past the failure are rejected explicitly. Executed actions emit
 `[:continuum, :activity, :operated]` telemetry.
+
+Manual retry of an `activity_all/1` member returns
+`{:error, :activity_batch_retry_not_supported}`, including a one-member batch.
+The rejection applies to both dry runs and execution. Automatic retries under
+the activity's configured policy still work normally.
 
 ## Graceful Shutdown
 

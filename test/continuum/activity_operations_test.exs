@@ -23,6 +23,15 @@ defmodule Continuum.ActivityOperationsTest do
     end
   end
 
+  defmodule BatchFlow do
+    use Continuum.Workflow
+
+    def run(input) do
+      [{:ok, value}] = activity_all([RecoverableActivity.run(input.value)])
+      value
+    end
+  end
+
   setup do
     start_supervised!(%{
       id: RecoverableActivity,
@@ -167,6 +176,42 @@ defmodule Continuum.ActivityOperationsTest do
              )
 
     assert Repo.get!(Run, run_id).state in ["running", "suspended"]
+  end
+
+  test "batch retry is rejected in both planning and the journal without mutation" do
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(BatchFlow, %{value: 1}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    assert {:ok, 1} = ActivityDispatcher.dispatch_once(owner: "batch", batch_size: 1)
+    assert {:error, %{state: :failed}} = Continuum.await(run_id, 1_000, journal: Postgres)
+    task = Repo.one!(ActivityTask)
+    before = Repo.get!(Run, run_id)
+    types = event_types(run_id)
+
+    for execute <- [false, true] do
+      assert {:error, :activity_batch_retry_not_supported} =
+               Continuum.ActivityOperations.retry(task.id,
+                 repo: Repo,
+                 operator: "ops",
+                 reason: "recovered",
+                 execute: execute
+               )
+    end
+
+    assert {:error, :activity_batch_retry_not_supported} =
+             Postgres.retry_discarded_activity!(
+               Continuum.Runtime.Instance.default(),
+               task.id,
+               Continuum.Activity.Policy.normalize!([]),
+               "ops",
+               "recovered"
+             )
+
+    assert Repo.get!(Run, run_id) == before
+    assert Repo.one!(ActivityTask) == task
+    assert event_types(run_id) == types
+    assert Repo.aggregate(Continuum.Schema.ActivityOperation, :count) == 0
   end
 
   defp event_types(run_id) do

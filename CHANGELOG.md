@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reject manual retries of `activity_all/1` members in both planning and
+  execution. Batch replay cannot follow sequential manual-retry markers;
+  unsupported retries now leave the failed run and journal untouched.
+
 - Share normal-return validation between live execution and offline replay.
   Replay rejects swallowed suspension control throws and non-durable returns
   rather than reporting a result the live engine cannot accept.

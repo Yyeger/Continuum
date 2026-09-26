@@ -10,7 +10,7 @@ defmodule Continuum.ActivityOperations do
   `activity_retry_scheduled` event, creates a successor task linked through a
   stable lineage id, and reopens the failed root run. This is intentionally
   limited to an activity failure at the replay tail; completed runs, child
-  runs, compensations, and histories that proceeded past the failure are
+  runs, activity batches, compensations, and histories that proceeded past the failure are
   rejected rather than rewritten ambiguously.
   """
 
@@ -206,10 +206,17 @@ defmodule Continuum.ActivityOperations do
 
   defp ensure_retryable(repo, task) do
     run = repo.get(Run, task.run_id)
+    source = decode(task.mfa) || %{}
 
     cond do
       task.state not in ["discarded", "dead_lettered"] ->
         {:error, :not_discarded}
+
+      Map.get(source, :kind) == :compensation ->
+        {:error, :compensation_retry_not_supported}
+
+      Map.get(source, :parallel_batch?, false) ->
+        {:error, :activity_batch_retry_not_supported}
 
       is_nil(run) ->
         {:error, :run_not_found}

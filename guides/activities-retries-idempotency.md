@@ -54,6 +54,11 @@ identity, computed at macro expansion, so it cannot come from a variable.
 Batch members take no per-activity options, `compensate:` included. Use
 sequential `activity/2` calls for a step that needs a compensation.
 
+Batch members use their configured automatic retry policy. Operator-triggered
+manual retry after a terminal batch failure is not supported, including for
+one-member batches; it returns `:activity_batch_retry_not_supported` without
+changing the run or its history.
+
 ### How it stays replay-safe
 
 Terminals land in whatever order the workers finish, so the journal cannot rely
