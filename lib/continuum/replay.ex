@@ -162,6 +162,7 @@ defmodule Continuum.Replay do
 
     try do
       result = workflow_module.run(input)
+      Context.validate_return!(result)
 
       case unconsumed_history(history) do
         nil -> {:ok, result}

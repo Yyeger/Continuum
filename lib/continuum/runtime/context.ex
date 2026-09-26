@@ -73,6 +73,17 @@ defmodule Continuum.Runtime.Context do
   @doc "Are we currently inside a workflow process?"
   def active?, do: not is_nil(get())
 
+  @doc false
+  def validate_return!(result) do
+    case get() do
+      %__MODULE__{run_id: run_id, suspending: reason} when not is_nil(reason) ->
+        raise Continuum.SuspendLeakError, run_id: run_id, reason: reason
+
+      _ ->
+        Continuum.DurableTerm.validate!(result, :workflow_result)
+    end
+  end
+
   @doc """
   Pop the next event from history if available; otherwise return :tail.
 

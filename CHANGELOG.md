@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Share normal-return validation between live execution and offline replay.
+  Replay rejects swallowed suspension control throws and non-durable returns
+  rather than reporting a result the live engine cannot accept.
+
 - Reload the complete journal when offline replay cannot use a snapshot for
   the selected workflow version. Caller-provided replay now rejects an
   incompatible snapshot with only a history suffix instead of replaying it

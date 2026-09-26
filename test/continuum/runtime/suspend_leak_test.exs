@@ -74,6 +74,39 @@ defmodule Continuum.Runtime.SuspendLeakTest do
              kind: :error,
              reason: %Continuum.SuspendLeakError{}
            } = failure
+
+    assert {:error, {:error, %Continuum.SuspendLeakError{}, _}} =
+             Continuum.Replay.run(flow, %{}, [])
+  end
+
+  test "offline replay rejects a swallowed suspension after consuming all history" do
+    capture_io(:standard_error, fn ->
+      defmodule ExhaustedReplayFlow do
+        use Continuum.Workflow
+
+        def run(_input) do
+          Continuum.side_effect(fn -> :recorded end)
+
+          try do
+            await(signal(:approval))
+          catch
+            _, _ -> :swallowed
+          end
+
+          :done
+        end
+      end
+
+      send(self(), {:flow, ExhaustedReplayFlow})
+    end)
+
+    assert_received {:flow, flow}
+    history = [%{type: :side_effect, kind: :user, payload: :recorded, seq: 0}]
+
+    assert {:error, {:error, %Continuum.SuspendLeakError{}, _}} =
+             Continuum.Replay.run(flow, %{}, history)
+
+    assert Continuum.Runtime.Context.get() == nil
   end
 
   test "a catch arm that re-throws the control tuple suspends normally" do
