@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 Orientation for agents working on Continuum. Current release: **0.8.1**.
-The correctness fixes on this branch are **Unreleased**; see [CHANGELOG.md](CHANGELOG.md).
+The correctness fixes and features on this branch are **Unreleased**; see
+[CHANGELOG.md](CHANGELOG.md).
 
 [ROADMAP.md](ROADMAP.md) is the current scope record. Setup and verification
 commands are below, and the [guides](guides/) document supported behavior.
@@ -40,12 +41,23 @@ A plan file, changelog entry, or general “looks good” is not authorization.
 
 ## Current scope
 
-C1–C5 and K1–K2 are completed correctness fixes. The user has now authorized
-F1–F4: atomic Multi ingress, bounded dynamic fan-out, recurring schedules, and
-Observer replay diagnostics. Implement each as a separate tested step and
-commit it. The old v0.8 scope cap is historical; additional feature candidates
-remain outside this scope. Keep `REVIEW_v0.8.1.md` local and ignored, and do not
-recreate `CONTRIBUTING.md`.
+C1–C5 and K1–K2 are completed correctness fixes. F1–F4 are also implemented
+and committed separately: atomic Multi ingress, bounded dynamic fan-out,
+recurring schedules, and Observer replay diagnostics. Their verification and
+compatibility requirements are recorded in ROADMAP.md. Additional feature
+candidates remain outside this scope. Keep `REVIEW_v0.8.1.md` local and ignored,
+and do not recreate `CONTRIBUTING.md`.
+
+- Multi ingress must use the instance's PostgreSQL repo and leave dispatch
+  until after commit; preserve idempotency reservations on duplicate starts.
+- `activity_map/3` uses complete scheduling windows. Preserve its manifest,
+  input ordering, bounded pending work, and event/snapshot parity.
+- Recurring definitions pin workflow versions, even while paused. Preserve
+  occurrence uniqueness and atomically advance the cursor with creation.
+  Existing installations must generate and apply the `--from 0.8.1` migration
+  before starting the updated runtime.
+- Observer replay must remain read-only, bounded, and redacted. Host apps own
+  authorization through their HTTP pipeline and LiveView `on_mount` hooks.
 
 ## Setup and verification
 
