@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Renew tracked run leases in bounded batches of 1,000, preserving per-run
+  fencing, cancellation delivery, and transient-error handling. Heartbeats no
+  longer issue one database round trip per durable run.
+
 - Reject manual retries of `activity_all/1` members in both planning and
   execution. Batch replay cannot follow sequential manual-retry markers;
   unsupported retries now leave the failed run and journal untouched.

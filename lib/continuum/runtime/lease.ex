@@ -142,6 +142,54 @@ defmodule Continuum.Runtime.Lease do
     end
   end
 
+  @doc false
+  def renew_batch(entries, opts) do
+    ids = Enum.map(entries, fn {run_id, _entry} -> Ecto.UUID.dump!(run_id) end)
+    owners = Enum.map(entries, fn {_run_id, entry} -> entry.owner end)
+    tokens = Enum.map(entries, fn {_run_id, entry} -> entry.token end)
+    ttl_seconds = Keyword.get(opts, :ttl_seconds, @default_ttl_seconds)
+
+    sql = """
+    UPDATE continuum_runs AS run
+    SET lease_heartbeat_at = clock_timestamp(),
+        lease_expires_at = clock_timestamp() + make_interval(secs => $4)
+    FROM unnest($1::uuid[], $2::text[], $3::bigint[]) AS claim(id, owner, token)
+    WHERE run.id = claim.id
+      AND run.lease_owner = claim.owner
+      AND run.lease_token = claim.token
+      AND run.state IN ('running', 'suspended')
+    RETURNING run.id::text, run.cancel_requested_at
+    """
+
+    case repo(opts).query(sql, [ids, owners, tokens, ttl_seconds]) do
+      {:ok, %{rows: rows}} ->
+        renewed = Map.new(rows, fn [id, cancel_requested_at] -> {id, cancel_requested_at} end)
+
+        outcomes =
+          Map.new(entries, fn {run_id, entry} ->
+            outcome = batch_outcome(Map.fetch(renewed, run_id))
+            event = if outcome == {:error, :lost}, do: :lost, else: :renewed
+
+            Telemetry.execute([:continuum, :lease, event], %{}, %{
+              run_id: run_id,
+              owner: entry.owner,
+              lease_token: entry.token
+            })
+
+            {run_id, outcome}
+          end)
+
+        {:ok, outcomes}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp batch_outcome({:ok, nil}), do: :ok
+  defp batch_outcome({:ok, _cancel_requested_at}), do: {:ok, :cancel_requested}
+  defp batch_outcome(:error), do: {:error, :lost}
+
   @doc """
   Release a lease only while its owner and fencing token still match.
 

@@ -16,6 +16,7 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
   @default_ttl_seconds 30
   @default_drain_timeout_ms 5_000
   @kill_timeout_ms 1_000
+  @renew_batch_size 1_000
 
   @doc false
   def child_spec(opts) do
@@ -655,18 +656,29 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
   end
 
   defp renew_all(state) do
-    Enum.reduce(state.leases, state, fn {run_id, entry}, acc ->
-      renew_entry(acc, run_id, entry)
-    end)
+    state.leases
+    |> durable_entries()
+    |> Enum.chunk_every(@renew_batch_size)
+    |> Enum.reduce(state, &renew_batch/2)
   end
 
-  defp renew_entry(state, _run_id, %{durable?: false}), do: state
+  defp renew_batch(entries, state) do
+    case Lease.renew_batch(entries, ttl_seconds: state.ttl_seconds, repo: state.repo) do
+      {:ok, outcomes} ->
+        Enum.reduce(entries, state, fn {run_id, entry}, acc ->
+          apply_renewal(acc, run_id, entry, Map.fetch!(outcomes, run_id))
+        end)
 
-  defp renew_entry(state, run_id, entry) do
-    case Lease.renew(run_id, entry.owner, entry.token,
-           ttl_seconds: state.ttl_seconds,
-           repo: state.repo
-         ) do
+      {:error, reason} ->
+        # A failed statement says nothing about ownership. Keep tracking all
+        # entries so a transient database failure cannot stop healthy engines.
+        Logger.error("Lease batch renewal failed: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp apply_renewal(state, run_id, entry, outcome) do
+    case outcome do
       :ok ->
         state
 
@@ -686,10 +698,6 @@ defmodule Continuum.Runtime.Lease.Heartbeater do
 
         send(entry.pid, {:continuum_lease_lost, run_id, entry.token})
         untrack_run(state, run_id)
-
-      {:error, reason} ->
-        Logger.error("Lease renewal failed for #{run_id}: #{inspect(reason)}")
-        state
     end
   end
 
