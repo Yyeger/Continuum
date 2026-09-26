@@ -22,10 +22,14 @@ def run(%{order_id: id, items: items}) do
 end
 ```
 
-Kill the node on that middle line and nothing is lost and nothing is repeated.
+At that middle line, the charge result is already committed to the journal.
 The process is gone; the *run* is not. A new VM picks the run up, executes
 `run/1` again from the top, replays the charge out of the journal instead of
 calling the payment gateway a second time, and carries on into `ship`.
+
+An activity interrupted before its result is committed may run again, including
+after an external payment succeeded. Pass an idempotency key to external systems
+that support one; see the [idempotency guide](guides/idempotency.md).
 
 Continuum is a durable execution engine — Temporal's programming model, but
 OTP-native and Postgres-backed. No separate cluster service, no paid SaaS
