@@ -21,7 +21,13 @@ defmodule Continuum.GoldenJournalCompatibilityTest do
       fixture = GoldenJournalFixtures.load!(name)
 
       assert fixture.schema_version == 1
-      assert fixture.continuum_version == Mix.Project.config()[:version]
+      # Keep the producing release's metadata: older histories must replay
+      # across version bumps without regenerating their recorded events.
+      assert Version.compare(fixture.continuum_version, Mix.Project.config()[:version]) in [
+               :lt,
+               :eq
+             ]
+
       assert fixture.name == name
       assert File.exists?(GoldenJournalFixtures.fixture_path(name))
 

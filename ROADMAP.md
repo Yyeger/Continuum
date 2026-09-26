@@ -1,6 +1,6 @@
 # Continuum roadmap
 
-Current release: **0.8.1**. The version in `mix.exs` and the published sections
+Current release: **0.8.5**. The version in `mix.exs` and the published sections
 of [CHANGELOG.md](CHANGELOG.md) define release status. Work under Unreleased is
 not yet a release. This roadmap records the bounded scope accepted for the
 current task; it does not assign new release numbers or feature deadlines.
@@ -32,13 +32,13 @@ formatting, strict lint, and generated documentation links.
 Compatibility: K1 changes hashes of workflows with Pure dependencies. Preserve
 the complete old release for legacy runs or drain them before upgrading; see
 [workflow versioning](guides/workflow-versioning.md). C5 adds an explicit error
-for an operation whose replay was unsupported. No release bump, tag, or publish
-is authorized by this milestone.
+for an operation whose replay was unsupported. These fixes are included in
+v0.8.5 together with the feature milestone below.
 
 ## Completed feature milestone
 
 F1–F4 were authorized, implemented, tested, and committed as separate steps.
-The package remains version **0.8.1**; all changes below are **Unreleased**.
+All changes below are included in **v0.8.5**.
 
 | ID | Implemented behavior | Commit |
 |---|---|---|
@@ -79,8 +79,7 @@ Compatibility and scope:
   must supply their existing authorization hooks. Larger offline investigations
   can use the replay CLI.
 - Payload encryption, workflow queries, heartbeat timeout enforcement, and
-  other deferred candidates remain excluded. No release bump, tag, or push was
-  performed.
+  other deferred candidates remain excluded from v0.8.5.
 
 A future milestone should be selected using adopter feedback and name its user
 problem, compatibility cost, observable acceptance checks, and exclusions.

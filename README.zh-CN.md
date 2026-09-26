@@ -77,7 +77,7 @@ end
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.8.1"},
+    {:continuum, "~> 0.8.5"},
     {:postgrex, "~> 0.19"}
   ]
 end
@@ -250,7 +250,7 @@ MIX_ENV=test iex -S mix run dev/observer_demo.exs
 
 ## 状态
 
-Continuum 当前为 **v0.8.1（1.0 之前）**。持久化引擎、确定性强制、工作流组合、
+Continuum 当前为 **v0.8.5（1.0 之前）**。持久化引擎、确定性强制、工作流组合、
 可观测性及集群能力面均已实现并有测试覆盖，包括崩溃恢复、租约隔离竞态以及基于
 属性的重放测试。1.0 之前 API 仍可能调整 —— 生产环境请固定到具体的 `0.x`
 版本。发布历史见 [`CHANGELOG.md`](./CHANGELOG.md)。
@@ -261,7 +261,7 @@ Continuum 当前为 **v0.8.1（1.0 之前）**。持久化引擎、确定性强�
 
 ```bash
 mix deps.get
-docker compose up -d                  # Postgres 监听 localhost:5432
+docker compose up -d                  # Postgres 监听 localhost:5433
 mix compile --warnings-as-errors
 mix test                              # 单元 + 集成测试套件
 mix test.cluster                      # 真实的 :peer 集群测试（需单独运行）

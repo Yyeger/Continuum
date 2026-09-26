@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-Orientation for agents working on Continuum. Current release: **0.8.1**.
-The correctness fixes and features on this branch are **Unreleased**; see
+Orientation for agents working on Continuum. Current release: **0.8.5**.
+The completed correctness fixes and features are included in v0.8.5; see
 [CHANGELOG.md](CHANGELOG.md).
 
 [ROADMAP.md](ROADMAP.md) is the current scope record. Setup and verification

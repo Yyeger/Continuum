@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## v0.8.5 — 2026-09-26 — "Durable ingress and recurring work"
+
+This release adds atomic ingress, bounded activity maps, recurring schedules,
+and Observer replay diagnostics, alongside durability and replay fixes.
+
+**Upgrading from v0.8.1:** generate the schema upgrade with
+`mix continuum.gen.migration --from 0.8.1 --repo MyApp.Repo` and run
+`mix ecto.migrate` before starting v0.8.5. Workflows using Pure helpers also
+require the historical-code precautions in the
+[workflow versioning guide](guides/workflow-versioning.md#upgrading-from-081).
 
 - Encode `nil` workflow inputs as durable terms rather than SQL NULL, including
   atomic ingress, recurring occurrences, child runs, and continuations.
