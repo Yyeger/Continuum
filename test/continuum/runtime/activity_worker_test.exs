@@ -187,6 +187,24 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
     end
   end
 
+  defmodule OwnedActivity do
+    use Continuum.Activity, retry: [max_attempts: 1]
+
+    def run(probe) do
+      Process.flag(:trap_exit, true)
+      Continuum.Test.ImpureProbe.notify_with_self(probe, :owned_activity_started)
+
+      receive do
+        :finish -> :ok
+      end
+    end
+  end
+
+  defmodule OwnedFlow do
+    use Continuum.Workflow
+    def run(probe), do: activity(OwnedActivity.run(probe))
+  end
+
   defmodule SlowActivityFlow do
     use Continuum.Workflow, version: 1
 
@@ -992,6 +1010,46 @@ defmodule Continuum.Runtime.ActivityWorkerTest do
              Continuum.await(run_id, 1_000, journal: Postgres)
 
     assert Repo.one!(ActivityTask).state == "completed"
+  end
+
+  test "killing the owning worker terminates an activity even when it traps exits" do
+    {worker, body} = start_owned_activity()
+    body_ref = Process.monitor(body)
+    Process.exit(worker, :kill)
+    assert_receive {:DOWN, ^body_ref, :process, ^body, :killed}, 1_000
+  end
+
+  test "supervisor shutdown terminates the activity body" do
+    {worker, body} = start_owned_activity()
+    body_ref = Process.monitor(body)
+
+    assert :ok =
+             DynamicSupervisor.terminate_child(
+               Continuum.Runtime.Instance.default().activity_supervisor,
+               worker
+             )
+
+    assert_receive {:DOWN, ^body_ref, :process, ^body, :killed}, 1_000
+  end
+
+  defp start_owned_activity do
+    probe = Continuum.Test.ImpureProbe.register()
+    {:ok, run_id} = Continuum.Runtime.Engine.start_run(OwnedFlow, probe, journal: Postgres)
+    assert_eventually(fn -> Repo.aggregate(ActivityTask, :count) == 1 end)
+    task = Repo.one!(ActivityTask)
+    instance = Continuum.Runtime.Instance.default()
+    {:ok, claimed} = Dispatcher.claim_one(instance, task.id, task.attempt, "owned-worker", 30)
+
+    {:ok, worker} =
+      DynamicSupervisor.start_child(
+        instance.activity_supervisor,
+        {Continuum.Runtime.ActivityWorker.Worker, claimed}
+      )
+
+    assert_receive {:owned_activity_started, body}, 1_000
+    on_exit(fn -> Process.exit(body, :kill) end)
+    assert claimed.run_id == run_id
+    {worker, body}
   end
 
   test "context activities persist bounded progress for health and Observer" do

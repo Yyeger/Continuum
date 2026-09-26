@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Terminate an activity body when its owning worker dies, including supervisor
+  shutdown and activities that trap exits. Worker death no longer leaves an
+  orphan executing after its timeout and lease heartbeat disappear.
+
 - Validate workflow return values before completion and normalize non-durable
   failure reasons and stacktraces before persistence. Invalid workflow values
   now fail terminally instead of repeatedly crashing finalization; transient

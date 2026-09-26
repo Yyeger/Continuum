@@ -383,6 +383,8 @@ defmodule Continuum.Runtime.ActivityWorker do
 
     {pid, monitor_ref} =
       spawn_monitor(fn ->
+        guard_execution_owner(parent)
+
         result =
           try do
             {:ok, apply(mod, fun, args)}
@@ -408,6 +410,26 @@ defmodule Continuum.Runtime.ActivityWorker do
         Process.exit(pid, :kill)
         {:error, :timeout}
     end
+  end
+
+  # Install the guardian from inside the body, before executing user code.
+  # If the owner died before the body was scheduled, monitoring it still
+  # delivers DOWN. Installing this from the owner after spawn would leave a
+  # crash window with an unowned body. A separate monitor lets us kill even
+  # activities that trap exits, without changing the caller's exit handling
+  # (the caller may also be an Oban worker).
+  defp guard_execution_owner(owner) do
+    body = self()
+
+    spawn(fn ->
+      owner_ref = Process.monitor(owner)
+      body_ref = Process.monitor(body)
+
+      receive do
+        {:DOWN, ^owner_ref, :process, ^owner, _reason} -> Process.exit(body, :kill)
+        {:DOWN, ^body_ref, :process, ^body, _reason} -> :ok
+      end
+    end)
   end
 
   defp complete(task, result, started_at, opts \\ []) do
