@@ -703,6 +703,7 @@ defmodule Continuum.Runtime.Engine do
       try do
         result = state.workflow_module.run(state.input)
         assert_suspend_not_swallowed!(state)
+        Continuum.DurableTerm.validate!(result, :workflow_result)
         {:completed, result}
       catch
         :throw, {:continuum_suspend, reason} ->
@@ -726,8 +727,8 @@ defmodule Continuum.Runtime.Engine do
               :erlang.raise(kind, reason, stacktrace)
 
             true ->
-              failure = %Continuum.RunFailure{kind: kind, reason: reason}
-              {:failed, {kind, reason, stacktrace}, failure}
+              {failure, stacktrace} = Continuum.RunFailure.split({kind, reason, stacktrace})
+              {:failed, {kind, failure.reason, stacktrace}, failure}
           end
       after
         Context.clear()

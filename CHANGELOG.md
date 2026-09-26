@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Validate workflow return values before completion and normalize non-durable
+  failure reasons and stacktraces before persistence. Invalid workflow values
+  now fail terminally instead of repeatedly crashing finalization; transient
+  database failures still use crash-and-resume recovery.
+
 ## v0.8.1 — 2026-08-23 — "Lint the generator"
 
 - Added `ex_slop` 0.4.4 and Credo 1.7.19 as development/test quality gates;
