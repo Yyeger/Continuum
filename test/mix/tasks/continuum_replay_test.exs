@@ -187,6 +187,44 @@ defmodule Mix.Tasks.ContinuumReplayTest do
     run_id
   end
 
+  test "cross-version replay reloads snapshot prefixes with empty and pending suffixes" do
+    for run_id <- [completed_run(), suspended_run()] do
+      instance = Instance.default()
+      run = Repo.get!(Run, run_id)
+      events = Postgres.load(instance, run_id)
+      {:ok, snapshot} = Continuum.Snapshot.compact(run_id, run.version_hash, events)
+      :ok = Postgres.take_snapshot!(instance, snapshot)
+      before = fingerprint(run_id)
+
+      assert {:ok, report} = Continuum.Replay.of_run(run_id, against: DriftedFlow)
+
+      assert {:ok, event_report} =
+               Continuum.Replay.of_run(run_id, against: DriftedFlow, snapshot: false)
+
+      assert report == event_report
+      assert report.outcome == :drift
+      assert report.snapshot == nil
+      assert report.event_count == length(events)
+      assert fingerprint(run_id) == before
+    end
+  end
+
+  test "caller-provided replay refuses an incompatible snapshot with only a suffix" do
+    run_id = completed_run()
+    run = Repo.get!(Run, run_id)
+    events = Postgres.load(Instance.default(), run_id)
+    {:ok, snapshot} = Continuum.Snapshot.compact(run_id, run.version_hash, events)
+
+    assert {:error, :incompatible_snapshot_requires_full_history} =
+             Continuum.Replay.run(DriftedFlow, %{}, [], snapshot: snapshot)
+
+    assert {:error, {:error, %Continuum.ReplayDriftError{}, _}} =
+             Continuum.Replay.run(DriftedFlow, %{}, events,
+               snapshot: snapshot,
+               follow_journaled_entrypoint: false
+             )
+  end
+
   defp suspended_run do
     {:ok, run_id} = Continuum.Runtime.Engine.start_run(ReplayFlow, %{seed: 3}, journal: Postgres)
     wait_for_state(run_id, "suspended")

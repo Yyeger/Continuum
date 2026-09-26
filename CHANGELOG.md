@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Reload the complete journal when offline replay cannot use a snapshot for
+  the selected workflow version. Caller-provided replay now rejects an
+  incompatible snapshot with only a history suffix instead of replaying it
+  at cursor zero.
+
 - Terminate an activity body when its owning worker dies, including supervisor
   shutdown and activities that trap exits. Worker death no longer leaves an
   orphan executing after its timeout and lease heartbeat disappear.

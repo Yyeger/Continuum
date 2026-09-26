@@ -66,7 +66,8 @@ defmodule Continuum.Replay do
 
     * `:run_id` — the id reported in drift errors. Defaults to `"continuum-replay"`.
     * `:snapshot` — a `Continuum.Snapshot` to replay the compacted prefix from.
-      Ignored when its version hash does not match the module's.
+      When its version hash does not match the module's, a complete event
+      history starting at sequence zero is required; a suffix is rejected.
     * `:instance` — the instance whose name appears in the context.
     * `:journal` — defaults to `Continuum.Runtime.Journal.ReadOnly`. Overriding
       it gives up the read-only guarantee; `Continuum.Test` does so deliberately
@@ -115,7 +116,7 @@ defmodule Continuum.Replay do
 
     with {:ok, run} <- fetch_run(instance, run_id),
          {:ok, entrypoint} <- resolve_entrypoint(run, opts) do
-      {snapshot, events} = replay_history(instance, run_id, opts)
+      {snapshot, events} = replay_history(instance, run_id, entrypoint, opts)
       input = Continuum.DurableTerm.decode!(run.input)
 
       outcome =
@@ -134,8 +135,17 @@ defmodule Continuum.Replay do
   # Kernel
 
   defp do_run(workflow_module, input, history, opts) do
-    snapshot = compatible_snapshot(Keyword.get(opts, :snapshot), workflow_module)
+    supplied_snapshot = Keyword.get(opts, :snapshot)
+    snapshot = compatible_snapshot(supplied_snapshot, workflow_module)
 
+    if supplied_snapshot && is_nil(snapshot) && not match?([%{seq: 0} | _], history) do
+      {:error, :incompatible_snapshot_requires_full_history}
+    else
+      run_with_history(workflow_module, input, history, opts, snapshot)
+    end
+  end
+
+  defp run_with_history(workflow_module, input, history, opts, snapshot) do
     ctx = %Context{
       run_id: Keyword.get(opts, :run_id, "continuum-replay"),
       history: history,
@@ -257,9 +267,15 @@ defmodule Continuum.Replay do
   # ---------------------------------------------------------------------------
   # Durable lookup
 
-  defp replay_history(instance, run_id, opts) do
+  defp replay_history(instance, run_id, entrypoint, opts) do
     if Keyword.get(opts, :snapshot, true) do
-      Journal.Postgres.load_for_replay(instance, run_id)
+      {snapshot, events} = Journal.Postgres.load_for_replay(instance, run_id)
+
+      if snapshot && is_nil(compatible_snapshot(snapshot, entrypoint)) do
+        {nil, Journal.Postgres.load(instance, run_id)}
+      else
+        {snapshot, events}
+      end
     else
       # `load_for_replay/2` intentionally returns only the suffix after the
       # newest snapshot. Dropping that snapshot after the read would strand the

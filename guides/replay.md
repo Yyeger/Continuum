@@ -38,6 +38,13 @@ whether it drifts before the deploy makes that everyone's problem.
 `--no-snapshot` ignores stored snapshots and replays from events alone, which is
 how you confirm that a snapshot and the events it compacted still agree.
 
+When `--against` selects code with a different version hash, replay also loads
+the complete event history automatically. The report then shows no snapshot:
+an incompatible compacted prefix cannot stand in for the missing events.
+Callers of `Continuum.Replay.run/4` must supply complete events starting at
+sequence zero when passing an incompatible snapshot; a suffix alone returns
+`{:error, :incompatible_snapshot_requires_full_history}`.
+
 ## Why replay takes a journal adapter, not a flag
 
 Replay is read-only *structurally*: `Continuum.Replay` hands the context
