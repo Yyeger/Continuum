@@ -203,6 +203,56 @@ defmodule Continuum.Runtime.Effect do
     end
   end
 
+  @doc false
+  def run_map(inputs, {mod, fun}, opts, {:command, command_base}) when is_list(inputs) do
+    opts = Keyword.validate!(opts, [:concurrency, :key])
+    concurrency = Keyword.fetch!(opts, :concurrency)
+
+    unless is_integer(concurrency) and concurrency in 1..1_000 do
+      raise ArgumentError, "activity_map concurrency must be an integer from 1 to 1,000"
+    end
+
+    Continuum.DurableTerm.validate!(inputs, :activity_map_input)
+    keys = map_keys!(inputs, Keyword.get(opts, :key))
+
+    shape = %{
+      count: length(inputs),
+      concurrency: concurrency,
+      input_hash: hash_term({keys, inputs})
+    }
+
+    # Commit a manifest before any window, including an empty map. Comparing
+    # the entire input catches drift in work that has not been scheduled yet.
+    run({:activity_map, shape}, {:command, command_base})
+
+    inputs
+    |> Enum.chunk_every(concurrency)
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {window, index} ->
+      run_all(
+        Enum.map(window, &{mod, fun, [&1]}),
+        {:command, :erlang.append_element(command_base, {:window, index})}
+      )
+    end)
+  end
+
+  def run_map(_inputs, _activity, _opts, _command),
+    do: raise(ArgumentError, "activity_map expects a durable list")
+
+  defp map_keys!(_inputs, nil), do: :positions
+
+  defp map_keys!(inputs, field) when is_atom(field) do
+    keys = Enum.map(inputs, &Map.fetch!(&1, field))
+
+    if MapSet.size(MapSet.new(keys)) != length(keys),
+      do: raise(ArgumentError, "activity_map keys must be unique")
+
+    keys
+  end
+
+  defp map_keys!(_inputs, _key),
+    do: raise(ArgumentError, "activity_map key must name a map field")
+
   # The index lives in the command base so two members with the same MFA are
   # distinguishable; the input hash lives in the event and is compared on
   # replay, so argument drift is loud without argument *values* becoming part
@@ -756,6 +806,8 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp compute_live({:patched, _name}), do: true
+
+  defp compute_live({:activity_map, _shape}), do: :ok
 
   defp compute_live({:compensation, _target_id, _mfa}) do
     raise "Continuum.Runtime.Effect: compensation must run through do_compensation/3"
@@ -1890,6 +1942,10 @@ defmodule Continuum.Runtime.Effect do
     %{type: :side_effect, kind: kind, payload: result, command_id: command_id, seq: seq}
   end
 
+  defp encode_event({:activity_map, shape}, _result, seq, command_id) do
+    %{type: :activity_map_started, shape: shape, command_id: command_id, seq: seq}
+  end
+
   # An empty metadata list omits the key entirely, so a `log/2` call journals
   # byte-identical events to the ones it wrote before `log/3` existed.
   defp encode_event({:workflow_log, level, message, metadata}, _result, seq, command_id) do
@@ -1942,6 +1998,14 @@ defmodule Continuum.Runtime.Effect do
       seq: seq
     }
   end
+
+  defp match_event(
+         _ctx,
+         %{type: :activity_map_started, shape: shape},
+         {:activity_map, shape},
+         _id
+       ),
+       do: {:ok, :ok}
 
   defp match_event(
          _ctx,
@@ -2225,6 +2289,7 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp effect_shape({:side_effect, kind}), do: {:side_effect, kind}
+  defp effect_shape({:activity_map, shape}), do: {:activity_map, shape}
   defp effect_shape({:workflow_log, level, message, []}), do: {:workflow_log, {level, message}}
 
   defp effect_shape({:workflow_log, level, message, metadata}),

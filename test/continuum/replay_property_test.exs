@@ -298,6 +298,42 @@ defmodule Continuum.ReplayPropertyTest do
     end
   end
 
+  defmodule MapPropertyFlow do
+    use Continuum.Workflow
+
+    def run(input),
+      do:
+        activity_map(input.values, &BatchPropertyActivity.step/1, concurrency: input.concurrency)
+  end
+
+  property "dynamic activity maps preserve ordering across sizes, windows and snapshots" do
+    check all(
+            values <- list_of(integer(), max_length: 9),
+            concurrency <- integer(1..4),
+            max_runs: 20
+          ) do
+      Continuum.Test.reset_in_memory!()
+      input = %{values: values, concurrency: concurrency}
+      expected = Enum.map(values, &{:ok, &1 * 2})
+      {:ok, id} = Continuum.Test.start_synchronous(MapPropertyFlow, input)
+      assert {:ok, %{result: ^expected}} = Continuum.await(id)
+      [manifest | events] = Continuum.Test.history(id)
+
+      {windows, []} =
+        values
+        |> Enum.chunk_every(concurrency)
+        |> Enum.map_reduce(events, fn window, remaining ->
+          {schedules, remaining} = Enum.split(remaining, length(window))
+          {terminals, remaining} = Enum.split(remaining, length(window))
+          {schedules ++ Enum.reverse(terminals), remaining}
+        end)
+
+      history = resequence([manifest | List.flatten(windows)], 0)
+      assert Continuum.Test.assert_replays(MapPropertyFlow, input, history) == expected
+      assert_snapshot_replays(MapPropertyFlow, input, history, expected)
+    end
+  end
+
   # Terminals land in whatever order the workers finish, so every arrival order
   # of the same batch must replay to the same results *in declared order*. With
   # three same-MFA members and distinct inputs, reassociating by history

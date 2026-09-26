@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add `activity_map/3` for runtime-sized lists, with explicit bounded scheduling
+  windows, ordered results, optional unique member keys, full input fingerprint
+  validation, and event/snapshot replay. Existing worker limits, retries, fencing,
+  and cancellation apply to each window.
+
 - Add `Continuum.Multi.enqueue/5` for atomic workflow ingress alongside business
   writes. The same-repo transaction reserves idempotency keys and inserts runnable
   work without starting an engine; dispatch begins after commit and survives

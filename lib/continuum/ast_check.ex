@@ -672,6 +672,11 @@ defmodule Continuum.AstCheck do
         {:activity_all, meta, args}, acc when is_list(args) ->
           {{:__continuum_skipped_activity__, meta, []}, acc}
 
+        {:activity_map, meta, [inputs, _activity, opts]}, acc ->
+          # Only the capture names external work. Input/option expressions
+          # still execute in the workflow and must be checked as helpers.
+          {{:__block__, meta, [inputs, opts]}, acc}
+
         # `child Mod.run(args)` names a child workflow, not a helper call.
         {:child, meta, args}, acc when is_list(args) ->
           {{:__continuum_skipped_child__, meta, []}, acc}

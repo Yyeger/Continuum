@@ -129,6 +129,10 @@ defmodule Continuum.Snapshot do
     one_step(event, :side_effect, kind, payload)
   end
 
+  defp step_from(%{type: :activity_map_started, shape: shape} = event, _rest) do
+    one_step(event, :activity_map, shape, :ok)
+  end
+
   # The shape has to agree with `Effect.effect_shape/1`: a `log/2` event carries
   # no metadata key and keeps the two-element shape, so snapshots taken before
   # `log/3` existed still match.

@@ -5,6 +5,7 @@ defmodule Continuum.EventType do
 
   @types [
     :activity_batch_scheduled,
+    :activity_map_started,
     :activity_completed,
     :activity_failed,
     :activity_retry_scheduled,

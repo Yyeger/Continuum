@@ -69,6 +69,37 @@ batch whose terminals have not all landed suspends without advancing the
 cursor, so it replays from its first member next time rather than from the
 middle of itself.
 
+## Runtime-sized collections
+
+`activity_map/3` accepts a runtime list and a static unary activity capture:
+
+```elixir
+results = activity_map(orders, &Shipping.ship/1, concurrency: 8, key: :id)
+```
+
+The required concurrency (1–1,000) bounds the scheduled window. All members
+of one window must terminate before the next is inserted. Automatic retries
+retain their window slot. Node and queue limits can reduce execution concurrency
+further; this API does not reserve global capacity or bypass those limits.
+
+Results follow input order. A failed member contributes `{:error, reason}`;
+other members and later windows continue. Empty input returns `[]` and still
+journals an input record. Duplicate values are distinct positional members by
+default. Optional `key: :field` requires unique values in that field of each
+input map and rejects duplicates before any work is scheduled.
+
+A manifest records the full input fingerprint, member count, and concurrency
+before the first window. Changes to input values, ordering, keys, or concurrency
+raise replay drift, even when the changed member has not been scheduled yet.
+Each window reuses batch command matching and snapshot semantics. An engine
+crash resumes the recorded work; cancelling the run discards outstanding tasks
+and prevents later windows. The batch restrictions on manual retries and
+compensation also apply to map members.
+
+Scheduling is bounded, but the input list and returned results still occupy
+memory and journal history grows with completed work. Use `continue_as_new/1`
+between maps for large, long-lived imports.
+
 ## Progress and cooperative cancellation
 
 Long-running activities can opt into a runtime context:

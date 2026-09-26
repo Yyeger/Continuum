@@ -112,6 +112,43 @@ defmodule Continuum.Workflow do
   end
 
   @doc """
+  Map a runtime list through a unary activity with bounded parallel scheduling.
+
+      activity_map(orders, &Shipping.ship/1, concurrency: 8, key: :id)
+
+  The activity must be a static `&Module.function/1` capture. `:concurrency`
+  is required (1–1,000). Members are scheduled in windows of that size; the
+  next window starts only after all members of the current window terminate.
+  Results preserve input order, and failures are `{:error, reason}` entries.
+  Automatic retries keep their window slot until the member terminates.
+
+  Inputs must be a durable list. An empty list returns `[]` and still records
+  membership. By default positions identify members, so duplicate values are
+  distinct work. `key: :field` additionally requires unique durable values in
+  that field of each input map. Input, order, keys, and concurrency changes
+  during replay are drift errors, including changes in unscheduled windows.
+
+  Node and queue limits still apply and can lower actual concurrency. Run
+  cancellation discards outstanding tasks and prevents later windows. Manual
+  member retry and per-member compensation are not supported, as with
+  `activity_all/1`. For very large lists, use workflow continuations between
+  maps to bound accumulated history and result memory.
+  """
+  defmacro activity_map(items, activity, opts) do
+    {mod, fun} = parse_map_activity!(activity, __CALLER__)
+    command = command_base(__CALLER__, :activity_map, {mod, fun, 1})
+
+    quote do
+      Continuum.Runtime.Effect.run_map(
+        unquote(items),
+        {unquote(mod), unquote(fun)},
+        unquote(opts),
+        {:command, unquote(Macro.escape(command))}
+      )
+    end
+  end
+
+  @doc """
   Macro: wait for an external signal, optionally with a timeout.
 
       await signal(:approved)
@@ -381,6 +418,7 @@ defmodule Continuum.Workflow do
           activity: 1,
           activity: 2,
           activity_all: 1,
+          activity_map: 3,
           await: 1,
           timer: 1,
           compensate: 1,
@@ -429,6 +467,21 @@ defmodule Continuum.Workflow do
 
   defp parse_signal_args([name]), do: {name, []}
   defp parse_signal_args([name, opts]), do: {name, opts}
+
+  defp parse_map_activity!(
+         {:&, _, [{:/, _, [{{:., _, [mod, fun]}, _, []}, 1]}]},
+         caller
+       )
+       when is_atom(fun) do
+    mod = Macro.expand(mod, caller)
+
+    if is_atom(mod),
+      do: {mod, fun},
+      else: raise(ArgumentError, "activity_map/3 requires a static &Module.function/1 capture")
+  end
+
+  defp parse_map_activity!(_other, _caller),
+    do: raise(ArgumentError, "activity_map/3 requires a static &Module.function/1 capture")
 
   defp parse_activity_batch!(calls, caller) when is_list(calls) do
     if calls == [] do
