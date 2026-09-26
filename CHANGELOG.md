@@ -11,6 +11,9 @@ and Observer replay diagnostics, alongside durability and replay fixes.
 require the historical-code precautions in the
 [workflow versioning guide](guides/workflow-versioning.md#upgrading-from-081).
 
+- Require `lazy_html` 0.1.13 or newer for tests, including the minimum-dependency
+  CI lane, to address CVE-2026-92106. Update the lockfile to the patched release.
+
 - Encode `nil` workflow inputs as durable terms rather than SQL NULL, including
   atomic ingress, recurring occurrences, child runs, and continuations.
 
