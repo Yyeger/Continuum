@@ -446,11 +446,20 @@ defmodule Continuum.Runtime.TimerWheel do
     :ok
   end
 
-  defp date_time_to_ms(%DateTime{} = date_time), do: DateTime.to_unix(date_time, :millisecond)
+  # Rounded up to the next whole millisecond. A tick at the truncated
+  # millisecond can run before the timer's due microsecond; the claim then
+  # sees a pending timer that is not due yet, and the backoff for unclaimable
+  # timers would park it until the next refresh.
+  defp date_time_to_ms(%DateTime{} = date_time) do
+    date_time
+    |> DateTime.to_unix(:microsecond)
+    |> Kernel.+(999)
+    |> div(1_000)
+  end
 
   defp date_time_to_ms(%NaiveDateTime{} = naive) do
     naive
     |> DateTime.from_naive!("Etc/UTC")
-    |> DateTime.to_unix(:millisecond)
+    |> date_time_to_ms()
   end
 end

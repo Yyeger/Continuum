@@ -235,6 +235,35 @@ defmodule Continuum.Runtime.TimerWheelTest do
     assert Repo.one!(from(t in Timer, where: t.id == ^timer.id)).fired == true
   end
 
+  test "cached timers never tick before their due microsecond" do
+    pid = ensure_timer_wheel!()
+
+    {:ok, run_id} =
+      Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
+
+    assert_eventually(fn -> Repo.aggregate(Timer, :count) == 1 end)
+    timer = Repo.one!(Timer)
+
+    # 750 microseconds past a millisecond boundary: truncating would schedule
+    # the tick 750 microseconds before the database considers the timer due.
+    %DateTime{microsecond: {microsecond, 6}} = due = DateTime.add(DateTime.utc_now(), 30, :second)
+    due = %{due | microsecond: {div(microsecond, 1_000) * 1_000 + 750, 6}}
+    Repo.update_all(from(t in Timer, where: t.id == ^timer.id), set: [fires_at: due])
+
+    send(
+      pid,
+      {:notification, self(), make_ref(), "continuum_timer_armed",
+       timer_payload(run_id, %{timer | fires_at: due})}
+    )
+
+    assert_eventually(fn ->
+      case :ets.lookup(:sys.get_state(pid).table, timer.id) do
+        [{_timer_id, _run_id, due_ms}] -> due_ms == DateTime.to_unix(due, :millisecond) + 1
+        [] -> false
+      end
+    end)
+  end
+
   test "timer fire rejects stale run authority before appending an event" do
     {:ok, run_id} =
       Continuum.Runtime.Engine.start_run(TimerFlow, %{ms: 60_000}, journal: Postgres)
