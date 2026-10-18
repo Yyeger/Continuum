@@ -90,6 +90,7 @@ defmodule Continuum.MixProject do
         "guides/public-types.md",
         "guides/testing.md",
         "guides/configuration.md",
+        "guides/sqlite.md",
         "guides/search-and-query.md",
         "guides/sagas.md",
         "guides/child-workflows.md",

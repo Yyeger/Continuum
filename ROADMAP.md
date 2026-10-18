@@ -87,6 +87,61 @@ Keep at most one substantial replay-semantics change in a feature milestone.
 Adopter evaluation can start before API freeze; it does not require waiting for
 all candidate features or committing to the older roadmap's dates.
 
+## SQLite backend milestone
+
+The user problem (issue: "Add support for Sqlite (via Honker?)") is that
+Continuum required a PostgreSQL server even for applications that run on one
+node. The accepted scope is a single-node SQLite backend through the optional
+`ecto_sqlite3` dependency, delivered in separate commits. It changes no event
+shapes or replay semantics.
+
+| ID | Implemented behavior | Commit |
+|---|---|---|
+| S1 | `Continuum.Runtime.SQL` dialect seam and the SQLite schema from `mix continuum.gen.migration` | `097c2b8` |
+| S2 | `Journal.SQLite` over the shared journal implementation; durable behavior selected by `Journal.is_durable_journal/1` | `b839420` |
+| S3 | Leases, run and activity dispatch, timer wheel, signal router, recovery, and schedules on SQLite | `a52573e` |
+| S4 | Queries, `set_attributes`, Multi ingress, operator actions, pruning, health, Observer replay, and `Continuum.Test` on SQLite | `6b966b7` |
+
+A related general fix (`a5e281a`) stops the timer wheel from ticking before a
+timer's due microsecond, which could park a due timer until the next refresh.
+
+Decision: Honker was evaluated and not adopted. It talks to SQLite through
+its own `exqlite` connection and a separately built Rust extension, while
+Continuum's durable state already lives in fenced tables behind the host's
+Ecto repo. On one node, SQLite's only missing primitive (`LISTEN`/`NOTIFY`) is
+covered by after-commit local wakeups, with the existing polls as backstops.
+Honker remains a candidate for cross-process wakeups if multi-process SQLite
+deployments are ever in scope.
+
+Acceptance verification:
+
+- The regular suite passed **748 checks (11 properties and 737 tests, 59 of
+  them SQLite)** on each seed **0, 1, 42, 100, 1000, 99999**. All **9** cluster
+  tests passed separately. Compilation with warnings as errors, formatting,
+  strict Credo, and generated documentation links passed, with the two existing
+  hidden-reference ExDoc warnings.
+- SQLite tests run a full runtime end to end (retries, parallel activities,
+  timers, signals, children, cancellation, `continue_as_new`, schedules, and
+  reclaiming a run after its engine is killed) and cover fencing and
+  exactly-one claims under concurrency. The generated SQLite migration is
+  applied at every test start and migrated up and down in isolation.
+- Across roughly 27 additional full-suite runs during development, four runs
+  each had one different timing-sensitive PostgreSQL test fail on a short
+  `await` window, none reproducible on rerun; 23 runs of the pre-change suite
+  had none. Interleaved runs of both trees on the same seeds were clean.
+
+Compatibility and exclusions:
+
+- PostgreSQL behavior is unchanged; no migration is needed for existing
+  installations. SQLite installations start from the current schema.
+- Clustering, event partitions (`:partitions_unsupported_on_sqlite`), and
+  `--from` upgrade migrations remain PostgreSQL-only. Several nodes or OS
+  processes sharing one SQLite file stay correct through fencing but receive
+  no cross-process wakeups.
+- SQLite attribute filters reject list values; numbers compare by JSON text.
+- The Oban executor is not covered by the SQLite tests. Postgrex remains a
+  dependency.
+
 ## Sources and history
 
 - [Agent guidance](CLAUDE.md): setup, verification, and runtime invariants.

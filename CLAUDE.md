@@ -21,6 +21,14 @@ A plan file, changelog entry, or general “looks good” is not authorization.
 
 - Keep workflow effects behind `Continuum.Runtime.Effect`; adapters share replay
   semantics. Live execution and offline replay both use `Context.validate_return!/1`.
+- PostgreSQL and SQLite share one durable journal implementation
+  (`Journal.Postgres`, fronted by `Journal.SQLite`). Select durable behavior with
+  `Journal.is_durable_journal/1`, never by matching `Journal.Postgres`. Keep
+  dialect differences in `Continuum.Runtime.SQL` or explicit `SQL.dialect/1`
+  branches; adding SQLite support must not change PostgreSQL behavior, so
+  prefer a SQLite branch over rewriting a PostgreSQL statement.
+  SQLite read-validate-write transactions must use `SQL.transaction/3`
+  (`BEGIN IMMEDIATE`); local wakeups go through `SQL.after_commit/1`.
 - Invalid workflow results become durable terminal failures; journal outages
   remain recoverable. Keep terminal journal writes outside the workflow catch-all.
 - Activity execution belongs to its worker. Killing the worker must terminate
@@ -48,8 +56,10 @@ compatibility requirements are recorded in ROADMAP.md. Additional feature
 candidates remain outside this scope. Keep `REVIEW_v0.8.1.md` local and ignored,
 and do not recreate `CONTRIBUTING.md`.
 
-- Multi ingress must use the instance's PostgreSQL repo and leave dispatch
+- Multi ingress must use the instance's durable repo and leave dispatch
   until after commit; preserve idempotency reservations on duplicate starts.
+- SQLite is a single-node backend (S1–S4 in ROADMAP.md). Clustering, event
+  partitions, and `--from` upgrade migrations stay PostgreSQL-only.
 - `activity_map/3` uses complete scheduling windows. Preserve its manifest,
   input ordering, bounded pending work, and event/snapshot parity.
 - Recurring definitions pin workflow versions, even while paused. Preserve
@@ -75,7 +85,9 @@ mix test.cluster
 mix docs.check
 ```
 
-`mix test` creates and migrates the test database. Run cluster tests separately
-from the regular suite because real peer nodes share PostgreSQL. Record which
+`mix test` creates and migrates the test database. SQLite tests run in the same
+suite against `tmp/continuum_test.sqlite3`, rebuilt from the generated migration
+at startup; they need no service. Run cluster tests separately from the regular
+suite because real peer nodes share PostgreSQL. Record which
 checks actually ran and their results; do not regenerate golden histories to
 hide a failure.

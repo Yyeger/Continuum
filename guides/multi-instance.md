@@ -24,6 +24,10 @@ config :continuum,
   journal: Continuum.Runtime.Journal.Postgres
 ```
 
+A SQLite repo uses `Continuum.Runtime.Journal.SQLite` instead; see the
+[SQLite guide](sqlite.md). Named instances pick the journal that matches
+their repo's adapter.
+
 Then supervise the repo-dependent children in the host application, after the
 repo:
 

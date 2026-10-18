@@ -117,7 +117,8 @@ and exercises the same drift detection as a production delivery.
 
 ## Durable tests
 
-Durable tests need Postgres and an Ecto SQL Sandbox checkout. Test suites
+Durable tests need a database: Postgres with an Ecto SQL Sandbox checkout, or
+SQLite (see below). Test suites
 normally start Continuum with its pollers disabled so nothing moves behind a
 test's back — `Continuum.Test.drive/2` turns the crank instead:
 
@@ -157,7 +158,24 @@ end
   run whose lease is still live. Without it you would be waiting out a real
   TTL, and rescuing earlier would be lease theft.
 - `elapse_timers!/2` moves a pending `timer(days(30))` into the past, which is
-  the thing you least want to wait for in a test.
+  the thing you least want to wait for in a test. It only moves timers that
+  already exist: a run also rests while an earlier activity is pending, so
+  make sure the run has reached its timer before elapsing it.
+
+### On SQLite
+
+The same helpers drive SQLite instances. Start runs through the instance and
+pass `instance:` to every helper, plus `journal: :sqlite` to `history/2`,
+`inject_signal/4`, and `fire_timer/2`:
+
+```elixir
+{:ok, run_id} = Continuum.start(MyApp.Checkout, order, instance: :jobs)
+assert {:ok, %{state: :completed}} = Continuum.Test.drive(run_id, instance: :jobs)
+```
+
+SQLite has a single writer, so keep these test modules synchronous and clean
+the Continuum tables between tests instead of relying on the SQL Sandbox. See
+the [SQLite guide](sqlite.md).
 
 ## Golden histories
 

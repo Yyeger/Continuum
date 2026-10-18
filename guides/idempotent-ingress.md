@@ -24,7 +24,9 @@ the root run for its full lifetime. `Continuum.start/3` also accepts
 
 Use `Continuum.Multi.enqueue/5` when the business record and workflow must
 commit together. The selected Continuum instance must use the transaction's
-repo and the PostgreSQL journal.
+repo and a durable journal (PostgreSQL or SQLite). On SQLite, run the
+transaction as `Repo.transaction(multi, mode: :immediate)` or configure the
+repo's `default_transaction_mode: :immediate`; see the [SQLite guide](sqlite.md).
 
 ```elixir
 Ecto.Multi.new()
@@ -44,8 +46,8 @@ returns the original root ID without changing the original input; other Multi
 steps still execute and need their own business uniqueness constraints.
 
 No engine starts inside the transaction. A committed run is unleased until a
-dispatcher claims it, so keep a dispatcher enabled for the repo. PostgreSQL
-visibility prevents other connections from claiming an uncommitted run.
+dispatcher claims it, so keep a dispatcher enabled for the repo. Transaction
+isolation prevents other connections from claiming an uncommitted run.
 Rollback removes both the new run and its ingress reservation. Once committed,
 dispatch can recover the run even if the process that submitted the Multi dies.
 Do not call the dispatcher yourself inside the transaction.

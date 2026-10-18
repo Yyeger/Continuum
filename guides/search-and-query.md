@@ -2,6 +2,8 @@
 
 Continuum stores operator-facing metadata on `continuum_runs.attributes`, a JSONB
 map set when a run starts or updated later by surrounding application code.
+On SQLite the column holds JSON text; see the [SQLite guide](sqlite.md) for the
+attribute filters it supports.
 
 ```elixir
 {:ok, run_id} =

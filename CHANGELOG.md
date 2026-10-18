@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Add SQLite as a durable backend for single-node deployments, through the
+  optional `ecto_sqlite3` dependency and `Continuum.Runtime.Journal.SQLite`.
+  Workflows keep the same replay, drift detection, lease fencing, activities,
+  timers, signals, child workflows, schedules, queries, Observer pages, health
+  reports, and operator tooling. `mix continuum.gen.migration` writes the
+  SQLite schema for SQLite repos; named instances choose the journal from
+  their repo's adapter, and mismatched journal/repo pairs raise at
+  construction. Clustering, event partitions, and `--from` upgrade migrations
+  remain PostgreSQL-only. See the [SQLite guide](guides/sqlite.md).
+
+- Fix timer wheel ticks that could run up to a millisecond before a timer's
+  stored due time. The pending timer was then treated as unclaimable and
+  parked until the next refresh (30 seconds by default).
+
+- Fix `Continuum.Test.fire_timer/2` raising on durable journals when no
+  `:timer_id` is given.
+
 ## v0.8.5 — 2026-09-26 — "Durable ingress and recurring work"
 
 This release adds atomic ingress, bounded activity maps, recurring schedules,

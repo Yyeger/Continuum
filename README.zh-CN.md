@@ -27,7 +27,8 @@ Elixir 优先的团队而言，它是 *"我该如何运行一个能在崩溃中�
   与原始执行之间的任何偏差，都会以醒目的 `Continuum.ReplayDriftError` 暴露出来，
   而绝不会发生静默损坏。
 - **单一依赖。** Postgres 是你唯一需要运维的组件 —— 它同时承担日志、租约存储、
-  定时器轮以及信号总线（`LISTEN`/`NOTIFY`）。
+  定时器轮以及信号总线（`LISTEN`/`NOTIFY`）。单节点应用也可以改用 SQLite，
+  参见 [SQLite 指南](./guides/sqlite.md)。
 - **它就是 OTP。** Continuum 是一棵你加入自己应用的监督树。崩溃恢复、租约与背压
   都构建在进程之上，而非某个外部协调器。
 
@@ -97,6 +98,11 @@ mix continuum.gen.migration --repo MyApp.Repo
 mix ecto.migrate
 ```
 
+**只在单个节点上运行？** 加入 `{:ecto_sqlite3, "~> 0.25"}`，让 Continuum 指向一个
+使用 `Ecto.Adapters.SQLite3` 的 Repo，并设置
+`journal: Continuum.Runtime.Journal.SQLite`；同一个生成器会写出 SQLite 表结构。
+推荐的 Repo 配置以及仅限 PostgreSQL 的功能，参见 [SQLite 指南](./guides/sqlite.md)。
+
 把 Continuum 的运行时子进程加入到你的监督树中，**位置必须在你的 Repo 之后**：
 
 ```elixir
@@ -130,6 +136,8 @@ end
 
 - **Postgres 日志** 在每次写入时进行租约 + 隔离令牌 CAS 校验。被夺走的租约会
   导致写入失败并终止陈旧的引擎进程 —— 它绝不会损坏历史。
+- **SQLite 日志** 面向单节点部署，在 `ecto_sqlite3` Repo 上提供相同的隔离与重放
+  语义；集群与事件分区仍是 PostgreSQL 专属功能。
 - **活动执行**：默认使用内置工作进程池 —— 采用 `FOR UPDATE SKIP LOCKED` 抢占任务、
   指数退避重试、按任务隔离，并将结果与任务状态在同一事务中原子提交；重试/超时
   策略通过 `use Continuum.Activity` 配置。也可选用 `Continuum.Oban` 执行器，让已经

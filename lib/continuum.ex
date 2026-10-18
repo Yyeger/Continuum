@@ -57,9 +57,12 @@ defmodule Continuum do
   processes. `Continuum.children()` returns only its Repo-dependent runtime
   children, so it does not duplicate those process names.
 
-  A named instance given a `:repo` uses the Postgres journal for every run
-  started, signalled, cancelled, or awaited through it; pass `:journal` to
-  override. The default instance follows `config :continuum, :journal`.
+  A named instance given a `:repo` uses the durable journal for that repo's
+  adapter — `Continuum.Runtime.Journal.Postgres` or
+  `Continuum.Runtime.Journal.SQLite` — for every run started, signalled,
+  cancelled, or awaited through it; pass `:journal` to override. The default
+  instance follows `config :continuum, :journal`. See the SQLite guide for
+  single-node SQLite deployments.
 
   Child-specific options may be passed with `:workflow_modules`,
   `:activity_executor`, `:activity_max_concurrency`, `:activity_queues`, `:heartbeater`,
@@ -330,7 +333,7 @@ defmodule Continuum do
   List durable runs with a closed, structured query spec.
 
   See `Continuum.Query` for supported `:where`, `:order_by`, and pagination
-  options. Listing requires a Postgres-backed Continuum instance.
+  options. Listing requires a durable (PostgreSQL or SQLite) Continuum instance.
   """
   @doc since: "0.8.0"
   @spec list_runs(keyword()) :: {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
