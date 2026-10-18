@@ -1,6 +1,8 @@
 defmodule Continuum.SQLite.SchemaTest do
   use ExUnit.Case, async: false
 
+  @moduletag :sqlite
+
   alias Continuum.Test.{SQLiteCase, SQLiteRepo}
 
   @tables ~w(

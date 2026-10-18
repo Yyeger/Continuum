@@ -33,6 +33,8 @@ defmodule Continuum.Test.SQLiteCase do
 
   using do
     quote do
+      @moduletag :sqlite
+
       import Ecto.Query
       alias Continuum.Test.SQLiteRepo
     end

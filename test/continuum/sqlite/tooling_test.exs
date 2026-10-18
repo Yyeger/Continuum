@@ -361,6 +361,36 @@ defmodule Continuum.SQLite.ToolingTest do
     assert SQLiteRepo.get!(Run, run_id) == before
   end
 
+  test "Observer data functions read and act on SQLite runs", %{opts: opts} do
+    {:ok, done} = Continuum.start(LongFlow, %{seed: 1}, opts)
+    :ok = drive_until_timer(done, opts)
+    {:ok, chain} = Continuum.start(LoopFlow, %{left: 1}, opts)
+    assert {:ok, %{state: :completed}} = Test.drive(chain, opts)
+    {:ok, waiting} = Continuum.start(WaitFlow, %{}, opts)
+    :ok = Test.drive_until_state(waiting, [:suspended], opts)
+
+    assert {:ok, %{entries: entries}} = Continuum.Observer.list_runs(opts)
+    assert done in Enum.map(entries, & &1.run_id)
+    assert {:ok, %{run_id: ^done, state: :suspended}} = Continuum.Observer.get_run(done, opts)
+
+    assert {:ok, %{entries: events}} = Continuum.Observer.list_events(done, opts)
+
+    assert Enum.map(events, & &1.type) == [
+             :activity_scheduled,
+             :activity_completed,
+             :timer_started
+           ]
+
+    assert {:ok, [%{state: :completed, attempt: 1}]} =
+             Continuum.Observer.list_activity_tasks(done, opts)
+
+    assert is_binary(Continuum.Observer.successor_run_id(chain, opts))
+
+    assert :ok = Continuum.Observer.send_signal(waiting, :go, :approved, opts)
+    assert :ok = Continuum.Observer.cancel_run(done, opts)
+    assert {:ok, %{state: :cancelled}} = Continuum.get_run(done, opts)
+  end
+
   test "event partitions are refused on SQLite", %{name: name} do
     assert {:error, :partitions_unsupported_on_sqlite} =
              Continuum.Partitions.plan(repo: SQLiteRepo)
