@@ -1281,6 +1281,11 @@ defmodule Continuum.Runtime.Journal.Postgres do
         {event_type, payload} = encode_event(retry_event)
         now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
+        # The claim compares available_at with the database clock; stamping it
+        # from the application clock left the successor briefly unclaimable
+        # whenever that clock ran ahead of the database's.
+        available_at = db_now()
+
         repo().insert!(%Event{
           run_id: task.run_id,
           seq: retry_seq,
@@ -1300,8 +1305,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
           mfa: encode_term(successor),
           attempt: 1,
           state: "available",
-          scheduled_at: now,
-          available_at: now
+          scheduled_at: available_at,
+          available_at: available_at
         })
 
         repo().insert!(%Continuum.Schema.ActivityOperation{
