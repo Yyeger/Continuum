@@ -133,7 +133,7 @@ defmodule Continuum.Runtime.ScheduleRunner do
         {:ok, %{entrypoint: entrypoint}} ->
           opts = [
             instance: instance,
-            journal: Continuum.Runtime.Journal.Postgres,
+            journal: Continuum.Runtime.Journal.for_repo(instance.repo),
             run_id: schedule.run_id,
             namespace: schedule.namespace,
             attributes: schedule.attributes,

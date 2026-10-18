@@ -19,6 +19,8 @@ defmodule Continuum.Runtime.ActivityStubs do
   """
   @moduledoc since: "0.8.0"
 
+  import Continuum.Runtime.Journal, only: [is_durable_journal: 1]
+
   alias Continuum.{ActivityStubError, DurableTerm}
 
   @type key :: {module(), atom()} | {module(), atom(), arity()}
@@ -27,7 +29,7 @@ defmodule Continuum.Runtime.ActivityStubs do
   @doc """
   Validate and normalize the `:activities` option.
 
-  Refuses stubs on the Postgres journal: a durable activity runs in an activity
+  Refuses stubs on the durable journals: a durable activity runs in an activity
   worker process, out of a claimed task row, with retry, timeout, and
   idempotency semantics of its own. A stub cannot reach that path, and silently
   ignoring one would make a "passing" durable test meaningless.
@@ -35,7 +37,7 @@ defmodule Continuum.Runtime.ActivityStubs do
   @spec validate!(term(), module()) :: t()
   def validate!(stubs, _journal) when stubs == %{}, do: %{}
 
-  def validate!(_stubs, Continuum.Runtime.Journal.Postgres) do
+  def validate!(_stubs, journal) when is_durable_journal(journal) do
     raise ArgumentError,
           "activity stubs are only supported on the in-memory journal. Durable " <>
             "activities execute in an activity worker out of a claimed task row, " <>

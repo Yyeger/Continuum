@@ -203,7 +203,7 @@ defmodule Continuum.Runtime.Dispatcher do
   defp start_engine(instance, claim) do
     opts = [
       instance: instance,
-      journal: Journal.Postgres,
+      journal: Journal.for_repo(instance.repo),
       lease_owner: claim.lease_owner,
       lease_token: claim.lease_token,
       trace_context: claim.trace_context,

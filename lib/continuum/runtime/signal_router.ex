@@ -17,6 +17,8 @@ defmodule Continuum.Runtime.SignalRouter do
   use GenServer
   require Logger
 
+  import Continuum.Runtime.Journal, only: [is_durable_journal: 1]
+
   alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Telemetry}
 
   @listener_retry_ms 5_000
@@ -58,9 +60,14 @@ defmodule Continuum.Runtime.SignalRouter do
          :ok <-
            Continuum.SignalContract.validate_delivery(instance, journal, run_id, name, payload) do
       case journal do
-        Journal.Postgres -> deliver_durable(instance, run_id, name, payload, opts)
-        Journal.InMemory -> deliver_local(instance, run_id, name, payload, opts)
-        custom_journal -> deliver_custom(custom_journal, instance, run_id, name, payload, opts)
+        journal when is_durable_journal(journal) ->
+          deliver_durable(journal, instance, run_id, name, payload, opts)
+
+        Journal.InMemory ->
+          deliver_local(instance, run_id, name, payload, opts)
+
+        custom_journal ->
+          deliver_custom(custom_journal, instance, run_id, name, payload, opts)
       end
     end
   end
@@ -143,10 +150,10 @@ defmodule Continuum.Runtime.SignalRouter do
 
   def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
 
-  defp deliver_durable(instance, run_id, name, payload, opts) do
+  defp deliver_durable(journal, instance, run_id, name, payload, opts) do
     # Delivery resolves continue_as_new chains to the live tip; wake that run,
     # not the (possibly dead) chain root the caller addressed.
-    case Journal.Postgres.deliver_signal!(instance, run_id, name, payload, opts) do
+    case journal.deliver_signal!(instance, run_id, name, payload, opts) do
       {:ok, delivered_run_id, :delivered} ->
         route(instance, delivered_run_id)
         {:ok, :delivered}

@@ -33,6 +33,10 @@ config :continuum, Continuum.Test.SQLiteRepo,
     ),
   pool_size: 5,
   busy_timeout: 10_000,
+  # exqlite applies :busy_timeout after the connect-time pragmas; custom
+  # pragmas run first, so connections opened during a write wait instead of
+  # failing with "database is locked".
+  custom_pragmas: [busy_timeout: 10_000],
   log: false
 
 config :continuum, Continuum.Test.ObserverEndpoint,

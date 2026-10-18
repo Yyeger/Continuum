@@ -14,7 +14,7 @@ defmodule Continuum.Runtime.Engine do
   require Logger
 
   alias Continuum.{Runtime.Context, Runtime.Instance, Runtime.Lease, Telemetry}
-  alias Continuum.Runtime.Journal.Postgres
+  import Continuum.Runtime.Journal, only: [is_durable_journal: 1]
 
   defstruct [
     :run_id,
@@ -155,21 +155,32 @@ defmodule Continuum.Runtime.Engine do
   end
 
   defp request_cancel(instance, run_id) do
-    result =
-      instance.repo.query(
-        """
-        UPDATE continuum_runs
-        SET cancel_requested_at = clock_timestamp()
-        WHERE id = $1::text::uuid
-          AND state IN ('running', 'suspended')
-        """,
-        [run_id]
-      )
+    {sql, params} = cancel_request_statement(instance.repo, run_id)
 
-    case result do
+    case instance.repo.query(sql, params) do
       {:ok, %{num_rows: 1}} -> :ok
       {:ok, %{num_rows: 0}} -> classify_uncancelled_run(instance, run_id)
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp cancel_request_statement(repo, run_id) do
+    if Continuum.Runtime.SQL.sqlite?(repo) do
+      now = Continuum.Runtime.SQL.timestamp(repo, Continuum.Runtime.SQL.utc_now())
+
+      {"""
+       UPDATE continuum_runs
+       SET cancel_requested_at = ?2
+       WHERE id = ?1
+         AND state IN ('running', 'suspended')
+       """, [run_id, now]}
+    else
+      {"""
+       UPDATE continuum_runs
+       SET cancel_requested_at = clock_timestamp()
+       WHERE id = $1::text::uuid
+         AND state IN ('running', 'suspended')
+       """, [run_id]}
     end
   end
 
@@ -538,8 +549,8 @@ defmodule Continuum.Runtime.Engine do
     {:noreply, state, {:continue, :run}}
   end
 
-  def handle_cast(:drain, %{journal: Postgres, lease_token: token} = state)
-      when is_integer(token) do
+  def handle_cast(:drain, %{journal: journal, lease_token: token} = state)
+      when is_durable_journal(journal) and is_integer(token) do
     case Lease.release(state.run_id, state.lease_owner, token, repo: state.instance.repo) do
       result when result in [:ok, {:error, :lost}] ->
         state = %{state | status: :drained}
@@ -653,8 +664,8 @@ defmodule Continuum.Runtime.Engine do
       {:stop, :normal, state}
   end
 
-  defp clear_durable_wake(%{journal: Postgres} = state) do
-    Postgres.clear_next_wakeup!(state.instance, state.run_id, state.lease_token)
+  defp clear_durable_wake(%{journal: journal} = state) when is_durable_journal(journal) do
+    journal.clear_next_wakeup!(state.instance, state.run_id, state.lease_token)
   end
 
   defp clear_durable_wake(_state), do: :ok
@@ -747,14 +758,11 @@ defmodule Continuum.Runtime.Engine do
   # lease_lost?/2 before this) and should fail the run like any other error.
   defp journal_exception?(:error, %DBConnection.ConnectionError{}), do: true
   defp journal_exception?(:error, %Postgrex.Error{}), do: true
+  defp journal_exception?(:error, error) when is_struct(error, Exqlite.Error), do: true
   defp journal_exception?(_kind, _reason), do: false
 
-  defp resolve_workflow_entrypoint(
-         %{
-           resume?: false,
-           journal: Continuum.Runtime.Journal.Postgres
-         } = state
-       ) do
+  defp resolve_workflow_entrypoint(%{resume?: false, journal: journal} = state)
+       when is_durable_journal(journal) do
     case Continuum.VersionRegistry.ensure_registered(state.workflow_module, state.instance) do
       {:ok, %{entrypoint: entrypoint, workflow_string: workflow, version_hash: version_hash}} ->
         {:ok,
@@ -770,7 +778,8 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
-  defp resolve_workflow_entrypoint(%{journal: Continuum.Runtime.Journal.Postgres} = state) do
+  defp resolve_workflow_entrypoint(%{journal: journal} = state)
+       when is_durable_journal(journal) do
     {workflow, version_hash} =
       if state.workflow && state.version_hash do
         {state.workflow, state.version_hash}
@@ -887,9 +896,9 @@ defmodule Continuum.Runtime.Engine do
   # lease and leave the run suspended so a node that has the version loaded
   # can claim it. Marking it stuck globally would let one stale node poison a
   # run forever (rolling deploys).
-  defp unknown_version(%{journal: Continuum.Runtime.Journal.Postgres} = state, error) do
+  defp unknown_version(%{journal: journal} = state, error) when is_durable_journal(journal) do
     :ok =
-      Continuum.Runtime.Journal.Postgres.release_unknown_version!(
+      journal.release_unknown_version!(
         state.instance,
         state.run_id,
         state.lease_token
@@ -915,8 +924,8 @@ defmodule Continuum.Runtime.Engine do
         else: fail_run(state, {:error, error, []}, {:error, error})
   end
 
-  defp cancel_run(%{journal: Continuum.Runtime.Journal.Postgres} = state) do
-    Continuum.Runtime.Journal.Postgres.cancel_run!(
+  defp cancel_run(%{journal: journal} = state) when is_durable_journal(journal) do
+    journal.cancel_run!(
       state.instance,
       state.run_id,
       state.lease_token
@@ -933,14 +942,14 @@ defmodule Continuum.Runtime.Engine do
     journal = Keyword.get(opts, :journal, Instance.journal(instance))
 
     case journal do
-      Continuum.Runtime.Journal.Postgres ->
+      journal when is_durable_journal(journal) ->
         case Lease.acquire(run_id,
                owner: Keyword.get_lazy(opts, :lease_owner, fn -> Lease.owner(instance.name) end),
                repo: instance.repo,
                ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)
              ) do
           {:ok, lease} ->
-            Continuum.Runtime.Journal.Postgres.cancel_run!(instance, run_id, lease.token)
+            journal.cancel_run!(instance, run_id, lease.token)
 
           {:error, :not_acquired} ->
             not_acquired_error(instance, run_id)
@@ -987,7 +996,7 @@ defmodule Continuum.Runtime.Engine do
     {lease.owner, lease.token, lease.cancel_requested_at}
   end
 
-  defp acquire_lease(instance, Continuum.Runtime.Journal.Postgres, run_id, opts, nil) do
+  defp acquire_lease(instance, journal, run_id, opts, nil) when is_durable_journal(journal) do
     case {Keyword.get(opts, :lease_owner), Keyword.get(opts, :lease_token)} do
       {owner, token} when is_binary(owner) and is_integer(token) ->
         cancel_requested_at = Keyword.get(opts, :cancel_requested_at)
@@ -1110,7 +1119,7 @@ defmodule Continuum.Runtime.Engine do
     end
   end
 
-  defp start_lease_opts(Continuum.Runtime.Journal.Postgres, instance, opts) do
+  defp start_lease_opts(journal, instance, opts) when is_durable_journal(journal) do
     [
       owner: Keyword.get_lazy(opts, :lease_owner, fn -> Lease.owner(instance.name) end),
       ttl_seconds: Keyword.get(opts, :lease_ttl_seconds, 30)

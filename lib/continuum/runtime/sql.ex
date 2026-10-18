@@ -28,8 +28,14 @@ defmodule Continuum.Runtime.SQL do
   @spec dialect(module() | nil) :: dialect()
   def dialect(nil), do: :postgres
 
+  # Anything that is not verifiably an ecto_sqlite3 repo keeps the PostgreSQL
+  # behavior Continuum has always had, including test doubles without an
+  # adapter.
   def dialect(repo) when is_atom(repo) do
-    if repo.__adapter__() == @sqlite_adapter, do: :sqlite, else: :postgres
+    if Code.ensure_loaded?(repo) and function_exported?(repo, :__adapter__, 0) and
+         repo.__adapter__() == @sqlite_adapter,
+       do: :sqlite,
+       else: :postgres
   end
 
   @doc false
@@ -193,6 +199,32 @@ defmodule Continuum.Runtime.SQL do
       {:error, _reason} ->
         value |> NaiveDateTime.from_iso8601!() |> DateTime.from_naive!("Etc/UTC")
     end
+  end
+
+  @doc """
+  Run a raw statement written with PostgreSQL `$N` placeholders.
+
+  Only for statements that are otherwise valid in both dialects. SQLite binds
+  `$N` as a *named* parameter, numbered by first appearance rather than by
+  `N`, so placeholders are rewritten to SQLite's explicitly numbered `?N`.
+  """
+  @spec query(module(), binary(), list()) :: {:ok, term()} | {:error, term()}
+  def query(repo, sql, params \\ []), do: repo.query(statement(repo, sql), params)
+
+  @doc "Like `query/3`, raising on error."
+  @spec query!(module(), binary(), list()) :: term()
+  def query!(repo, sql, params \\ []), do: repo.query!(statement(repo, sql), params)
+
+  defp statement(repo, sql) do
+    if sqlite?(repo), do: Regex.replace(~r/\$(\d+)/, sql, "?\\1"), else: sql
+  end
+
+  @doc """
+  Select a UUID column as text: PostgreSQL returns `uuid` columns as binaries.
+  """
+  @spec text_id(module(), binary()) :: binary()
+  def text_id(repo, column) do
+    if sqlite?(repo), do: column, else: column <> "::text"
   end
 
   @doc """

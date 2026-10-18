@@ -20,6 +20,7 @@ defmodule Continuum.Runtime.Effect do
   """
 
   alias Continuum.{Runtime.Context, Telemetry}
+  import Continuum.Runtime.Journal, only: [is_durable_journal: 1]
   require Logger
 
   @type effect ::
@@ -280,11 +281,11 @@ defmodule Continuum.Runtime.Effect do
     refuse_live!(ctx, {:activity_batch, Enum.map(items, & &1.mfa)})
   end
 
-  defp live_activity_batch!(%{journal: Continuum.Runtime.Journal.Postgres} = ctx, items) do
+  defp live_activity_batch!(%{journal: journal} = ctx, items) when is_durable_journal(journal) do
     scheduled = Enum.map(items, &batch_schedule(ctx, &1))
 
     :ok =
-      Continuum.Runtime.Journal.Postgres.schedule_activity_batch!(
+      ctx.journal.schedule_activity_batch!(
         ctx.instance,
         ctx.run_id,
         scheduled,
@@ -845,11 +846,12 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp live_tail!(
-         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         %{journal: journal} = ctx,
          {:activity, {mod, fun, args}, opts},
          _live_compute,
          command_id
-       ) do
+       )
+       when is_durable_journal(journal) do
     task_id = Ecto.UUID.generate()
     policy = activity_policy(mod, args, opts)
 
@@ -877,7 +879,7 @@ defmodule Continuum.Runtime.Effect do
     }
 
     :ok =
-      Continuum.Runtime.Journal.Postgres.schedule_activity!(
+      ctx.journal.schedule_activity!(
         ctx.instance,
         ctx.run_id,
         event,
@@ -896,11 +898,12 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp live_tail!(
-         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         %{journal: journal} = ctx,
          {:timer, ms},
          _live_compute,
          command_id
-       ) do
+       )
+       when is_durable_journal(journal) do
     timer_id = Ecto.UUID.generate()
 
     fires_at =
@@ -920,7 +923,7 @@ defmodule Continuum.Runtime.Effect do
     timer = %{id: timer_id, fires_at: fires_at}
 
     :ok =
-      Continuum.Runtime.Journal.Postgres.schedule_timer!(
+      ctx.journal.schedule_timer!(
         ctx.instance,
         ctx.run_id,
         event,
@@ -968,12 +971,13 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp live_tail!(
-         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         %{journal: journal} = ctx,
          {:await_signal, name, opts},
          _live_compute,
          command_id
-       ) do
-    case Continuum.Runtime.Journal.Postgres.consume_pending_signal!(
+       )
+       when is_durable_journal(journal) do
+    case ctx.journal.consume_pending_signal!(
            ctx.instance,
            ctx.run_id,
            name,
@@ -1148,7 +1152,7 @@ defmodule Continuum.Runtime.Effect do
       |> Map.merge(signal_timeout(opts))
 
     :ok =
-      Continuum.Runtime.Journal.Postgres.schedule_signal_await!(
+      ctx.journal.schedule_signal_await!(
         ctx.instance,
         ctx.run_id,
         event,
@@ -1161,7 +1165,7 @@ defmodule Continuum.Runtime.Effect do
       seq: ctx.cursor
     })
 
-    case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
+    case ctx.journal.resolve_signal_await(
            ctx.instance,
            ctx.run_id,
            event,
@@ -1222,7 +1226,7 @@ defmodule Continuum.Runtime.Effect do
     {ctx, items} = parallel_compensation_items(ctx, stack, command_base)
     Context.put(ctx)
 
-    if ctx.journal == Continuum.Runtime.Journal.Postgres do
+    if Continuum.Runtime.Journal.durable?(ctx.journal) do
       do_parallel_compensations(items)
     else
       Enum.each(items, fn item ->
@@ -1324,7 +1328,7 @@ defmodule Continuum.Runtime.Effect do
       end)
 
     :ok =
-      Continuum.Runtime.Journal.Postgres.schedule_compensations!(
+      ctx.journal.schedule_compensations!(
         ctx.instance,
         ctx.run_id,
         scheduled,
@@ -1456,10 +1460,11 @@ defmodule Continuum.Runtime.Effect do
   end
 
   defp live_compensation!(
-         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         %{journal: journal} = ctx,
          {:compensation, target_id, {mod, _fun, args} = mfa},
          command_id
-       ) do
+       )
+       when is_durable_journal(journal) do
     task_id = Ecto.UUID.generate()
     policy = activity_policy(mod, args, [])
 
@@ -1489,7 +1494,7 @@ defmodule Continuum.Runtime.Effect do
     }
 
     :ok =
-      Continuum.Runtime.Journal.Postgres.schedule_compensation!(
+      ctx.journal.schedule_compensation!(
         ctx.instance,
         ctx.run_id,
         event,
@@ -1674,10 +1679,11 @@ defmodule Continuum.Runtime.Effect do
   # --- continue_as_new -------------------------------------------------------
 
   defp live_continue_as_new!(
-         %{journal: Continuum.Runtime.Journal.Postgres} = ctx,
+         %{journal: journal} = ctx,
          input,
          command_id
-       ) do
+       )
+       when is_durable_journal(journal) do
     next_run_id = deterministic_continue_run_id(ctx.run_id, command_id)
 
     event = %{
@@ -1689,7 +1695,7 @@ defmodule Continuum.Runtime.Effect do
     }
 
     correlation_id =
-      Continuum.Runtime.Journal.Postgres.continue_as_new!(
+      ctx.journal.continue_as_new!(
         ctx.instance,
         ctx.run_id,
         next_run_id,
@@ -2073,11 +2079,11 @@ defmodule Continuum.Runtime.Effect do
       # mailbox. Replaying the same history offline (golden histories,
       # `Continuum.Test.replay/4`) must suspend instead of reaching for
       # Postgres the context never configured.
-      nil when ctx.journal != Continuum.Runtime.Journal.Postgres ->
+      nil when not is_durable_journal(ctx.journal) ->
         :pending
 
       nil ->
-        case Continuum.Runtime.Journal.Postgres.resolve_signal_await(
+        case ctx.journal.resolve_signal_await(
                ctx.instance,
                ctx.run_id,
                event,

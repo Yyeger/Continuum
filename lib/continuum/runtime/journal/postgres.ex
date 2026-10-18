@@ -7,6 +7,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
   run row. Appends lock the run row, validate the lease token, assign a
   sequence number, and insert the event in one transaction.
 
+  This module is also the implementation behind
+  `Continuum.Runtime.Journal.SQLite`: statements that differ between the two
+  dialects are selected by the repo's adapter.
+
   The replay loop and engine code are identical whether this adapter or
   `InMemory` is in use — the only difference is durability and the
   fencing-token enforcement on writes.
@@ -18,7 +22,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   require Logger
 
-  alias Continuum.Runtime.{Instance, JournalError, Snapshotter}
+  alias Continuum.Runtime.{Instance, JournalError, Snapshotter, SQL}
 
   alias Continuum.Schema.{
     ActivityAttempt,
@@ -33,6 +37,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
   }
 
   alias Continuum.{DurableTerm, Telemetry}
+
+  @sqlite_ingress_key_constraint :continuum_runs_namespace_workflow_idempotency_key_index
 
   @impl true
   def start_run(%Instance{} = instance, run_id, workflow, input, opts \\ []) do
@@ -87,6 +93,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
       |> Ecto.Changeset.unique_constraint(:idempotency_key,
         name: :continuum_runs_ingress_key_idx
       )
+      # SQLite reports unique violations by column list; ecto_sqlite3 derives
+      # these names from the columns of the same two indexes.
+      |> Ecto.Changeset.unique_constraint(:id, name: :continuum_runs_id_index)
+      |> Ecto.Changeset.unique_constraint(:idempotency_key,
+        name: @sqlite_ingress_key_constraint
+      )
 
     {changeset, metadata.workflow, namespace, idempotency_key}
   end
@@ -112,7 +124,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp insert_run(changeset, run_id, workflow, namespace, idempotency_key) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         reserve_ingress_key!(namespace, workflow, idempotency_key, run_id)
 
         case repo().insert(changeset) do
@@ -143,24 +155,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
     ttl_seconds = Keyword.get(lease_opts, :ttl_seconds, 30)
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         reserve_ingress_key!(namespace, workflow, idempotency_key, run_id)
 
         with {:ok, _run} <-
                repo().insert(Ecto.Changeset.change(changeset, %{lease_owner: owner})),
-             {:ok, %{rows: [[token]]}} <-
-               repo().query(
-                 """
-                 UPDATE continuum_runs
-                 SET lease_token = nextval('continuum_lease_token_seq'),
-                     lease_acquired_at = clock_timestamp(),
-                     lease_heartbeat_at = clock_timestamp(),
-                     lease_expires_at = now() + make_interval(secs => $2)
-                 WHERE id = $1::text::uuid
-                 RETURNING lease_token
-                 """,
-                 [run_id, ttl_seconds]
-               ) do
+             {:ok, token} <- lease_fresh_run(run_id, ttl_seconds) do
           token
         else
           {:error, reason} -> repo().rollback(reason)
@@ -179,6 +179,43 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
       {:error, reason} ->
         classify_start_error(reason, workflow, namespace, idempotency_key)
+    end
+  end
+
+  defp lease_fresh_run(run_id, ttl_seconds) do
+    case SQL.dialect(repo()) do
+      :postgres ->
+        with {:ok, %{rows: [[token]]}} <-
+               repo().query(
+                 """
+                 UPDATE continuum_runs
+                 SET lease_token = nextval('continuum_lease_token_seq'),
+                     lease_acquired_at = clock_timestamp(),
+                     lease_heartbeat_at = clock_timestamp(),
+                     lease_expires_at = now() + make_interval(secs => $2)
+                 WHERE id = $1::text::uuid
+                 RETURNING lease_token
+                 """,
+                 [run_id, ttl_seconds]
+               ) do
+          {:ok, token}
+        end
+
+      :sqlite ->
+        token = SQL.next_lease_token!(repo())
+        now = SQL.utc_now()
+
+        {1, _} =
+          repo().update_all(from(r in Run, where: r.id == ^run_id),
+            set: [
+              lease_token: token,
+              lease_acquired_at: now,
+              lease_heartbeat_at: now,
+              lease_expires_at: DateTime.add(now, ttl_seconds, :second)
+            ]
+          )
+
+        {:ok, token}
     end
   end
 
@@ -255,7 +292,10 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp ingress_key_conflict?(changeset) do
     Enum.any?(changeset.errors, fn
       {:idempotency_key, {_message, metadata}} ->
-        metadata[:constraint_name] == "continuum_runs_ingress_key_idx"
+        metadata[:constraint_name] in [
+          "continuum_runs_ingress_key_idx",
+          Atom.to_string(@sqlite_ingress_key_constraint)
+        ]
 
       _other ->
         false
@@ -320,7 +360,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     {event_type, payload} = encode_event(event)
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
 
         seq = event[:seq] || next_seq(run_id)
@@ -374,7 +414,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp load_with_snapshot_with_repo(run_id, lease_token) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
 
         snapshot = latest_snapshot(run_id)
@@ -443,7 +483,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     task = Map.put_new(task, :lineage_id, lineage_id)
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
         now = DateTime.utc_now()
 
@@ -508,7 +548,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     now = DateTime.utc_now()
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         parent = lock_and_load_run!(parent_run_id, lease_token)
         enforce_child_depth!(parent_run_id)
 
@@ -576,7 +616,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     SELECT max(depth) FROM ancestors
     """
 
-    case repo().query(sql, [Ecto.UUID.dump!(parent_run_id), max_depth]) do
+    case SQL.query(repo(), sql, [SQL.uuid(repo(), parent_run_id), max_depth]) do
       {:ok, %{rows: [[parent_depth]]}} when is_integer(parent_depth) ->
         if parent_depth + 1 > max_depth do
           repo().rollback(
@@ -618,7 +658,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp await_child_terminal_with_repo!(parent_run_id, child_run_id, command_id, seq, lease_token) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(parent_run_id, lease_token)
 
         case child_terminal_state(child_run_id) do
@@ -728,13 +768,13 @@ defmodule Continuum.Runtime.Journal.Postgres do
           WHERE successor.continued_from_run_id = r.id
         )
     )
-    SELECT id::text
+    SELECT #{SQL.text_id(repo(), "id")}
     FROM candidates
     ORDER BY rooted DESC, depth DESC, id DESC
     LIMIT 1
     """
 
-    case repo().query(sql, [Ecto.UUID.dump!(run_id)]) do
+    case SQL.query(repo(), sql, [SQL.uuid(repo(), run_id)]) do
       {:ok, %{rows: [[terminal_id]]}} -> terminal_id
       _ -> run_id
     end
@@ -766,7 +806,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     now = DateTime.utc_now()
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         # Lock our parent before our own row, the same parent-before-child
         # order the cancel cascade takes (see lock_parent_first/1). A
         # concurrent Continuum.cancel of an ancestor then serializes against
@@ -776,7 +816,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         # is parented to a row the cascade locked under only the root's lock
         # and escapes cancellation (audit F3).
         lock_parent_first(run_id)
-        run = repo().one(from(r in Run, where: r.id == ^run_id, lock: "FOR UPDATE"))
+        run = repo().one(for_update(from(r in Run, where: r.id == ^run_id)))
 
         case run do
           nil ->
@@ -917,7 +957,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp schedule_activity_batch_with_repo!(run_id, scheduled, lease_token, kind) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
         now = DateTime.utc_now()
 
@@ -983,7 +1023,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     idempotency = Keyword.get(opts, :idempotency)
 
     tx_result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_active_run!(task.run_id, lease_token)
         lock_and_validate_activity_task!(task)
 
@@ -1077,7 +1117,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     idempotency = Keyword.get(opts, :idempotency)
 
     tx_result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_active_run!(task.run_id, lease_token)
         lock_and_validate_activity_task!(task)
 
@@ -1159,8 +1199,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp retry_discarded_activity_with_repo!(task_id, policy, operator, reason) do
     result =
-      repo().transaction(fn ->
-        task = repo().one(from(t in ActivityTask, where: t.id == ^task_id, lock: "FOR UPDATE"))
+      transaction(fn ->
+        task = repo().one(for_update(from(t in ActivityTask, where: t.id == ^task_id)))
 
         if is_nil(task), do: repo().rollback(:activity_task_not_found)
         if task.state not in ["discarded", "dead_lettered"], do: repo().rollback(:not_discarded)
@@ -1182,7 +1222,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         end
 
         lock_parent_first(task.run_id)
-        run = repo().one(from(r in Run, where: r.id == ^task.run_id, lock: "FOR UPDATE"))
+        run = repo().one(for_update(from(r in Run, where: r.id == ^task.run_id)))
 
         cond do
           is_nil(run) -> repo().rollback(:run_not_found)
@@ -1193,9 +1233,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
         terminal =
           repo().one(
-            from(e in Event,
-              where: e.run_id == ^task.run_id and e.seq == ^(task.seq + 1),
-              lock: "FOR UPDATE"
+            for_update(
+              from(e in Event, where: e.run_id == ^task.run_id and e.seq == ^(task.seq + 1))
             )
           )
 
@@ -1278,16 +1317,21 @@ defmodule Continuum.Runtime.Journal.Postgres do
           from(s in Snapshot, where: s.run_id == ^task.run_id and s.through_seq >= ^task.seq)
         )
 
-        {:ok, %{num_rows: 1}} =
-          repo().query(
-            """
-            UPDATE continuum_runs
-            SET state = 'suspended', result = NULL, error = NULL, error_stacktrace = NULL,
-                completed_at = NULL, lease_owner = NULL, lease_token = NULL,
-                lease_expires_at = NULL, next_wakeup_at = NULL, retention_until = NULL
-            WHERE id = $1::text::uuid AND state = 'failed'
-            """,
-            [task.run_id]
+        {1, _} =
+          repo().update_all(
+            from(r in Run, where: r.id == ^task.run_id and r.state == "failed"),
+            set: [
+              state: "suspended",
+              result: nil,
+              error: nil,
+              error_stacktrace: nil,
+              completed_at: nil,
+              lease_owner: nil,
+              lease_token: nil,
+              lease_expires_at: nil,
+              next_wakeup_at: nil,
+              retention_until: nil
+            ]
           )
 
         %{successor_task_id: successor_id, lineage_id: lineage_id, run_id: task.run_id}
@@ -1302,7 +1346,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     encoded_error = encode_term(error)
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_active_run!(task.run_id, lease_token)
         lock_and_validate_activity_task!(task)
         :ok = record_activity_attempt!(task, "retrying", error)
@@ -1319,14 +1363,27 @@ defmodule Continuum.Runtime.Journal.Postgres do
               set: [
                 state: "available",
                 attempt: ^next_attempt,
-                available_at:
-                  fragment("clock_timestamp() + make_interval(secs => ?)", ^backoff_seconds),
                 lease_owner: nil,
                 lease_expires_at: nil,
                 error: ^encoded_error
               ]
             ]
           )
+
+        query =
+          case SQL.dialect(repo()) do
+            :postgres ->
+              update(query,
+                set: [
+                  available_at:
+                    fragment("clock_timestamp() + make_interval(secs => ?)", ^backoff_seconds)
+                ]
+              )
+
+            :sqlite ->
+              available_at = DateTime.add(SQL.utc_now(), backoff_ms, :millisecond)
+              update(query, set: [available_at: ^available_at])
+          end
 
         case repo().update_all(query, []) do
           {1, _} -> :ok
@@ -1349,7 +1406,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp cancel_run_with_instance!(run_id, lease_token, instance) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         # Same lock order as the cascade (parent before child): take our own
         # parent's row lock first so cancel and child-completion cannot
         # deadlock AB-BA.
@@ -1478,9 +1535,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         :ok
 
       parent_run_id ->
-        repo().one(
-          from(r in Run, where: r.id == ^parent_run_id, lock: "FOR UPDATE", select: r.id)
-        )
+        repo().one(for_update(from(r in Run, where: r.id == ^parent_run_id, select: r.id)))
 
         :ok
     end
@@ -1538,11 +1593,12 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp lock_child_run_ids(parent_ids) do
     repo().all(
-      from(r in Run,
-        where: r.parent_run_id in ^parent_ids,
-        order_by: r.id,
-        lock: "FOR UPDATE",
-        select: r.id
+      for_update(
+        from(r in Run,
+          where: r.parent_run_id in ^parent_ids,
+          order_by: r.id,
+          select: r.id
+        )
       )
     )
   end
@@ -1558,7 +1614,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
           set: [next_wakeup_at: DateTime.utc_now() |> DateTime.truncate(:microsecond)]
         )
 
-        repo().query("SELECT pg_notify('continuum_run_wake', $1)", [parent_run_id])
+        notify("continuum_run_wake", parent_run_id)
         parent_run_id
     end
   end
@@ -1569,7 +1625,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     do: Continuum.Runtime.Engine.wake(instance, parent_run_id)
 
   defp run_in_transaction!(fun) do
-    case repo().transaction(fun) do
+    case transaction(fun) do
       {:ok, value} ->
         value
 
@@ -1586,7 +1642,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     {event_type, payload} = encode_event(event)
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
 
         event_changeset =
@@ -1646,7 +1702,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     {event_type, payload} = encode_event(event)
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
         now = DateTime.utc_now()
 
@@ -1702,7 +1758,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp consume_pending_signal_with_repo!(run_id, name, command_id, seq, lease_token) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
 
         case pending_signal(run_id, name) do
@@ -1722,7 +1778,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp resolve_signal_await_with_repo(run_id, await_event, lease_token) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_run!(run_id, lease_token)
 
         case signal_await_winner(run_id, await_event) do
@@ -1760,7 +1816,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
     now = DateTime.utc_now()
 
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         # Lock while walking the chain. If a concurrent continue_as_new wins,
         # this waits, sees the completed predecessor, and re-locks the
         # successor; if delivery wins, the later continue migrates the signal.
@@ -1809,10 +1865,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                          from(r in Run, where: r.id == ^delivered_run_id),
                          set: [next_wakeup_at: now]
                        ),
-                     {:ok, _} <-
-                       repo().query("SELECT pg_notify('continuum_signal', $1)", [
-                         delivered_run_id
-                       ]) do
+                     :ok <- notify("continuum_signal", delivered_run_id) do
                   {delivered_run_id, :delivered}
                 else
                   {:error, reason} -> repo().rollback({:signal_delivery_failed, reason})
@@ -1855,7 +1908,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp lock_signal_delivery_tip(run_id) do
-    case repo().one(from(r in Run, where: r.id == ^run_id, lock: "FOR UPDATE")) do
+    case repo().one(for_update(from(r in Run, where: r.id == ^run_id))) do
       nil ->
         case follow_continued_chain(run_id) do
           ^run_id -> repo().rollback(:not_found)
@@ -1880,7 +1933,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp fire_timer_with_repo!(run_id, timer_id, lease_token) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         # State and lease, not lease only: a cancel committing between the
         # wheel's claim and this fire must roll back as {:run_not_active, _}
         # instead of appending timer_fired to a terminal run's history.
@@ -1937,7 +1990,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp activity_task_result!(task, event, task_updates, lease_token) do
     result =
-      repo().transaction(fn ->
+      transaction(fn ->
         lock_and_validate_active_run!(task.run_id, lease_token)
         lock_and_validate_activity_task!(task)
 
@@ -2052,13 +2105,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp activity_module_key(module) when is_binary(module), do: module
 
   defp lock_and_validate_active_run!(run_id, lease_token) do
-    run =
-      repo().one(
-        from(r in Run,
-          where: r.id == ^run_id,
-          lock: "FOR UPDATE"
-        )
-      )
+    run = repo().one(for_update(from(r in Run, where: r.id == ^run_id)))
 
     case run do
       nil ->
@@ -2076,13 +2123,23 @@ defmodule Continuum.Runtime.Journal.Postgres do
     # Expiry is measured on the database clock — the same clock that wrote
     # lease_expires_at — so app/DB skew cannot shrink or stretch the TTL.
     result =
-      repo().one(
-        from(t in ActivityTask,
-          where: t.id == ^task.id,
-          lock: "FOR UPDATE",
-          select: {t, fragment("clock_timestamp()")}
-        )
-      )
+      case SQL.dialect(repo()) do
+        :postgres ->
+          repo().one(
+            for_update(
+              from(t in ActivityTask,
+                where: t.id == ^task.id,
+                select: {t, fragment("clock_timestamp()")}
+              )
+            )
+          )
+
+        :sqlite ->
+          case repo().one(from(t in ActivityTask, where: t.id == ^task.id)) do
+            nil -> nil
+            db_task -> {db_task, SQL.utc_now()}
+          end
+      end
 
     case result do
       nil ->
@@ -2155,12 +2212,45 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp maybe_set_signal_timeout_wakeup(_run_id, _event, _lease_token), do: :ok
 
   defp notify_timer_armed_with_repo(run_id, fires_at) do
-    payload = "#{run_id}|#{DateTime.to_iso8601(fires_at)}"
+    notify("continuum_timer_armed", "#{run_id}|#{DateTime.to_iso8601(fires_at)}")
+  end
 
-    case repo().query("SELECT pg_notify('continuum_timer_armed', $1)", [payload]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
+  # PostgreSQL delivers notifications at commit to every listening node.
+  # SQLite is single-node and has no NOTIFY: signal delivery and parent wakes
+  # already wake local engines after commit, so only the timer wheel needs a
+  # local message, sent once the arming transaction has committed.
+  defp notify(channel, payload) do
+    case SQL.dialect(repo()) do
+      :postgres ->
+        case repo().query("SELECT pg_notify($1, $2)", [channel, payload]) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      :sqlite ->
+        notify_local(channel, payload)
     end
+  end
+
+  defp notify_local("continuum_timer_armed" = channel, payload) do
+    case Process.get(:continuum_journal_instance) do
+      %Instance{timer_wheel: timer_wheel} ->
+        SQL.after_commit(fn -> send_local_notification(timer_wheel, channel, payload) end)
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp notify_local(_channel, _payload), do: :ok
+
+  defp send_local_notification(name, channel, payload) do
+    case Process.whereis(name) do
+      nil -> :ok
+      pid -> send(pid, {:notification, self(), nil, channel, payload})
+    end
+
+    :ok
   end
 
   defp signal_await_winner(run_id, await_event) do
@@ -2253,11 +2343,13 @@ defmodule Continuum.Runtime.Journal.Postgres do
     signal_name = Atom.to_string(name)
 
     repo().one(
-      from(s in Signal,
-        where: s.run_id == ^run_id and s.name == ^signal_name and s.delivered == false,
-        order_by: [asc: s.inserted_at, asc: s.id],
-        limit: 1,
-        lock: "FOR UPDATE SKIP LOCKED"
+      SQL.for_update_skip_locked(
+        from(s in Signal,
+          where: s.run_id == ^run_id and s.name == ^signal_name and s.delivered == false,
+          order_by: [asc: s.inserted_at, asc: s.id],
+          limit: 1
+        ),
+        repo()
       )
     )
   end
@@ -2471,9 +2563,16 @@ defmodule Continuum.Runtime.Journal.Postgres do
   # and clears it under the same fenced lease.
   defp mark_run_wake_pending!(run_id, lease_token) do
     query =
-      from(r in leased_run_query(run_id, lease_token),
-        update: [set: [next_wakeup_at: fragment("clock_timestamp()")]]
-      )
+      case SQL.dialect(repo()) do
+        :postgres ->
+          from(r in leased_run_query(run_id, lease_token),
+            update: [set: [next_wakeup_at: fragment("clock_timestamp()")]]
+          )
+
+        :sqlite ->
+          now = SQL.utc_now()
+          from(r in leased_run_query(run_id, lease_token), update: [set: [next_wakeup_at: ^now]])
+      end
 
     case repo().update_all(query, []) do
       {1, _} -> :ok
@@ -2621,11 +2720,8 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp set_terminal_retention!(run_id) do
-    %{rows: [[workflow, version_hash]]} =
-      repo().query!(
-        "SELECT workflow, version_hash FROM continuum_runs WHERE id = $1::text::uuid",
-        [run_id]
-      )
+    {workflow, version_hash} =
+      repo().one!(from(r in Run, where: r.id == ^run_id, select: {r.workflow, r.version_hash}))
 
     retention_ms =
       case Continuum.VersionRegistry.resolve(workflow, version_hash) do
@@ -2639,17 +2735,28 @@ defmodule Continuum.Runtime.Journal.Postgres do
           nil
       end
 
-    repo().query!(
-      """
-      UPDATE continuum_runs
-      SET retention_until = CASE
-        WHEN $2::bigint IS NULL THEN NULL
-        ELSE clock_timestamp() + ($2::bigint * interval '1 millisecond')
-      END
-      WHERE id = $1::text::uuid
-      """,
-      [run_id, retention_ms]
-    )
+    case SQL.dialect(repo()) do
+      :postgres ->
+        repo().query!(
+          """
+          UPDATE continuum_runs
+          SET retention_until = CASE
+            WHEN $2::bigint IS NULL THEN NULL
+            ELSE clock_timestamp() + ($2::bigint * interval '1 millisecond')
+          END
+          WHERE id = $1::text::uuid
+          """,
+          [run_id, retention_ms]
+        )
+
+      :sqlite ->
+        retention_until =
+          if retention_ms, do: DateTime.add(SQL.utc_now(), retention_ms, :millisecond)
+
+        repo().update_all(from(r in Run, where: r.id == ^run_id),
+          set: [retention_until: retention_until]
+        )
+    end
 
     :ok
   end
@@ -2684,13 +2791,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp lock_and_validate_run!(run_id, lease_token) do
-    run =
-      repo().one(
-        from(r in Run,
-          where: r.id == ^run_id,
-          lock: "FOR UPDATE"
-        )
-      )
+    run = repo().one(for_update(from(r in Run, where: r.id == ^run_id)))
 
     case run do
       nil -> repo().rollback({:run_not_found, run_id})
@@ -2699,13 +2800,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   end
 
   defp lock_and_load_run!(run_id, lease_token) do
-    run =
-      repo().one(
-        from(r in Run,
-          where: r.id == ^run_id,
-          lock: "FOR UPDATE"
-        )
-      )
+    run = repo().one(for_update(from(r in Run, where: r.id == ^run_id)))
 
     case run do
       nil ->
@@ -2837,10 +2932,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
   # Real database time (advances inside a transaction, unlike now()) — used
   # where a comparison needs "current time" on the same clock that wrote the
   # compared column.
-  defp db_now do
-    {:ok, %{rows: [[now]]}} = repo().query("SELECT clock_timestamp()")
-    now
-  end
+  defp db_now, do: SQL.now(repo())
 
   defp encode_term(term, root \\ :value)
   defp encode_term(nil, :input), do: :erlang.term_to_binary(nil)
@@ -2865,16 +2957,24 @@ defmodule Continuum.Runtime.Journal.Postgres do
 
   defp with_repo(%Instance{} = instance, fun) do
     previous = Process.get(:continuum_repo)
+    previous_instance = Process.get(:continuum_journal_instance)
     Process.put(:continuum_repo, instance.repo)
+    Process.put(:continuum_journal_instance, instance)
 
     try do
       fun.()
     after
-      if is_nil(previous),
-        do: Process.delete(:continuum_repo),
-        else: Process.put(:continuum_repo, previous)
+      restore(:continuum_repo, previous)
+      restore(:continuum_journal_instance, previous_instance)
     end
   end
+
+  defp restore(key, nil), do: Process.delete(key)
+  defp restore(key, value), do: Process.put(key, value)
+
+  defp transaction(fun), do: SQL.transaction(repo(), fun)
+
+  defp for_update(query), do: SQL.for_update(query, repo())
 
   defp repo do
     Process.get(:continuum_repo) || Application.fetch_env!(:continuum, :repo)

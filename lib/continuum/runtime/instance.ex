@@ -169,15 +169,15 @@ defmodule Continuum.Runtime.Instance do
   defp default_repo(@default), do: Application.get_env(:continuum, :repo)
   defp default_repo(_name), do: nil
 
-  # Named instances pin their journal at construction: Postgres-backed when
-  # given a repo (the documented `Continuum.children/1` use case), in-memory
-  # otherwise. The default instance keeps `nil` so `journal/1` resolves
+  # Named instances pin their journal at construction: the durable journal for
+  # the repo's SQL dialect when given a repo (the documented
+  # `Continuum.children/1` use case), in-memory otherwise. The default instance keeps `nil` so `journal/1` resolves
   # `config :continuum, :journal` at call time — config overrides in test
   # setup (and the README quickstart's config) keep working regardless of
   # when the instance struct was built.
   defp default_journal(@default, _repo), do: nil
   defp default_journal(_name, nil), do: Continuum.Runtime.Journal.InMemory
-  defp default_journal(_name, _repo), do: Continuum.Runtime.Journal.Postgres
+  defp default_journal(_name, repo), do: Continuum.Runtime.Journal.for_repo(repo)
 
   defp default_activity_executor(@default) do
     Application.get_env(:continuum, :activity_executor, :builtin)

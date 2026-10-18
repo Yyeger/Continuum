@@ -245,7 +245,7 @@ defmodule Continuum.Observer do
     with {:ok, instance} <- repo_instance(opts) do
       Continuum.SignalContract.contracts_for_run(
         instance,
-        Continuum.Runtime.Journal.Postgres,
+        Continuum.Runtime.Journal.for_repo(instance.repo),
         run_id
       )
     end
@@ -298,7 +298,7 @@ defmodule Continuum.Observer do
     runtime_opts = [instance: instance_name]
 
     if instance.repo do
-      Keyword.put(runtime_opts, :journal, Continuum.Runtime.Journal.Postgres)
+      Keyword.put(runtime_opts, :journal, Continuum.Runtime.Journal.for_repo(instance.repo))
     else
       runtime_opts
     end

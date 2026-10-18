@@ -1,8 +1,9 @@
 defmodule Continuum.Runtime.NamespacePrecondition do
   @moduledoc false
 
+  import Continuum.Runtime.Journal, only: [is_durable_journal: 1]
+
   alias Continuum.Runtime.Instance
-  alias Continuum.Runtime.Journal.Postgres
 
   @spec resolve(Instance.t(), module(), binary(), keyword()) ::
           {:ok, binary()} | {:error, :not_found | {:invalid_namespace, term()}}
@@ -34,8 +35,8 @@ defmodule Continuum.Runtime.NamespacePrecondition do
 
   defp resolve_chain_tip(%Instance{repo: nil}, _journal, run_id), do: run_id
 
-  defp resolve_chain_tip(instance, Postgres, run_id),
-    do: Postgres.resolve_chain_tip(instance, run_id)
+  defp resolve_chain_tip(instance, journal, run_id) when is_durable_journal(journal),
+    do: journal.resolve_chain_tip(instance, run_id)
 
   defp resolve_chain_tip(_instance, _journal, run_id), do: run_id
 end

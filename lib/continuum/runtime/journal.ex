@@ -2,18 +2,22 @@ defmodule Continuum.Runtime.Journal do
   @moduledoc """
   Behaviour for the event-history journal.
 
-  Two adapters ship with v0.1:
+  Three adapters ship with Continuum:
 
     * `Continuum.Runtime.Journal.InMemory` — process-level state for tests and
       single-node hello-world. No durability.
     * `Continuum.Runtime.Journal.Postgres` — Ecto-backed durable journal with
       transactional appends and lease-token fencing.
+    * `Continuum.Runtime.Journal.SQLite` — the same durable journal on an
+      `ecto_sqlite3` repo, for single-node deployments.
 
   All append operations carry a `lease_token` (or `nil` for unleased
-  in-memory / pre-dispatch execution). The Postgres adapter rejects writes
+  in-memory / pre-dispatch execution). The durable adapters reject writes
   whose token does not match the run row's fencing token; `nil` only writes
   to unleased rows.
   """
+
+  @durable_journals [Continuum.Runtime.Journal.Postgres, Continuum.Runtime.Journal.SQLite]
 
   @callback start_run(
               instance :: Continuum.Runtime.Instance.t(),
@@ -134,6 +138,33 @@ defmodule Continuum.Runtime.Journal do
                       deliver_signal!: 5,
                       start_child!: 4,
                       await_child_terminal!: 6
+
+  @doc """
+  Guard that matches the database-backed journals.
+
+  Durable journals share one implementation and one set of replay semantics:
+  leased runs, a durable activity task table, timers, and a signal mailbox.
+  Runtime code that needs durable behavior matches on this guard rather than
+  on a single adapter module.
+  """
+  defguard is_durable_journal(journal) when journal in @durable_journals
+
+  @doc "Returns true when `journal` is a database-backed journal."
+  @spec durable?(module() | nil) :: boolean()
+  def durable?(journal), do: journal in @durable_journals
+
+  @doc false
+  # The durable journal that speaks `repo`'s SQL dialect. Runtime components
+  # that only exist on durable instances (dispatchers, schedule runner) start
+  # engines with this rather than with the configured default, which may be
+  # the in-memory journal on the default instance.
+  @spec for_repo(module()) :: module()
+  def for_repo(repo) do
+    case Continuum.Runtime.SQL.dialect(repo) do
+      :sqlite -> Continuum.Runtime.Journal.SQLite
+      :postgres -> Continuum.Runtime.Journal.Postgres
+    end
+  end
 
   @doc "Returns the configured default journal adapter."
   def default do
