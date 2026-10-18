@@ -55,14 +55,19 @@ defmodule Continuum.Test.SQLiteCase do
     Enum.each(["", "-wal", "-shm"], &File.rm(database <> &1))
 
     # Switching a new file to WAL needs an exclusive lock; doing it from one
-    # connection keeps the pool from racing for it at startup.
+    # connection, and keeping that connection open until the pool is up so
+    # the WAL files are not torn down in between, keeps the pool from racing.
     {:ok, initializer} = repo.start_link(name: nil, pool_size: 1)
-    GenServer.stop(initializer)
+    repo.put_dynamic_repo(initializer)
+    repo.query!("SELECT 1")
+    repo.put_dynamic_repo(repo)
 
     case repo.start_link() do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
     end
+
+    GenServer.stop(initializer)
 
     migrate!(repo)
   end

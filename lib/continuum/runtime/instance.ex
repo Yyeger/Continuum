@@ -142,6 +142,24 @@ defmodule Continuum.Runtime.Instance do
       workflow_modules: Keyword.get(opts, :workflow_modules),
       drain_timeout_ms: Keyword.get(opts, :drain_timeout_ms, 5_000)
     }
+    |> validate_journal_dialect!()
+  end
+
+  # A durable journal speaks one SQL dialect. Pairing it with a repo of the
+  # other dialect would only fail later, inside a run's first transaction.
+  defp validate_journal_dialect!(%Instance{repo: nil} = instance), do: instance
+
+  defp validate_journal_dialect!(%Instance{repo: repo} = instance) do
+    journal = journal(instance)
+    expected = Continuum.Runtime.Journal.for_repo(repo)
+
+    if Continuum.Runtime.Journal.durable?(journal) and journal != expected do
+      raise ArgumentError,
+            "#{inspect(journal)} cannot use #{inspect(repo)}: the repo's adapter " <>
+              "requires #{inspect(expected)}"
+    end
+
+    instance
   end
 
   # Single source of truth for which journal adapter an instance uses. Every

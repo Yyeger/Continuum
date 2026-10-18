@@ -267,7 +267,7 @@ defmodule Continuum.VersionRegistry do
   def upsert_instance(%Instance{} = instance, workflow_modules) do
     persist_entries(instance, configured_entries(workflow_modules))
   rescue
-    error in Postgrex.Error ->
+    error ->
       if missing_workflow_versions_table?(error), do: :ok, else: reraise(error, __STACKTRACE__)
   end
 
@@ -574,6 +574,9 @@ defmodule Continuum.VersionRegistry do
 
   defp missing_workflow_versions_table?(%Postgrex.Error{postgres: %{code: :undefined_table}}),
     do: true
+
+  defp missing_workflow_versions_table?(error) when is_struct(error, Exqlite.Error),
+    do: Exception.message(error) =~ "no such table: continuum_workflow_versions"
 
   defp missing_workflow_versions_table?(_error), do: false
 end

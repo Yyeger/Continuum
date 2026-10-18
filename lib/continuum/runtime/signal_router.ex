@@ -12,6 +12,10 @@ defmodule Continuum.Runtime.SignalRouter do
   parent resumes promptly. No separate listener process: a parent wakeup routes
   through the same "find local pid in Registry, wake it, else rely on the
   Dispatcher poll" path as a signal.
+
+  SQLite instances are single-node and do not listen: deliveries and parent
+  wakes reach local engines directly, and the periodic catch-up scan remains
+  the backstop.
   """
 
   use GenServer
@@ -19,7 +23,7 @@ defmodule Continuum.Runtime.SignalRouter do
 
   import Continuum.Runtime.Journal, only: [is_durable_journal: 1]
 
-  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Telemetry}
+  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Runtime.SQL, Telemetry}
 
   @listener_retry_ms 5_000
   @catch_up_interval_ms 30_000
@@ -112,7 +116,7 @@ defmodule Continuum.Runtime.SignalRouter do
       ref: nil
     }
 
-    {:ok, start_listener(state)}
+    {:ok, state |> start_listener() |> start_local_catch_up()}
   end
 
   @impl true
@@ -231,6 +235,19 @@ defmodule Continuum.Runtime.SignalRouter do
     :ok
   end
 
+  # Without LISTEN there is no listener start to hang the catch-up loop on.
+  defp start_local_catch_up(%{instance: %Instance{repo: repo} = instance} = state)
+       when not is_nil(repo) do
+    if SQL.sqlite?(repo) and Journal.durable?(Instance.journal(instance)) do
+      catch_up(instance, state.catch_up_batch_size)
+      schedule_catch_up(state)
+    end
+
+    state
+  end
+
+  defp start_local_catch_up(state), do: state
+
   defp start_listener(%{listen?: false} = state), do: state
 
   defp start_listener(%{notifier: notifier} = state) when is_pid(notifier), do: state
@@ -318,6 +335,56 @@ defmodule Continuum.Runtime.SignalRouter do
   end
 
   defp catch_up_page(instance, local_run_ids) do
+    case SQL.dialect(instance.repo) do
+      :postgres -> catch_up_page_postgres(instance, local_run_ids)
+      :sqlite -> catch_up_page_sqlite(instance, local_run_ids)
+    end
+  end
+
+  defp catch_up_page_sqlite(instance, local_run_ids) do
+    sql = """
+    WITH local_runs AS (
+      SELECT r.id, r.next_wakeup_at
+      FROM continuum_runs AS r
+      WHERE r.id IN (SELECT value FROM json_each(?1))
+        AND r.state IN ('running', 'suspended')
+        AND r.lease_owner IS NOT NULL
+        AND r.lease_token IS NOT NULL
+        AND r.lease_expires_at > ?2
+    ), wake_evidence AS (
+      SELECT s.run_id, s.inserted_at AS evidence_at
+      FROM continuum_signals AS s
+      JOIN local_runs AS r ON r.id = s.run_id
+      WHERE s.delivered = 0
+
+      UNION ALL
+
+      SELECT r.id AS run_id, r.next_wakeup_at AS evidence_at
+      FROM local_runs AS r
+      WHERE r.next_wakeup_at <= ?2
+    )
+    SELECT run_id, MIN(evidence_at)
+    FROM wake_evidence
+    GROUP BY run_id
+    ORDER BY MIN(evidence_at), run_id
+    """
+
+    now = SQL.utc_now()
+    params = [Jason.encode!(local_run_ids), SQL.timestamp(instance.repo, now)]
+
+    case instance.repo.query(sql, params) do
+      {:ok, %{rows: rows}} ->
+        {:ok,
+         Enum.map(rows, fn [run_id, oldest] ->
+           [run_id, max(0, DateTime.diff(now, SQL.decode_timestamp(oldest), :millisecond))]
+         end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp catch_up_page_postgres(instance, local_run_ids) do
     sql = """
     WITH local_runs AS (
       SELECT r.id, r.next_wakeup_at

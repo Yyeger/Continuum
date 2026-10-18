@@ -9,7 +9,7 @@ defmodule Continuum.RecurringSchedules do
   """
 
   import Ecto.Query
-  alias Continuum.{DurableTerm, Page, Runtime.Instance}
+  alias Continuum.{DurableTerm, Page, Runtime.Instance, Runtime.SQL}
   alias Continuum.Schema.{RecurringSchedule, Run, Schedule}
 
   @doc """
@@ -59,6 +59,7 @@ defmodule Continuum.RecurringSchedules do
           })
         )
         |> Ecto.Changeset.unique_constraint(:id, name: :continuum_recurring_schedules_pkey)
+        |> Ecto.Changeset.unique_constraint(:id, name: :continuum_recurring_schedules_id_index)
 
       case instance.repo.insert(changeset) do
         {:ok, row} -> {:ok, row.id}
@@ -119,16 +120,18 @@ defmodule Continuum.RecurringSchedules do
   def materialize(instance, budget) when is_integer(budget) and budget > 0 do
     budget = min(budget, 1_000)
 
-    instance.repo.transaction(fn ->
-      [[now]] = instance.repo.query!("SELECT clock_timestamp()").rows
+    SQL.transaction(instance.repo, fn ->
+      now = SQL.now(instance.repo)
 
       definitions =
         instance.repo.all(
-          from(s in RecurringSchedule,
-            where: s.state == "active" and s.next_occurrence_at <= ^now,
-            order_by: [asc: s.next_occurrence_at, asc: s.id],
-            limit: ^budget,
-            lock: "FOR UPDATE SKIP LOCKED"
+          SQL.for_update_skip_locked(
+            from(s in RecurringSchedule,
+              where: s.state == "active" and s.next_occurrence_at <= ^now,
+              order_by: [asc: s.next_occurrence_at, asc: s.id],
+              limit: ^budget
+            ),
+            instance.repo
           )
         )
 

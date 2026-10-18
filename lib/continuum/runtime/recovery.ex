@@ -10,7 +10,7 @@ defmodule Continuum.Runtime.Recovery do
   use GenServer
   require Logger
 
-  alias Continuum.{Runtime.Instance, Telemetry}
+  alias Continuum.{Runtime.Instance, Runtime.SQL, Telemetry}
 
   @max_local_exclusions 256
 
@@ -90,6 +90,40 @@ defmodule Continuum.Runtime.Recovery do
   end
 
   defp recover_runs(instance) do
+    case SQL.dialect(instance.repo) do
+      :postgres -> recover_runs_postgres(instance)
+      :sqlite -> recover_runs_sqlite(instance)
+    end
+  end
+
+  defp recover_runs_sqlite(instance) do
+    {skip_local_sql, params} =
+      case Instance.local_run_ids(instance, @max_local_exclusions) do
+        [] -> {"", []}
+        :too_many -> {"", []}
+        ids -> {"AND id NOT IN (SELECT value FROM json_each(?2))", [Jason.encode!(ids)]}
+      end
+
+    sql = """
+    UPDATE continuum_runs
+    SET state = CASE WHEN state = 'running' THEN 'suspended' ELSE state END,
+        lease_owner = NULL,
+        lease_token = NULL,
+        lease_expires_at = NULL,
+        next_wakeup_at = CASE
+          WHEN state = 'running' AND next_wakeup_at IS NULL THEN ?1
+          ELSE next_wakeup_at
+        END
+    WHERE state IN ('running', 'suspended')
+      AND (lease_owner IS NOT NULL OR lease_token IS NOT NULL OR lease_expires_at IS NOT NULL)
+      AND lease_expires_at < ?1
+      #{skip_local_sql}
+    """
+
+    query_count(instance, sql, [now_param(instance) | params])
+  end
+
+  defp recover_runs_postgres(instance) do
     # Same bound and same reasoning as the dispatcher's claim: excluding
     # locally-registered runs is an optimisation over the lease-expiry
     # predicate below, so a node with more live runs than the cap ships no
@@ -131,36 +165,49 @@ defmodule Continuum.Runtime.Recovery do
   # fails tasks whose attempt exceeds the policy before re-executing them.
   @doc false
   def recover_activity_tasks(instance) do
+    {now_sql, params} = now_sql(instance)
+
     sql = """
     UPDATE continuum_activity_tasks
     SET state = 'available',
         attempt = attempt + 1,
         lease_owner = NULL,
         lease_expires_at = NULL,
-        available_at = now()
+        available_at = #{now_sql}
     WHERE state = 'leased'
-      AND lease_expires_at < now()
+      AND lease_expires_at < #{now_sql}
     RETURNING id
     """
 
-    query_count(instance, sql, [])
+    query_count(instance, sql, params)
   end
 
   defp recover_due_timers(instance) do
+    {now_sql, params} = now_sql(instance)
+
     sql = """
     UPDATE continuum_runs AS r
-    SET next_wakeup_at = now()
+    SET next_wakeup_at = #{now_sql}
     FROM continuum_timers AS t
     WHERE t.run_id = r.id
       AND t.fired = false
-      AND t.fires_at <= now()
+      AND t.fires_at <= #{now_sql}
       AND r.state = 'suspended'
-      AND (r.next_wakeup_at IS NULL OR r.next_wakeup_at > now())
-    RETURNING r.id
+      AND (r.next_wakeup_at IS NULL OR r.next_wakeup_at > #{now_sql})
+    RETURNING #{if SQL.sqlite?(instance.repo), do: "id", else: "r.id"}
     """
 
-    query_count(instance, sql, [])
+    query_count(instance, sql, params)
   end
+
+  # PostgreSQL compares against its own transaction clock; SQLite against the
+  # host clock it shares with the application, bound once as `?1`. SQLite's
+  # RETURNING names columns of the updated table unqualified.
+  defp now_sql(instance) do
+    if SQL.sqlite?(instance.repo), do: {"?1", [now_param(instance)]}, else: {"now()", []}
+  end
+
+  defp now_param(instance), do: SQL.timestamp(instance.repo, SQL.utc_now())
 
   defp query_count(instance, sql, params) do
     case instance.repo.query(sql, params) do

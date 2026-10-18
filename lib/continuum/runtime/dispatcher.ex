@@ -5,7 +5,8 @@ defmodule Continuum.Runtime.Dispatcher do
   The dispatcher claims work with `SELECT ... FOR UPDATE SKIP LOCKED` inside a
   transaction, assigns a fresh fencing token, and then resumes an engine with
   that token. Multiple dispatchers can poll concurrently; locked rows are
-  skipped rather than contended.
+  skipped rather than contended. On SQLite the claim runs inside an immediate
+  transaction, which serializes concurrent dispatchers instead.
   """
 
   use GenServer
@@ -17,6 +18,7 @@ defmodule Continuum.Runtime.Dispatcher do
     Runtime.Instance,
     Runtime.Journal,
     Runtime.Lease,
+    Runtime.SQL,
     Telemetry
   }
 
@@ -116,6 +118,30 @@ defmodule Continuum.Runtime.Dispatcher do
   end
 
   defp claim(instance, owner, batch_size, ttl_seconds) do
+    result =
+      case SQL.dialect(instance.repo) do
+        :postgres -> claim_postgres(instance, owner, batch_size, ttl_seconds)
+        :sqlite -> claim_sqlite(instance, owner, batch_size, ttl_seconds)
+      end
+
+    case result do
+      {:ok, rows} ->
+        claimed = Enum.map(rows, &decode_claim(owner, &1))
+
+        Telemetry.execute([:continuum, :dispatcher, :claimed], %{count: length(claimed)}, %{
+          instance: instance.name,
+          owner: owner,
+          batch_size: batch_size
+        })
+
+        {:ok, claimed}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp claim_postgres(instance, owner, batch_size, ttl_seconds) do
     {skip_local_sql, extra_params} = skip_local_engines(instance)
 
     sql = """
@@ -143,19 +169,50 @@ defmodule Continuum.Runtime.Dispatcher do
     """
 
     case instance.repo.query(sql, [owner, batch_size, ttl_seconds] ++ extra_params) do
-      {:ok, %{rows: rows}} ->
-        claimed = Enum.map(rows, &decode_claim(owner, &1))
+      {:ok, %{rows: rows}} -> {:ok, rows}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-        Telemetry.execute([:continuum, :dispatcher, :claimed], %{count: length(claimed)}, %{
-          instance: instance.name,
-          owner: owner,
-          batch_size: batch_size
-        })
+  # SQLite has one writer: the immediate transaction holds it from the
+  # candidate scan through the last token, so no other dispatcher can claim the
+  # same rows in between. The row shape matches the PostgreSQL RETURNING list.
+  defp claim_sqlite(instance, owner, batch_size, ttl_seconds) do
+    repo = instance.repo
+    now = SQL.utc_now()
+    {skip_local_sql, extra_params} = skip_local_engines_sqlite(instance)
 
-        {:ok, claimed}
+    sql = """
+    SELECT id, workflow, version_hash, input, trace_context
+    FROM continuum_runs
+    WHERE state IN ('running', 'suspended')
+      AND (state = 'running' OR next_wakeup_at IS NULL OR next_wakeup_at <= ?1)
+      AND (lease_owner IS NULL OR lease_expires_at < ?1)
+      #{skip_local_sql}
+    ORDER BY next_wakeup_at NULLS FIRST, started_at
+    LIMIT ?2
+    """
 
-      {:error, reason} ->
-        {:error, reason}
+    SQL.transaction(repo, fn ->
+      %{rows: candidates} =
+        repo.query!(sql, [SQL.timestamp(repo, now), batch_size] ++ extra_params)
+
+      Enum.map(candidates, fn [run_id, workflow, version_hash, input, trace_context] ->
+        [token, cancel_requested_at] =
+          Lease.lease_sqlite_row!(repo, run_id, owner, ttl_seconds, now)
+
+        [run_id, workflow, version_hash, input, token, trace_context, cancel_requested_at]
+      end)
+    end)
+  rescue
+    error -> {:error, error}
+  end
+
+  defp skip_local_engines_sqlite(instance) do
+    case Instance.local_run_ids(instance, @max_local_exclusions) do
+      [] -> {"", []}
+      :too_many -> {"", []}
+      ids -> {"AND id NOT IN (SELECT value FROM json_each(?3))", [Jason.encode!(ids)]}
     end
   end
 

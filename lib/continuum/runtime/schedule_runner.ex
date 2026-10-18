@@ -8,7 +8,7 @@ defmodule Continuum.Runtime.ScheduleRunner do
 
   alias Continuum.Activity.Policy
   alias Continuum.DurableTerm
-  alias Continuum.Runtime.{Engine, Instance}
+  alias Continuum.Runtime.{Engine, Instance, SQL}
   alias Continuum.Schema.{Run, Schedule}
 
   @default_interval_ms 1_000
@@ -65,6 +65,59 @@ defmodule Continuum.Runtime.ScheduleRunner do
   end
 
   defp claim(instance, batch_size) when is_integer(batch_size) and batch_size > 0 do
+    case SQL.dialect(instance.repo) do
+      :postgres -> claim_postgres(instance, batch_size)
+      :sqlite -> claim_sqlite(instance, batch_size)
+    end
+  end
+
+  defp claim(_instance, batch_size), do: {:error, {:invalid_batch_size, batch_size}}
+
+  # One UPDATE statement runs atomically under SQLite's single writer, so the
+  # candidate subquery needs no row locks.
+  defp claim_sqlite(instance, batch_size) do
+    now = SQL.utc_now()
+    stale_before = DateTime.add(now, -@stale_claim_seconds, :second)
+
+    sql = """
+    UPDATE continuum_schedules
+    SET state = 'starting',
+        attempt = attempt + 1,
+        claimed_at = ?1
+    WHERE id IN (
+      SELECT id
+      FROM continuum_schedules
+      WHERE scheduled_at <= ?1
+        AND (state = 'scheduled' OR (state = 'starting' AND claimed_at < ?2))
+      ORDER BY scheduled_at, id
+      LIMIT ?3
+    )
+    RETURNING id, run_id, workflow, version_hash, input, namespace,
+              attributes, trace_context, attempt
+    """
+
+    params = [
+      SQL.timestamp(instance.repo, now),
+      SQL.timestamp(instance.repo, stale_before),
+      min(batch_size, 1_000)
+    ]
+
+    case instance.repo.query(sql, params) do
+      {:ok, %{rows: rows}} ->
+        {:ok, Enum.map(rows, fn row -> row |> decode_attributes() |> decode_claim() end)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # SQLite returns the JSON attributes column as text.
+  defp decode_attributes([id, run_id, workflow, hash, input, namespace, attrs, trace, attempt]) do
+    attrs = if is_binary(attrs), do: Jason.decode!(attrs), else: attrs
+    [id, run_id, workflow, hash, input, namespace, attrs, trace, attempt]
+  end
+
+  defp claim_postgres(instance, batch_size) do
     sql = """
     WITH candidates AS (
       SELECT id
@@ -94,8 +147,6 @@ defmodule Continuum.Runtime.ScheduleRunner do
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp claim(_instance, batch_size), do: {:error, {:invalid_batch_size, batch_size}}
 
   defp decode_claim([
          id,

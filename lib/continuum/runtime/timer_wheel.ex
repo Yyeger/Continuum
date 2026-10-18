@@ -7,6 +7,9 @@ defmodule Continuum.Runtime.TimerWheel do
   notifications, and schedules its next tick from the earliest cached timer.
   A periodic refresh rebuilds the cache, so a dropped Postgres notification can
   delay a timer by at most the refresh interval.
+
+  SQLite has no `LISTEN`; the journal sends the same `continuum_timer_armed`
+  message to the local wheel after the arming transaction commits.
   """
 
   use GenServer
@@ -14,7 +17,7 @@ defmodule Continuum.Runtime.TimerWheel do
 
   import Ecto.Query
 
-  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Telemetry}
+  alias Continuum.{Runtime.Engine, Runtime.Instance, Runtime.Journal, Runtime.SQL, Telemetry}
   alias Continuum.Schema.Timer
 
   @default_refresh_ms 30_000
@@ -156,13 +159,65 @@ defmodule Continuum.Runtime.TimerWheel do
   end
 
   defp claim_and_fire_due(instance, batch_size) do
-    claim_and_fire(instance, "", [batch_size], "$1")
+    case SQL.dialect(instance.repo) do
+      :postgres -> claim_and_fire(instance, "", [batch_size], "$1")
+      :sqlite -> claim_and_fire_sqlite(instance, nil, batch_size)
+    end
   end
 
   defp claim_and_fire_cached(_instance, [], _batch_size), do: {:ok, []}
 
   defp claim_and_fire_cached(instance, timer_ids, batch_size) do
-    claim_and_fire(instance, "AND t.id::text = ANY($1::text[])", [timer_ids, batch_size], "$2")
+    case SQL.dialect(instance.repo) do
+      :postgres ->
+        claim_and_fire(
+          instance,
+          "AND t.id::text = ANY($1::text[])",
+          [timer_ids, batch_size],
+          "$2"
+        )
+
+      :sqlite ->
+        claim_and_fire_sqlite(instance, timer_ids, batch_size)
+    end
+  end
+
+  # The immediate transaction holds SQLite's writer lock from the scan through
+  # every fire, which is what FOR UPDATE OF t, r SKIP LOCKED provides on
+  # PostgreSQL.
+  defp claim_and_fire_sqlite(instance, timer_ids, batch_size) do
+    repo = instance.repo
+
+    {ids_sql, ids_params} =
+      case timer_ids do
+        nil -> {"", []}
+        ids -> {"AND t.id IN (SELECT value FROM json_each(?3))", [Jason.encode!(ids)]}
+      end
+
+    SQL.transaction(repo, fn ->
+      sql = """
+      SELECT t.id, t.run_id, r.lease_token
+      FROM continuum_timers AS t
+      JOIN continuum_runs AS r ON r.id = t.run_id
+      WHERE t.fired = 0
+        AND t.fires_at <= ?1
+        AND r.state = 'suspended'
+        AND r.lease_token IS NOT NULL
+        AND r.lease_expires_at > ?1
+        #{ids_sql}
+      ORDER BY t.fires_at
+      LIMIT ?2
+      """
+
+      now = SQL.timestamp(repo, SQL.utc_now())
+      %{rows: rows} = repo.query!(sql, [now, batch_size] ++ ids_params)
+
+      rows
+      |> Enum.map(fn [id, run_id, lease_token] ->
+        %{id: id, run_id: run_id, lease_token: lease_token}
+      end)
+      |> Enum.filter(fn timer -> fire_claimed_timer(instance, timer) == :ok end)
+    end)
   end
 
   defp claim_and_fire(instance, extra_where, params, limit_parameter) do
@@ -385,7 +440,11 @@ defmodule Continuum.Runtime.TimerWheel do
   defp start_listener(%{instance: %{repo: nil}} = state), do: state
   defp start_listener(%{notifier: notifier} = state) when is_pid(notifier), do: state
 
-  defp start_listener(state) do
+  defp start_listener(%{instance: %{repo: repo}} = state) do
+    if SQL.sqlite?(repo), do: state, else: start_postgres_listener(state)
+  end
+
+  defp start_postgres_listener(state) do
     case Postgrex.Notifications.start_link(state.instance.repo.config()) do
       {:ok, notifier} ->
         ref = listen!(notifier, "continuum_timer_armed")

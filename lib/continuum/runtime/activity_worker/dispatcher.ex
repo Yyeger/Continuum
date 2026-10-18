@@ -1,6 +1,10 @@
 defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   @moduledoc """
   Polls `continuum_activity_tasks`, leases available tasks, and starts workers.
+
+  PostgreSQL claims use `FOR UPDATE SKIP LOCKED` and the database clock.
+  SQLite claims select candidates and lease them inside one immediate
+  transaction, using the host clock the database shares with the application.
   """
 
   use GenServer
@@ -12,6 +16,7 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     Runtime.ActivityWorker.Worker,
     Runtime.Instance,
     Runtime.Recovery,
+    Runtime.SQL,
     Telemetry
   }
 
@@ -19,6 +24,16 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   @default_batch_size 10
   @default_ttl_seconds 30
   @default_backpressure_jitter_ms 250
+
+  # Claimable task predicate for SQLite statements; `?1` is the current time.
+  @sqlite_claimable """
+  t.state = 'available'
+      AND t.available_at <= ?1
+      AND (t.lease_owner IS NULL OR t.lease_expires_at < ?1)
+      AND r.state IN ('running', 'suspended')
+      AND r.lease_token IS NOT NULL
+      AND r.lease_expires_at > ?1\
+  """
 
   @doc false
   def start_link(opts \\ []) do
@@ -74,6 +89,25 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   def claim_one(instance, task_id, expected_attempt, owner, ttl_seconds \\ @default_ttl_seconds) do
     instance = Instance.lookup(instance)
 
+    result =
+      case SQL.dialect(instance.repo) do
+        :postgres -> claim_one_postgres(instance, task_id, expected_attempt, owner, ttl_seconds)
+        :sqlite -> claim_one_sqlite(instance, task_id, expected_attempt, owner, ttl_seconds)
+      end
+
+    case result do
+      {:ok, [row]} ->
+        {:ok, instance |> decode_claim(row) |> Map.put(:executor, :oban)}
+
+      {:ok, []} ->
+        classify_claim_miss(instance, task_id, expected_attempt)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp claim_one_postgres(instance, task_id, expected_attempt, owner, ttl_seconds) do
     sql = """
     WITH candidate AS (
       SELECT t.id, r.lease_token,
@@ -104,15 +138,70 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     """
 
     case instance.repo.query(sql, [task_id, expected_attempt, owner, ttl_seconds]) do
-      {:ok, %{rows: [row]}} ->
-        {:ok, instance |> decode_claim(row) |> Map.put(:executor, :oban)}
-
-      {:ok, %{rows: []}} ->
-        classify_claim_miss(instance, task_id, expected_attempt)
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, %{rows: rows}} -> {:ok, rows}
+      {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp claim_one_sqlite(instance, task_id, expected_attempt, owner, ttl_seconds) do
+    sql = """
+    SELECT t.id, r.lease_token, t.scheduled_at
+    FROM continuum_activity_tasks AS t
+    JOIN continuum_runs AS r ON r.id = t.run_id
+    WHERE t.id = ?2
+      AND t.attempt = ?3
+      AND #{@sqlite_claimable}
+    """
+
+    lease_sqlite_candidates(instance, owner, ttl_seconds, sql, [task_id, expected_attempt])
+  end
+
+  # SQLite's RETURNING cannot read the candidate scan's columns, so the scan
+  # and the lease run as two statements inside one immediate transaction.
+  # Rows are reassembled in candidate order in the PostgreSQL RETURNING shape.
+  defp lease_sqlite_candidates(instance, owner, ttl_seconds, candidate_sql, params) do
+    repo = instance.repo
+    now = SQL.utc_now()
+
+    SQL.transaction(repo, fn ->
+      %{rows: candidates} = repo.query!(candidate_sql, [SQL.timestamp(repo, now) | params])
+      lease_sqlite_tasks!(repo, candidates, owner, ttl_seconds, now)
+    end)
+  rescue
+    error -> {:error, error}
+  end
+
+  defp lease_sqlite_tasks!(_repo, [], _owner, _ttl_seconds, _now), do: []
+
+  defp lease_sqlite_tasks!(repo, candidates, owner, ttl_seconds, now) do
+    %{rows: leased} =
+      repo.query!(
+        """
+        UPDATE continuum_activity_tasks
+        SET state = 'leased',
+            lease_owner = ?1,
+            lease_expires_at = ?2
+        WHERE id IN (SELECT value FROM json_each(?3))
+        RETURNING id, run_id, seq, mfa, attempt, lease_owner, queue, priority
+        """,
+        [
+          owner,
+          SQL.timestamp(repo, DateTime.add(now, ttl_seconds, :second)),
+          Jason.encode!(Enum.map(candidates, &hd/1))
+        ]
+      )
+
+    leased_by_id = Map.new(leased, fn [id | _rest] = row -> {id, row} end)
+
+    Enum.map(candidates, fn [id, run_lease_token, scheduled_at] ->
+      [^id, run_id, seq, mfa, attempt, lease_owner, queue, priority] = leased_by_id[id]
+      queue_age_ms = age_ms(now, scheduled_at)
+      [id, run_id, seq, mfa, attempt, lease_owner, run_lease_token, queue_age_ms, queue, priority]
+    end)
+  end
+
+  defp age_ms(now, timestamp) do
+    max(0, DateTime.diff(now, SQL.decode_timestamp(timestamp), :millisecond))
   end
 
   @impl true
@@ -249,6 +338,29 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   end
 
   defp pending_queues(instance) do
+    case SQL.dialect(instance.repo) do
+      :postgres -> pending_queues_postgres(instance)
+      :sqlite -> pending_queues_sqlite(instance)
+    end
+  end
+
+  defp pending_queues_sqlite(instance) do
+    sql = """
+    SELECT t.queue
+    FROM continuum_activity_tasks AS t
+    JOIN continuum_runs AS r ON r.id = t.run_id
+    WHERE #{@sqlite_claimable}
+    GROUP BY t.queue
+    ORDER BY max(t.priority) DESC, min(t.available_at), t.queue
+    """
+
+    case instance.repo.query(sql, [SQL.timestamp(instance.repo, SQL.utc_now())]) do
+      {:ok, %{rows: rows}} -> Enum.map(rows, fn [queue] -> queue end)
+      {:error, reason} -> raise "Activity queue discovery failed: #{inspect(reason)}"
+    end
+  end
+
+  defp pending_queues_postgres(instance) do
     sql = """
     SELECT t.queue
     FROM continuum_activity_tasks AS t
@@ -270,6 +382,41 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   end
 
   defp claim_queue(instance, owner, queue, batch_size, ttl_seconds) do
+    result =
+      case SQL.dialect(instance.repo) do
+        :postgres -> claim_queue_postgres(instance, owner, queue, batch_size, ttl_seconds)
+        :sqlite -> claim_queue_sqlite(instance, owner, queue, batch_size, ttl_seconds)
+      end
+
+    case result do
+      {:ok, rows} ->
+        tasks =
+          rows
+          |> Enum.map(&decode_claim(instance, &1))
+          |> Enum.map(&Map.put(&1, :executor, :builtin))
+
+        {:ok, tasks}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp claim_queue_sqlite(instance, owner, queue, batch_size, ttl_seconds) do
+    sql = """
+    SELECT t.id, r.lease_token, t.scheduled_at
+    FROM continuum_activity_tasks AS t
+    JOIN continuum_runs AS r ON r.id = t.run_id
+    WHERE t.queue = ?2
+      AND #{@sqlite_claimable}
+    ORDER BY t.priority DESC, t.available_at, t.scheduled_at, t.id
+    LIMIT ?3
+    """
+
+    lease_sqlite_candidates(instance, owner, ttl_seconds, sql, [queue, batch_size])
+  end
+
+  defp claim_queue_postgres(instance, owner, queue, batch_size, ttl_seconds) do
     sql = """
     WITH candidates AS (
       SELECT t.id, r.lease_token,
@@ -301,35 +448,41 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     """
 
     case instance.repo.query(sql, [owner, batch_size, ttl_seconds, queue]) do
-      {:ok, %{rows: rows}} ->
-        tasks =
-          rows
-          |> Enum.map(&decode_claim(instance, &1))
-          |> Enum.map(&Map.put(&1, :executor, :builtin))
-
-        {:ok, tasks}
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, %{rows: rows}} -> {:ok, rows}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   defp available_tasks(instance, batch_size) do
-    sql = """
-    SELECT t.id::text, t.attempt, t.queue, t.priority
-    FROM continuum_activity_tasks AS t
-    JOIN continuum_runs AS r ON r.id = t.run_id
-    WHERE t.state = 'available'
-      AND t.available_at <= clock_timestamp()
-      AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
-      AND r.state IN ('running', 'suspended')
-      AND r.lease_token IS NOT NULL
-      AND r.lease_expires_at > now()
-    ORDER BY t.priority DESC, t.available_at, t.scheduled_at, t.id
-    LIMIT $1
-    """
+    {sql, params} =
+      case SQL.dialect(instance.repo) do
+        :postgres ->
+          {"""
+           SELECT t.id::text, t.attempt, t.queue, t.priority
+           FROM continuum_activity_tasks AS t
+           JOIN continuum_runs AS r ON r.id = t.run_id
+           WHERE t.state = 'available'
+             AND t.available_at <= clock_timestamp()
+             AND (t.lease_owner IS NULL OR t.lease_expires_at < now())
+             AND r.state IN ('running', 'suspended')
+             AND r.lease_token IS NOT NULL
+             AND r.lease_expires_at > now()
+           ORDER BY t.priority DESC, t.available_at, t.scheduled_at, t.id
+           LIMIT $1
+           """, [batch_size]}
 
-    case instance.repo.query(sql, [batch_size]) do
+        :sqlite ->
+          {"""
+           SELECT t.id, t.attempt, t.queue, t.priority
+           FROM continuum_activity_tasks AS t
+           JOIN continuum_runs AS r ON r.id = t.run_id
+           WHERE #{@sqlite_claimable}
+           ORDER BY t.priority DESC, t.available_at, t.scheduled_at, t.id
+           LIMIT ?2
+           """, [SQL.timestamp(instance.repo, SQL.utc_now()), batch_size]}
+      end
+
+    case instance.repo.query(sql, params) do
       {:ok, %{rows: rows}} ->
         {:ok,
          Enum.map(rows, fn [id, attempt, queue, priority] ->
@@ -396,19 +549,38 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   end
 
   defp release_unstarted_task(task) do
-    sql = """
-    UPDATE continuum_activity_tasks
-    SET state = 'available',
-        available_at = clock_timestamp(),
-        lease_owner = NULL,
-        lease_expires_at = NULL
-    WHERE id = $1::text::uuid
-      AND state = 'leased'
-      AND lease_owner = $2
-      AND attempt = $3
-    """
+    repo = task.instance.repo
 
-    case task.instance.repo.query(sql, [task.id, task.lease_owner, task.attempt]) do
+    {sql, params} =
+      case SQL.dialect(repo) do
+        :postgres ->
+          {"""
+           UPDATE continuum_activity_tasks
+           SET state = 'available',
+               available_at = clock_timestamp(),
+               lease_owner = NULL,
+               lease_expires_at = NULL
+           WHERE id = $1::text::uuid
+             AND state = 'leased'
+             AND lease_owner = $2
+             AND attempt = $3
+           """, [task.id, task.lease_owner, task.attempt]}
+
+        :sqlite ->
+          {"""
+           UPDATE continuum_activity_tasks
+           SET state = 'available',
+               available_at = ?4,
+               lease_owner = NULL,
+               lease_expires_at = NULL
+           WHERE id = ?1
+             AND state = 'leased'
+             AND lease_owner = ?2
+             AND attempt = ?3
+           """, [task.id, task.lease_owner, task.attempt, SQL.timestamp(repo, SQL.utc_now())]}
+      end
+
+    case repo.query(sql, params) do
       {:ok, _result} -> :ok
       {:error, reason} -> Logger.error("Activity claim release failed: #{inspect(reason)}")
     end
@@ -478,6 +650,40 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
   end
 
   defp pending_queue_stats(instance) do
+    case SQL.dialect(instance.repo) do
+      :postgres -> pending_queue_stats_postgres(instance)
+      :sqlite -> pending_queue_stats_sqlite(instance)
+    end
+  end
+
+  defp pending_queue_stats_sqlite(instance) do
+    now = SQL.utc_now()
+
+    sql = """
+    SELECT COUNT(*), MIN(t.scheduled_at)
+    FROM continuum_activity_tasks AS t
+    JOIN continuum_runs AS r ON r.id = t.run_id
+    WHERE t.state = 'available'
+      AND t.available_at <= ?1
+      AND r.state IN ('running', 'suspended')
+      AND r.lease_token IS NOT NULL
+      AND r.lease_expires_at > ?1
+    """
+
+    case instance.repo.query(sql, [SQL.timestamp(instance.repo, now)]) do
+      {:ok, %{rows: [[0, _oldest]]}} ->
+        {0, 0}
+
+      {:ok, %{rows: [[pending, oldest]]}} ->
+        {pending, age_ms(now, oldest)}
+
+      {:error, reason} ->
+        Logger.warning("Activity queue stats failed: #{inspect(reason)}")
+        {0, 0}
+    end
+  end
+
+  defp pending_queue_stats_postgres(instance) do
     sql = """
     SELECT COUNT(*)::bigint,
            COALESCE(
@@ -552,10 +758,10 @@ defmodule Continuum.Runtime.ActivityWorker.Dispatcher do
     sql = """
     SELECT state, attempt
     FROM continuum_activity_tasks
-    WHERE id = $1::text::uuid
+    WHERE id = $1#{if SQL.postgres?(instance.repo), do: "::text::uuid"}
     """
 
-    case instance.repo.query(sql, [task_id]) do
+    case SQL.query(instance.repo, sql, [task_id]) do
       {:ok, %{rows: []}} ->
         :not_available
 

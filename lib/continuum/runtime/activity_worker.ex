@@ -4,7 +4,7 @@ defmodule Continuum.Runtime.ActivityWorker do
   require Logger
 
   alias Continuum.Activity.Context, as: ActivityContext
-  alias Continuum.{DurableTerm, Runtime.Engine, Runtime.Journal, Telemetry}
+  alias Continuum.{DurableTerm, Runtime.Engine, Runtime.Journal, Runtime.SQL, Telemetry}
 
   @max_error_bytes 65_536
   @max_error_text_bytes 4_096
@@ -21,13 +21,15 @@ defmodule Continuum.Runtime.ActivityWorker do
             "activity heartbeat details exceed #{@max_heartbeat_bytes} encoded bytes"
     end
 
+    repo = context.instance.repo
+
     sql = """
     UPDATE continuum_activity_tasks AS task
-    SET last_heartbeat_at = clock_timestamp(),
+    SET last_heartbeat_at = #{heartbeat_time_sql(repo)},
         heartbeat_details = $5
     FROM continuum_runs AS run
-    WHERE task.id = $1::text::uuid
-      AND task.run_id = $2::text::uuid
+    WHERE task.id = #{uuid_param_sql(repo, 1)}
+      AND task.run_id = #{uuid_param_sql(repo, 2)}
       AND task.state = 'leased'
       AND task.lease_owner = $3
       AND task.attempt = $4
@@ -36,13 +38,11 @@ defmodule Continuum.Runtime.ActivityWorker do
       AND run.cancel_requested_at IS NULL
     """
 
-    case context.instance.repo.query(sql, [
-           context.task_id,
-           context.run_id,
-           context.lease_owner,
-           context.attempt,
-           encoded
-         ]) do
+    params =
+      [context.task_id, context.run_id, context.lease_owner, context.attempt, encoded] ++
+        now_params(repo)
+
+    case SQL.query(repo, sql, params) do
       {:ok, %{num_rows: 1}} ->
         Telemetry.execute(
           [:continuum, :activity, :heartbeat],
@@ -81,16 +81,18 @@ defmodule Continuum.Runtime.ActivityWorker do
   end
 
   defp activity_context_state(context) do
+    repo = context.instance.repo
+
     sql = """
     SELECT task.state, task.lease_owner, task.attempt,
            run.state, run.cancel_requested_at
     FROM continuum_activity_tasks AS task
     LEFT JOIN continuum_runs AS run ON run.id = task.run_id
-    WHERE task.id = $1::text::uuid
-      AND task.run_id = $2::text::uuid
+    WHERE task.id = #{uuid_param_sql(repo, 1)}
+      AND task.run_id = #{uuid_param_sql(repo, 2)}
     """
 
-    case context.instance.repo.query(sql, [context.task_id, context.run_id]) do
+    case SQL.query(repo, sql, [context.task_id, context.run_id]) do
       {:ok,
        %{
          rows: [
@@ -173,25 +175,31 @@ defmodule Continuum.Runtime.ActivityWorker do
   # the steady-state sweep rescues it promptly, instead of waiting out a
   # one-shot timeout + margin extension (minutes for long activities).
   defp renew_task_lease(task) do
+    repo = task.instance.repo
+
+    {expires_sql, expires_params} =
+      case SQL.dialect(repo) do
+        :postgres ->
+          {"clock_timestamp() + make_interval(secs => $5)", [task_lease_ttl_seconds()]}
+
+        :sqlite ->
+          expires_at = DateTime.add(SQL.utc_now(), task_lease_ttl_seconds(), :second)
+          {"$5", [SQL.timestamp(repo, expires_at)]}
+      end
+
     sql = """
     UPDATE continuum_activity_tasks
-    SET lease_expires_at = clock_timestamp() + make_interval(secs => $5)
-    WHERE id = $1::text::uuid
-      AND run_id = $2::text::uuid
+    SET lease_expires_at = #{expires_sql}
+    WHERE id = #{uuid_param_sql(repo, 1)}
+      AND run_id = #{uuid_param_sql(repo, 2)}
       AND state = 'leased'
       AND lease_owner = $3
       AND attempt = $4
     """
 
-    params = [
-      task.id,
-      task.run_id,
-      task.lease_owner,
-      task.attempt,
-      task_lease_ttl_seconds()
-    ]
+    params = [task.id, task.run_id, task.lease_owner, task.attempt] ++ expires_params
 
-    case task.instance.repo.query(sql, params) do
+    case SQL.query(repo, sql, params) do
       {:ok, %{num_rows: 1}} ->
         :ok
 
@@ -307,38 +315,43 @@ defmodule Continuum.Runtime.ActivityWorker do
   end
 
   defp release_fenced_task(task, error) do
-    update_own_task(task, "available", "available_at = now(),")
+    update_own_task(task, "available", true)
     log_fenced(task, :requeued, error)
   end
 
   defp discard_fenced_task(task, error) do
-    update_own_task(task, "discarded", "")
+    update_own_task(task, "discarded", false)
     log_fenced(task, :discarded, error)
   end
 
   # CAS on our own claim: if the task was reclaimed, completed, or cancelled
   # in the meantime, this matches zero rows and the row is left untouched.
-  defp update_own_task(task, state, extra_set_sql) do
+  defp update_own_task(task, state, make_available?) do
+    repo = task.instance.repo
+
+    {available_sql, available_params} =
+      cond do
+        not make_available? -> {"", []}
+        SQL.postgres?(repo) -> {"available_at = now(),", []}
+        true -> {"available_at = $6,", now_params(repo)}
+      end
+
     sql = """
     UPDATE continuum_activity_tasks
     SET state = $5,
-        #{extra_set_sql}
+        #{available_sql}
         lease_owner = NULL,
         lease_expires_at = NULL
-    WHERE id = $1::text::uuid
-      AND run_id = $2::text::uuid
+    WHERE id = #{uuid_param_sql(repo, 1)}
+      AND run_id = #{uuid_param_sql(repo, 2)}
       AND state = 'leased'
       AND lease_owner = $3
       AND attempt = $4
     """
 
-    case task.instance.repo.query(sql, [
-           task.id,
-           task.run_id,
-           task.lease_owner,
-           task.attempt,
-           state
-         ]) do
+    params = [task.id, task.run_id, task.lease_owner, task.attempt, state] ++ available_params
+
+    case SQL.query(repo, sql, params) do
       {:ok, _} -> :ok
       {:error, reason} -> raise "Continuum fenced task release failed: #{inspect(reason)}"
     end
@@ -695,5 +708,21 @@ defmodule Continuum.Runtime.ActivityWorker do
 
   defp backoff_ms(retry, attempt) do
     Continuum.Activity.Policy.backoff_ms(retry, attempt)
+  end
+
+  # Raw statements below are written with PostgreSQL `$N` placeholders and
+  # run through `SQL.query/3`. These fragments cover the remaining dialect
+  # differences: PostgreSQL casts text ids and reads its own clock; SQLite
+  # stores ids as text and takes the host clock as the trailing `$6`.
+  defp uuid_param_sql(repo, index) do
+    if SQL.postgres?(repo), do: "$#{index}::text::uuid", else: "$#{index}"
+  end
+
+  defp heartbeat_time_sql(repo) do
+    if SQL.postgres?(repo), do: "clock_timestamp()", else: "$6"
+  end
+
+  defp now_params(repo) do
+    if SQL.postgres?(repo), do: [], else: [SQL.timestamp(repo, SQL.utc_now())]
   end
 end
