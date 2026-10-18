@@ -5,12 +5,17 @@ defmodule Continuum.Query do
   Queries are intentionally closed over a small set of fields and operators.
   This keeps the public API independent from arbitrary SQL fragments while still
   supporting operator dashboards and search attributes.
+
+  On SQLite, attribute filters compare JSON values with SQLite's JSON
+  functions: scalar values match by type and value, and map values match
+  every leaf they contain. List values are not supported there and return
+  `{:error, {:unsupported_attribute_value, value}}`.
   """
 
   import Ecto.Query
 
   alias Continuum.DurableTerm
-  alias Continuum.Runtime.Instance
+  alias Continuum.Runtime.{Instance, SQL}
   alias Continuum.Schema.Run
 
   @default_per_page 25
@@ -44,7 +49,7 @@ defmodule Continuum.Query do
   @spec list(keyword()) :: {:ok, Continuum.Page.t(Continuum.Run.t())} | {:error, term()}
   def list(opts \\ []) do
     with {:ok, instance} <- repo_instance(opts),
-         {:ok, query} <- build_query(opts),
+         {:ok, query} <- build_query(opts, SQL.dialect(instance.repo)),
          {direction, order_field} <- normalize_order(Keyword.get(opts, :order_by)),
          {:ok, cursor} <- decode_cursor(Keyword.get(opts, :cursor), direction, order_field) do
       per_page =
@@ -109,20 +114,53 @@ defmodule Continuum.Query do
     with {:ok, instance} <- repo_instance(opts),
          {:ok, attributes} <- normalize_attributes(attributes),
          {:ok, namespace} <- namespace_precondition(opts) do
-      # Merge in SQL: jsonb concatenation is atomic per statement, so two
-      # concurrent callers cannot interleave a read-merge-write and silently
-      # drop each other's keys.
-      {sql, params} = set_attributes_query(run_id, attributes, namespace)
-
-      case instance.repo.query(sql, params) do
-        {:ok, %{num_rows: 1}} -> :ok
-        {:ok, %{num_rows: 0}} -> {:error, :not_found}
-        {:error, reason} -> {:error, reason}
+      case SQL.dialect(instance.repo) do
+        :postgres -> set_attributes_postgres(instance, run_id, attributes, namespace)
+        :sqlite -> set_attributes_sqlite(instance, run_id, attributes, namespace)
       end
     end
   end
 
   def set_attributes(_run_id, attributes, _opts), do: {:error, {:invalid_attributes, attributes}}
+
+  defp set_attributes_postgres(instance, run_id, attributes, namespace) do
+    # Merge in SQL: jsonb concatenation is atomic per statement, so two
+    # concurrent callers cannot interleave a read-merge-write and silently
+    # drop each other's keys.
+    {sql, params} = set_attributes_query(run_id, attributes, namespace)
+
+    case instance.repo.query(sql, params) do
+      {:ok, %{num_rows: 1}} -> :ok
+      {:ok, %{num_rows: 0}} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The same shallow merge as jsonb `||`, done in Elixir: the immediate
+  # transaction holds SQLite's writer lock from the read through the write,
+  # so concurrent callers cannot drop each other's keys.
+  defp set_attributes_sqlite(instance, run_id, attributes, namespace) do
+    repo = instance.repo
+
+    SQL.transaction(repo, fn ->
+      query = from(r in Run, where: r.id == ^run_id, select: r.attributes)
+      query = if namespace, do: where(query, [r], r.namespace == ^namespace), else: query
+
+      case repo.one(query) do
+        nil ->
+          repo.rollback(:not_found)
+
+        current ->
+          repo.update_all(from(r in Run, where: r.id == ^run_id),
+            set: [attributes: Map.merge(current || %{}, attributes)]
+          )
+      end
+    end)
+    |> case do
+      {:ok, _result} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp apply_namespace_precondition(query, opts) do
     case namespace_precondition(opts) do
@@ -213,15 +251,15 @@ defmodule Continuum.Query do
     }
   end
 
-  defp build_query(opts) do
+  defp build_query(opts, dialect) do
     query = Run
     query = apply_namespace(query, Keyword.get(opts, :namespace, "default"))
     query = apply_state(query, Keyword.get(opts, :state))
-    query = apply_workflow(query, Keyword.get(opts, :workflow))
-    query = apply_search(query, Keyword.get(opts, :search))
+    query = apply_workflow(query, Keyword.get(opts, :workflow), dialect)
+    query = apply_search(query, Keyword.get(opts, :search), dialect)
 
     Enum.reduce_while(Keyword.get(opts, :where, []), {:ok, query}, fn condition, {:ok, acc} ->
-      case apply_condition(acc, condition) do
+      case apply_condition(acc, condition, dialect) do
         {:ok, query} -> {:cont, {:ok, query}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -234,6 +272,41 @@ defmodule Continuum.Query do
     namespace = to_string(namespace)
     from(r in query, where: r.namespace == ^namespace)
   end
+
+  defp apply_condition(query, {op, [:attributes | path], value}, :sqlite)
+       when op in [:eq, :neq] and path != [] do
+    path = Enum.map(path, &to_string/1)
+
+    with {:ok, value} <- normalize_attributes(value),
+         {:ok, leaves} <- attribute_leaves(path, value) do
+      matches =
+        Enum.reduce(leaves, dynamic(true), fn {leaf_path, json}, acc ->
+          dynamic([r], ^acc and fragment("? -> ? = json(?)", r.attributes, ^leaf_path, ^json))
+        end)
+
+      query =
+        case op do
+          :eq ->
+            from(r in query, where: ^matches)
+
+          :neq ->
+            json_path = json_path(path)
+
+            present_and_different =
+              dynamic(
+                [r],
+                fragment("json_type(?, ?) IS NOT NULL", r.attributes, ^json_path) and
+                  not (^matches)
+              )
+
+            from(r in query, where: ^present_and_different)
+        end
+
+      {:ok, query}
+    end
+  end
+
+  defp apply_condition(query, condition, _dialect), do: apply_condition(query, condition)
 
   defp apply_condition(query, {op, [:attributes | path], value})
        when op in [:eq, :neq] and path != [] do
@@ -310,18 +383,51 @@ defmodule Continuum.Query do
     from(r in query, where: r.state == ^state)
   end
 
-  defp apply_workflow(query, nil), do: query
-  defp apply_workflow(query, ""), do: query
+  # SQLite JSON paths quote every key, so keys may contain dots or brackets.
+  defp json_path(path) do
+    Enum.reduce(path, "$", fn key, acc -> acc <> "." <> Jason.encode!(key) end)
+  end
 
-  defp apply_workflow(query, workflow) do
+  # Containment of a map is containment of each of its leaves; a scalar is a
+  # single leaf compared by its JSON representation, which keeps types apart.
+  defp attribute_leaves(path, value) when is_map(value) and map_size(value) > 0 do
+    Enum.reduce_while(value, {:ok, []}, fn {key, nested}, {:ok, acc} ->
+      case attribute_leaves(path ++ [key], nested) do
+        {:ok, leaves} -> {:cont, {:ok, acc ++ leaves}}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp attribute_leaves(_path, value) when is_list(value) or is_map(value),
+    do: {:error, {:unsupported_attribute_value, value}}
+
+  defp attribute_leaves(path, value), do: {:ok, [{json_path(path), Jason.encode!(value)}]}
+
+  defp apply_workflow(query, nil, _dialect), do: query
+  defp apply_workflow(query, "", _dialect), do: query
+
+  defp apply_workflow(query, workflow, :sqlite) do
+    pattern = "%#{workflow}%"
+    from(r in query, where: like(r.workflow, ^pattern))
+  end
+
+  defp apply_workflow(query, workflow, :postgres) do
     pattern = "%#{workflow}%"
     from(r in query, where: ilike(r.workflow, ^pattern))
   end
 
-  defp apply_search(query, nil), do: query
-  defp apply_search(query, ""), do: query
+  defp apply_search(query, nil, _dialect), do: query
+  defp apply_search(query, "", _dialect), do: query
 
-  defp apply_search(query, search) do
+  # SQLite's LIKE is case-insensitive for ASCII, matching ILIKE for run ids
+  # and module names.
+  defp apply_search(query, search, :sqlite) do
+    pattern = "%#{search}%"
+    from(r in query, where: like(r.id, ^pattern) or like(r.workflow, ^pattern))
+  end
+
+  defp apply_search(query, search, :postgres) do
     pattern = "%#{search}%"
 
     from(r in query,

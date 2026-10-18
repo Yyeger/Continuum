@@ -26,6 +26,13 @@ defmodule Mix.Tasks.Continuum.Partitions.DropOld do
     Mix.Task.run("app.start")
 
     repo = parse_repo(opts)
+
+    if Continuum.Runtime.SQL.sqlite?(repo) do
+      Mix.raise(
+        "continuum_events partitions are PostgreSQL-only; SQLite keeps a single events table"
+      )
+    end
+
     dry_run? = not Keyword.get(opts, :execute, false)
     older_than_days = parse_older_than(opts)
     now = DateTime.utc_now()

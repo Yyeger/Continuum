@@ -158,12 +158,17 @@ defmodule Mix.Tasks.Continuum.Audit do
   # death and the steady-state sweep — a persistent non-zero count means the
   # sweep is not running or workers are dying faster than it rescues.
   defp expired_leased_task_count(repo) do
-    repo.one(
-      from(t in ActivityTask,
-        where: t.state == "leased" and t.lease_expires_at < fragment("clock_timestamp()"),
-        select: count(t.id)
-      )
-    )
+    query = from(t in ActivityTask, where: t.state == "leased", select: count(t.id))
+
+    query =
+      if Continuum.Runtime.SQL.sqlite?(repo) do
+        now = Continuum.Runtime.SQL.utc_now()
+        where(query, [t], t.lease_expires_at < ^now)
+      else
+        where(query, [t], t.lease_expires_at < fragment("clock_timestamp()"))
+      end
+
+    repo.one(query)
   end
 
   defp strict_failure?(%{

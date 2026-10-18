@@ -2,13 +2,18 @@ defmodule Continuum.Multi do
   @moduledoc """
   Atomically enqueue workflows alongside application changes in `Ecto.Multi`.
 
-  The transaction's repo must be the selected Continuum instance's repo.
+  The transaction's repo must be the selected Continuum instance's repo, and
+  the instance must use a durable journal (PostgreSQL or SQLite).
   Enqueueing only inserts durable work: the dispatcher acquires a lease and
   starts an engine after commit. No engine or activity starts in the caller's
   transaction, and no after-commit callback is needed for recovery.
+
+  On SQLite, run the transaction with `mode: :immediate` (or configure the
+  repo's `default_transaction_mode: :immediate`) so it holds the writer lock
+  from its first statement.
   """
 
-  alias Continuum.Runtime.{Instance, Journal.Postgres}
+  alias Continuum.Runtime.{Instance, Journal}
 
   @doc """
   Adds a workflow enqueue operation to a Multi.
@@ -31,7 +36,8 @@ defmodule Continuum.Multi do
 
   Any later Multi failure rolls back both the run and its ingress key. An
   unleased row is intentional here: only the dispatcher may acquire its first
-  lease after commit. Keep a dispatcher enabled for this repo.
+  lease after commit. Keep a dispatcher enabled for this repo. An instance
+  without a durable journal returns `{:error, :postgres_journal_required}`.
   """
   @spec enqueue(Ecto.Multi.t(), Ecto.Multi.name(), module(), term(), keyword() | function()) ::
           Ecto.Multi.t()
@@ -55,11 +61,11 @@ defmodule Continuum.Multi do
         instance.repo != repo ->
           {:error, :repo_mismatch}
 
-        Instance.journal(instance) != Postgres ->
+        not Journal.durable?(Instance.journal(instance)) ->
           {:error, :postgres_journal_required}
 
         true ->
-          Postgres.enqueue_run(
+          Instance.journal(instance).enqueue_run(
             instance,
             Keyword.get_lazy(opts, :run_id, &Ecto.UUID.generate/0),
             workflow,

@@ -10,10 +10,14 @@ defmodule Continuum.Health do
   `repair/3` is a dry run unless `execute: true` is passed. Mutating actions
   compare the lease epoch/owner or activity attempt/owner observed by the
   operator, so a stale repair cannot overwrite newer runtime authority.
+
+  SQLite instances report the same sections. SQLite has no event partitions,
+  so partition coverage is reported as not applicable and never degrades the
+  report.
   """
 
   alias Continuum.DurableTerm
-  alias Continuum.Runtime.{Engine, Instance}
+  alias Continuum.Runtime.{Engine, Instance, SQL}
   alias Continuum.Schema.{HealthReview, WorkflowVersion}
 
   @default_partition_months 3
@@ -26,7 +30,7 @@ defmodule Continuum.Health do
 
   @doc since: "0.6.2"
   @doc """
-  Builds an operational health report for a PostgreSQL-backed instance.
+  Builds an operational health report for a PostgreSQL- or SQLite-backed instance.
 
   Options include `:instance` or `:repo`, `:partition_months` (default 3),
   `:lost_wake_after_ms` (default 60 seconds), and `:limit` for candidate lists.
@@ -122,6 +126,23 @@ defmodule Continuum.Health do
   def degraded?(%{status: status}), do: status == :degraded
 
   defp partition_health(repo, now, opts) do
+    if SQL.sqlite?(repo), do: no_partitions(), else: postgres_partition_health(repo, now, opts)
+  end
+
+  defp no_partitions do
+    %{
+      status: :ok,
+      applicable?: false,
+      required_months: [],
+      present: [],
+      missing: [],
+      horizon_months: 0,
+      horizon_end: "not applicable",
+      default_partition: %{name: nil, present?: false, row_count: 0, oldest_inserted_at: nil}
+    }
+  end
+
+  defp postgres_partition_health(repo, now, opts) do
     months = positive_integer(Keyword.get(opts, :partition_months, @default_partition_months))
     first = Date.new!(now.year, now.month, 1)
     required = Enum.map(0..(months - 1), &partition_name(shift_month(first, &1)))
@@ -151,6 +172,7 @@ defmodule Continuum.Health do
           do: :ok,
           else: :degraded
         ),
+      applicable?: true,
       required_months: required,
       present: present,
       missing: missing,
@@ -241,39 +263,8 @@ defmodule Continuum.Health do
 
   defp run_health(repo, now) do
     groups =
-      query_rows(
-        repo,
-        """
-        WITH active AS (
-          SELECT r.*,
-                 CASE
-                   WHEN r.state = 'stuck_unknown_version' THEN 'unknown_version'
-                   WHEN latest.event_type = 'activity_scheduled' THEN 'activity'
-                   WHEN latest.event_type = 'activity_batch_scheduled' THEN 'activity_batch'
-                   WHEN latest.event_type = 'compensation_scheduled' THEN 'compensation'
-                   WHEN latest.event_type = 'timer_started' THEN 'timer'
-                   WHEN latest.event_type = 'signal_awaited' THEN 'signal'
-                   WHEN latest.event_type = 'child_started' THEN 'child'
-                   WHEN r.state = 'running' THEN 'executing'
-                   ELSE COALESCE(latest.event_type, 'unknown')
-                 END AS reason
-          FROM continuum_runs r
-          LEFT JOIN LATERAL (
-            SELECT e.event_type
-            FROM continuum_events e
-            WHERE e.run_id = r.id
-            ORDER BY e.seq DESC, e.inserted_at DESC
-            LIMIT 1
-          ) latest ON true
-          WHERE r.state = ANY($1)
-        )
-        SELECT state, reason, count(*)::bigint, min(started_at)
-        FROM active
-        GROUP BY state, reason
-        ORDER BY state, reason
-        """,
-        [@active_states]
-      )
+      repo
+      |> run_groups()
       |> Enum.map(fn [state, reason, count, oldest] ->
         %{
           state: state,
@@ -287,11 +278,91 @@ defmodule Continuum.Health do
     %{active_count: Enum.sum(Enum.map(groups, & &1.count)), groups: groups}
   end
 
+  defp run_groups(repo) do
+    if SQL.sqlite?(repo), do: sqlite_run_groups(repo), else: postgres_run_groups(repo)
+  end
+
+  # SQLite has no LATERAL joins; a correlated subquery reads each run's
+  # latest event the same way.
+  defp sqlite_run_groups(repo) do
+    query_rows(
+      repo,
+      """
+      WITH active AS (
+        SELECT r.state, r.started_at,
+               CASE
+                 WHEN r.state = 'stuck_unknown_version' THEN 'unknown_version'
+                 WHEN latest_type = 'activity_scheduled' THEN 'activity'
+                 WHEN latest_type = 'activity_batch_scheduled' THEN 'activity_batch'
+                 WHEN latest_type = 'compensation_scheduled' THEN 'compensation'
+                 WHEN latest_type = 'timer_started' THEN 'timer'
+                 WHEN latest_type = 'signal_awaited' THEN 'signal'
+                 WHEN latest_type = 'child_started' THEN 'child'
+                 WHEN r.state = 'running' THEN 'executing'
+                 ELSE COALESCE(latest_type, 'unknown')
+               END AS reason
+        FROM (
+          SELECT r.*,
+                 (SELECT e.event_type
+                  FROM continuum_events e
+                  WHERE e.run_id = r.id
+                  ORDER BY e.seq DESC
+                  LIMIT 1) AS latest_type
+          FROM continuum_runs r
+          WHERE r.state IN (SELECT value FROM json_each($1))
+        ) r
+      )
+      SELECT state, reason, count(*), min(started_at)
+      FROM active
+      GROUP BY state, reason
+      ORDER BY state, reason
+      """,
+      [Jason.encode!(@active_states)]
+    )
+  end
+
+  defp postgres_run_groups(repo) do
+    query_rows(
+      repo,
+      """
+      WITH active AS (
+        SELECT r.*,
+               CASE
+                 WHEN r.state = 'stuck_unknown_version' THEN 'unknown_version'
+                 WHEN latest.event_type = 'activity_scheduled' THEN 'activity'
+                 WHEN latest.event_type = 'activity_batch_scheduled' THEN 'activity_batch'
+                 WHEN latest.event_type = 'compensation_scheduled' THEN 'compensation'
+                 WHEN latest.event_type = 'timer_started' THEN 'timer'
+                 WHEN latest.event_type = 'signal_awaited' THEN 'signal'
+                 WHEN latest.event_type = 'child_started' THEN 'child'
+                 WHEN r.state = 'running' THEN 'executing'
+                 ELSE COALESCE(latest.event_type, 'unknown')
+               END AS reason
+        FROM continuum_runs r
+        LEFT JOIN LATERAL (
+          SELECT e.event_type
+          FROM continuum_events e
+          WHERE e.run_id = r.id
+          ORDER BY e.seq DESC, e.inserted_at DESC
+          LIMIT 1
+        ) latest ON true
+        WHERE r.state = ANY($1)
+      )
+      SELECT state, reason, count(*)::bigint, min(started_at)
+      FROM active
+      GROUP BY state, reason
+      ORDER BY state, reason
+      """,
+      [@active_states]
+    )
+  end
+
   defp lost_wake_health(repo, now, opts, reviews) do
     threshold =
       non_negative_integer(Keyword.get(opts, :lost_wake_after_ms, @default_lost_wake_after_ms))
 
     limit = candidate_query_limit(opts, reviews)
+    {wake_before_sql, wake_before} = wake_before(repo, threshold)
 
     query_rows(
       repo,
@@ -302,11 +373,11 @@ defmodule Continuum.Health do
         AND lease_owner IS NOT NULL
         AND lease_token IS NOT NULL
         AND lease_expires_at > clock_timestamp()
-        AND next_wakeup_at <= clock_timestamp() - ($1 * interval '1 millisecond')
+        AND next_wakeup_at <= #{wake_before_sql}
       ORDER BY next_wakeup_at
       LIMIT $2
       """,
-      [threshold, limit]
+      [wake_before, limit]
     )
     |> Enum.map(fn [run_id, state, owner, token, wake_at] ->
       finding(:lost_wake, run_id, [token, wake_at], reviews, %{
@@ -325,6 +396,8 @@ defmodule Continuum.Health do
     threshold =
       non_negative_integer(Keyword.get(opts, :lost_wake_after_ms, @default_lost_wake_after_ms))
 
+    {wake_before_sql, wake_before} = wake_before(repo, threshold)
+
     scalar(
       repo,
       """
@@ -334,10 +407,21 @@ defmodule Continuum.Health do
         AND lease_owner IS NOT NULL
         AND lease_token IS NOT NULL
         AND lease_expires_at > clock_timestamp()
-        AND next_wakeup_at <= clock_timestamp() - ($1 * interval '1 millisecond')
+        AND next_wakeup_at <= #{wake_before_sql}
       """,
-      [threshold]
+      [wake_before]
     )
+  end
+
+  # The lost-wake cutoff as `$1`: interval arithmetic on PostgreSQL's clock,
+  # or a precomputed timestamp from the host clock SQLite shares.
+  defp wake_before(repo, threshold_ms) do
+    if SQL.sqlite?(repo) do
+      cutoff = DateTime.add(SQL.utc_now(), -threshold_ms, :millisecond)
+      {"$1", SQL.timestamp(repo, cutoff)}
+    else
+      {"clock_timestamp() - ($1 * interval '1 millisecond')", threshold_ms}
+    end
   end
 
   defp timer_health(repo, now, opts, reviews) do
@@ -398,7 +482,10 @@ defmodule Continuum.Health do
         """,
         [limit]
       )
-      |> Enum.map(fn [run_id, owner, token, acquired_at, heartbeat_at, expires_at, expired?] ->
+      |> Enum.map(fn [run_id, owner, token, acquired_at, heartbeat_at, expires_at, expired] ->
+        # SQLite returns comparison results as 0/1.
+        expired? = expired in [true, 1]
+
         base = %{
           run_id: run_id,
           owner: owner,
@@ -693,7 +780,7 @@ defmodule Continuum.Health do
         AND lease_token = $2
       """
 
-      case instance.repo.query(sql, [run_id, token]) do
+      case run_query(instance.repo, sql, [run_id, token]) do
         {:ok, %{num_rows: 1}} ->
           if Process.whereis(instance.registry), do: Engine.wake(instance, run_id)
           repaired(instance, plan)
@@ -763,7 +850,7 @@ defmodule Continuum.Health do
         AND lease_expires_at <= clock_timestamp()
       """
 
-      case instance.repo.query(sql, [run_id, owner, token]) do
+      case run_query(instance.repo, sql, [run_id, owner, token]) do
         {:ok, %{num_rows: 1}} -> repaired(instance, plan)
         {:ok, %{num_rows: 0}} -> already_or_stale_run(instance.repo, run_id, plan)
         {:error, reason} -> {:error, reason}
@@ -799,7 +886,7 @@ defmodule Continuum.Health do
         AND lease_expires_at <= clock_timestamp()
       """
 
-      case instance.repo.query(sql, [task_id, owner, attempt]) do
+      case run_query(instance.repo, sql, [task_id, owner, attempt]) do
         {:ok, %{num_rows: 1}} -> repaired(instance, plan)
         {:ok, %{num_rows: 0}} -> already_or_stale_task(instance.repo, task_id, attempt, plan)
         {:error, reason} -> {:error, reason}
@@ -995,11 +1082,59 @@ defmodule Continuum.Health do
     repo_instance_for_repo(repo, instance)
   end
 
-  defp database_now(repo), do: scalar(repo, "SELECT clock_timestamp()")
+  defp database_now(repo), do: SQL.now(repo)
 
   defp query_rows(repo, sql, params \\ []) do
-    %{rows: rows} = repo.query!(sql, params)
-    rows
+    case run_query(repo, sql, params) do
+      {:ok, %{rows: rows}} -> rows
+      {:error, error} -> raise error
+    end
+  end
+
+  # Health statements are written for PostgreSQL. On SQLite the remaining
+  # differences are mechanical: casts that only adapt PostgreSQL result types
+  # are dropped, `clock_timestamp()` binds the host clock as one extra
+  # parameter, `$N` placeholders are renumbered, and timestamps come back as
+  # text. Statements with structural differences choose a SQLite variant
+  # before reaching this function.
+  defp run_query(repo, sql, params) do
+    if SQL.sqlite?(repo) do
+      {sql, params} = sqlite_statement(sql, params)
+
+      with {:ok, result} <- SQL.query(repo, sql, params) do
+        {:ok, %{result | rows: decode_sqlite_rows(result.rows)}}
+      end
+    else
+      repo.query(sql, params)
+    end
+  end
+
+  defp sqlite_statement(sql, params) do
+    sql = String.replace(sql, ["::text::uuid", "::bigint", "::text"], "")
+
+    if String.contains?(sql, "clock_timestamp()") do
+      now_param = "$#{length(params) + 1}"
+      now = SQL.encode_sqlite_timestamp!(SQL.utc_now())
+      {String.replace(sql, "clock_timestamp()", now_param), params ++ [now]}
+    else
+      {sql, params}
+    end
+  end
+
+  @sqlite_timestamp ~r/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z\z/
+
+  defp decode_sqlite_rows(nil), do: nil
+
+  defp decode_sqlite_rows(rows) do
+    Enum.map(rows, fn row ->
+      Enum.map(row, fn
+        value when is_binary(value) ->
+          if Regex.match?(@sqlite_timestamp, value), do: SQL.decode_timestamp(value), else: value
+
+        value ->
+          value
+      end)
+    end)
   end
 
   defp scalar(repo, sql, params \\ []) do

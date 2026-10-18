@@ -42,23 +42,32 @@ defmodule Continuum.Runtime.PartitionMaintainer do
     opts = Continuum.Config.validate_component!(:partition_maintainer, opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
-    if is_nil(instance.repo) do
-      {:stop, :repo_not_configured}
-    else
-      state = %{
-        instance: instance,
-        months: Keyword.get(opts, :months, 4),
-        start_month: Keyword.get(opts, :start_month),
-        interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
-        timer_ref: nil,
-        state: :starting,
-        last_result: nil,
-        last_error: nil,
-        last_run_at: nil
-      }
+    cond do
+      is_nil(instance.repo) ->
+        {:stop, :repo_not_configured}
 
-      {:ok, schedule(state, Keyword.get(opts, :initial_delay_ms, 0))}
+      Continuum.Runtime.SQL.sqlite?(instance.repo) ->
+        {:stop, :partitions_unsupported_on_sqlite}
+
+      true ->
+        start(instance, opts)
     end
+  end
+
+  defp start(instance, opts) do
+    state = %{
+      instance: instance,
+      months: Keyword.get(opts, :months, 4),
+      start_month: Keyword.get(opts, :start_month),
+      interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
+      timer_ref: nil,
+      state: :starting,
+      last_result: nil,
+      last_error: nil,
+      last_run_at: nil
+    }
+
+    {:ok, schedule(state, Keyword.get(opts, :initial_delay_ms, 0))}
   end
 
   @impl true

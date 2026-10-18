@@ -8,6 +8,9 @@ defmodule Continuum.Partitions do
   already contains rows for a newly-created month, those rows are moved into
   the month partition in the same transaction.
 
+  Partitions are PostgreSQL-only. SQLite repos keep a single events table, and
+  these functions return `{:error, :partitions_unsupported_on_sqlite}` for them.
+
   The database user running this operation needs permission to create and lock
   tables. Applications that separate migration and runtime database roles can
   call this API from a release task instead of enabling the optional runtime
@@ -350,7 +353,16 @@ defmodule Continuum.Partitions do
     }
   end
 
+  # Event partitions are a PostgreSQL feature; SQLite keeps one events table.
   defp resolve_repo(opts) do
+    with {:ok, repo, instance_name} <- resolve_any_repo(opts) do
+      if Continuum.Runtime.SQL.sqlite?(repo),
+        do: {:error, :partitions_unsupported_on_sqlite},
+        else: {:ok, repo, instance_name}
+    end
+  end
+
+  defp resolve_any_repo(opts) do
     case Keyword.get(opts, :repo) do
       nil ->
         instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))

@@ -17,7 +17,7 @@ defmodule Continuum.ActivityOperations do
   import Ecto.Query
 
   alias Continuum.{Activity.Policy, DurableTerm}
-  alias Continuum.Runtime.{Instance, Journal.Postgres}
+  alias Continuum.Runtime.{Instance, Journal.Postgres, SQL}
   alias Continuum.Schema.{ActivityAttempt, ActivityOperation, ActivityTask, Run}
 
   @type classification :: :retryable | :non_retryable
@@ -156,8 +156,8 @@ defmodule Continuum.ActivityOperations do
   end
 
   defp execute_dead_letter(repo, task, operator, reason) do
-    repo.transaction(fn ->
-      locked = repo.one(from(t in ActivityTask, where: t.id == ^task.id, lock: "FOR UPDATE"))
+    SQL.transaction(repo, fn ->
+      locked = repo.one(SQL.for_update(from(t in ActivityTask, where: t.id == ^task.id), repo))
 
       cond do
         is_nil(locked) ->

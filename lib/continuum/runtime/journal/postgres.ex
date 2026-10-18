@@ -89,6 +89,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
         correlation_id: run_id,
         trace_context: Keyword.get(opts, :trace_context)
       })
+      |> stamp_sqlite_defaults([:started_at])
       |> Ecto.Changeset.unique_constraint(:id, name: :continuum_runs_pkey)
       |> Ecto.Changeset.unique_constraint(:idempotency_key,
         name: :continuum_runs_ingress_key_idx
@@ -511,6 +512,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             attempt: 1,
             state: "available"
           })
+          |> stamp_sqlite_defaults([:scheduled_at, :available_at])
 
         with {:ok, _event} <- repo().insert(event_changeset),
              {:ok, _task} <- repo().insert(task_changeset) do
@@ -569,6 +571,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
             correlation_id: child.child_run_id,
             trace_context: child.trace_context
           })
+          |> stamp_sqlite_defaults([:started_at])
 
         event_changeset =
           %Event{}
@@ -862,6 +865,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
                 # cancel evaporate before the owner's next heartbeat sees it.
                 cancel_requested_at: run.cancel_requested_at
               })
+              |> stamp_sqlite_defaults([:started_at])
 
             with {:ok, _event} <- repo().insert(event_changeset),
                  {:ok, _next} <- repo().insert(next_changeset),
@@ -990,6 +994,7 @@ defmodule Continuum.Runtime.Journal.Postgres do
               attempt: 1,
               state: "available"
             })
+            |> stamp_sqlite_defaults([:scheduled_at, :available_at])
 
           with {:ok, _event} <- repo().insert(event_changeset),
                {:ok, _task} <- repo().insert(task_changeset) do
@@ -2973,6 +2978,18 @@ defmodule Continuum.Runtime.Journal.Postgres do
   defp restore(key, value), do: Process.put(key, value)
 
   defp transaction(fun), do: SQL.transaction(repo(), fun)
+
+  # PostgreSQL fills these columns with microsecond `now()` defaults. SQLite's
+  # clock functions stop at milliseconds, so rows inserted in the same
+  # millisecond would tie on the timestamps that order dispatch and listings.
+  defp stamp_sqlite_defaults(changeset, fields) do
+    if SQL.sqlite?(repo()) do
+      now = SQL.utc_now()
+      Ecto.Changeset.change(changeset, Map.new(fields, &{&1, now}))
+    else
+      changeset
+    end
+  end
 
   defp for_update(query), do: SQL.for_update(query, repo())
 

@@ -9,6 +9,8 @@ defmodule Continuum.Pruner do
 
   import Ecto.Query
 
+  alias Continuum.Runtime.SQL
+
   alias Continuum.Schema.{
     ActivityAttempt,
     ActivityOperation,
@@ -68,13 +70,79 @@ defmodule Continuum.Pruner do
 
   def execute(plan, opts) do
     with {:ok, repo} <- fetch_repo(opts) do
-      repo.transaction(fn -> execute_transaction!(repo, plan) end)
+      SQL.transaction(repo, fn -> execute_transaction!(repo, plan) end)
     end
   rescue
     error -> {:error, error}
   end
 
   defp candidate_chains(repo, batch_size, older_than_days) do
+    case SQL.dialect(repo) do
+      :postgres -> candidate_chains_postgres(repo, batch_size, older_than_days)
+      :sqlite -> candidate_chains_sqlite(repo, batch_size, older_than_days)
+    end
+  end
+
+  # `min` over 0/1 comparisons is `bool_and`: both ignore NULL inputs. Chain
+  # members are ordered in Elixir rather than with an ordered aggregate.
+  defp candidate_chains_sqlite(repo, batch_size, older_than_days) do
+    now = SQL.utc_now()
+    cutoff = DateTime.add(now, -older_than_days * 86_400, :second)
+
+    %{rows: rows} =
+      repo.query!(
+        """
+        WITH chain_stats AS (
+          SELECT
+            COALESCE(r.correlation_id, r.id) AS logical_id,
+            json_group_array(json_array(r.started_at, r.id)) AS members,
+            json_group_array(r.id) AS run_ids,
+            min(r.completed_at) AS oldest_completed_at,
+            max(r.completed_at) AS newest_completed_at,
+            min(r.state IN ('completed', 'failed', 'cancelled')) AS terminal,
+            min(r.completed_at IS NOT NULL) AS completed,
+            min(r.retention_until IS NOT NULL AND r.retention_until < ?1) AS expired,
+            min(r.completed_at < ?2) AS older_than_cutoff
+          FROM continuum_runs r
+          GROUP BY COALESCE(r.correlation_id, r.id)
+        )
+        SELECT cs.logical_id, cs.members, cs.oldest_completed_at, cs.newest_completed_at
+        FROM chain_stats cs
+        WHERE cs.terminal
+          AND cs.completed
+          AND cs.expired
+          AND cs.older_than_cutoff
+          AND NOT EXISTS (
+            SELECT 1
+            FROM continuum_runs child
+            WHERE child.parent_run_id IN (SELECT value FROM json_each(cs.run_ids))
+          )
+        ORDER BY cs.oldest_completed_at, cs.logical_id
+        LIMIT ?3
+        """,
+        [SQL.timestamp(repo, now), SQL.timestamp(repo, cutoff), batch_size]
+      )
+
+    Enum.map(rows, fn [logical_id, members, oldest, newest] ->
+      run_ids =
+        members
+        |> Jason.decode!()
+        |> Enum.sort()
+        |> Enum.map(fn [_started_at, run_id] -> run_id end)
+
+      %{
+        logical_id: logical_id,
+        run_ids: run_ids,
+        oldest_completed_at: naive(oldest),
+        newest_completed_at: naive(newest)
+      }
+    end)
+  end
+
+  # PostgreSQL returns these `timestamp` columns as naive datetimes.
+  defp naive(timestamp), do: timestamp |> SQL.decode_timestamp() |> DateTime.to_naive()
+
+  defp candidate_chains_postgres(repo, batch_size, older_than_days) do
     %{rows: rows} =
       repo.query!(
         """
@@ -125,10 +193,12 @@ defmodule Continuum.Pruner do
 
     locked =
       repo.all(
-        from(r in Run,
-          where: r.id in ^run_ids,
-          lock: "FOR UPDATE",
-          select: {r.id, r.state, r.retention_until}
+        SQL.for_update(
+          from(r in Run,
+            where: r.id in ^run_ids,
+            select: {r.id, r.state, r.retention_until}
+          ),
+          repo
         )
       )
 

@@ -3,11 +3,13 @@ defmodule Continuum.Replay.BoundedHistory do
   import Ecto.Query
 
   alias Continuum.Runtime.Journal.Postgres
+  alias Continuum.Runtime.SQL
   alias Continuum.Schema.{Event, Run, Snapshot}
 
-  # The CASE expressions apply size limits in PostgreSQL before transferring
+  # The CASE expressions apply size limits in the database before transferring
   # payloads to the replay process. Checking sizes after repo.get/all would
-  # already have allocated an arbitrarily large history in the caller.
+  # already have allocated an arbitrarily large history in the caller. The
+  # statements are shared with SQLite, which has `octet_length` since 3.43.
   def fetch_run(instance, id, limits) do
     max_bytes = limits.payload_bytes
 
@@ -47,9 +49,10 @@ defmodule Continuum.Replay.BoundedHistory do
         )
       )
 
+    # SQLite returns the comparison as 0/1 rather than a boolean.
     case row do
       nil -> {:error, {:run_not_found, id}}
-      %{too_large: true} -> {:error, :run_payload_too_large}
+      %{too_large: too_large} when too_large in [true, 1] -> {:error, :run_payload_too_large}
       row -> {:ok, row}
     end
   end
@@ -120,7 +123,7 @@ defmodule Continuum.Replay.BoundedHistory do
     WITH bounded AS (
       SELECT seq, event_type, payload, octet_length(payload) AS bytes
       FROM continuum_events
-      WHERE run_id = $1::text::uuid AND seq > $2
+      WHERE run_id = $1#{if SQL.postgres?(instance.repo), do: "::text::uuid"} AND seq > $2
       ORDER BY seq LIMIT $3
     )
     SELECT seq, event_type,
@@ -139,7 +142,7 @@ defmodule Continuum.Replay.BoundedHistory do
       limits.events
     ]
 
-    with {:ok, %{rows: rows}} <- instance.repo.query(sql, params) do
+    with {:ok, %{rows: rows}} <- SQL.query(instance.repo, sql, params) do
       cond do
         length(rows) > limits.events ->
           {:error, :history_event_limit}

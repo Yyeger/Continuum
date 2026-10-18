@@ -21,6 +21,12 @@ defmodule Mix.Tasks.Continuum.Partitions.List do
 
     repo = parse_repo(opts)
 
+    if Continuum.Runtime.SQL.sqlite?(repo) do
+      Mix.raise(
+        "continuum_events partitions are PostgreSQL-only; SQLite keeps a single events table"
+      )
+    end
+
     repo
     |> partitions()
     |> Enum.each(fn partition ->

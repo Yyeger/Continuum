@@ -86,9 +86,9 @@ defmodule Continuum.Test do
   @doc """
   Load a run's event history from a journal.
 
-  `:journal` accepts the shorthand `:postgres` or `:in_memory` as well as an
-  adapter module, so a test never has to name a `Continuum.Runtime.*` module.
-  Defaults to the in-memory journal.
+  `:journal` accepts the shorthand `:postgres`, `:sqlite`, or `:in_memory` as
+  well as an adapter module, so a test never has to name a `Continuum.Runtime.*`
+  module. Defaults to the in-memory journal.
   """
   @spec history(binary(), keyword()) :: [map()]
   def history(run_id, opts \\ []) do
@@ -179,7 +179,7 @@ defmodule Continuum.Test do
     opts = Keyword.put(opts, :journal, journal)
 
     case journal do
-      adapter when adapter in [Journal.Postgres, Journal.InMemory] ->
+      adapter when adapter in [Journal.Postgres, Journal.SQLite, Journal.InMemory] ->
         Continuum.Runtime.SignalRouter.deliver(
           run_id,
           name,
@@ -200,10 +200,9 @@ defmodule Continuum.Test do
     journal = resolve_journal(opts)
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
-    case journal do
-      Journal.Postgres -> fire_postgres_timer(run_id, opts)
-      _ -> fire_journal_timer(instance, run_id, journal)
-    end
+    if Journal.durable?(journal),
+      do: fire_durable_timer(journal, run_id, opts),
+      else: fire_journal_timer(instance, run_id, journal)
   end
 
   # ---------------------------------------------------------------------------
@@ -348,7 +347,9 @@ defmodule Continuum.Test do
   # as it stores `{:continued, next_run_id}`, leaving the successor undispatched
   # in the disabled-poller test setup this helper exists for.
   defp drive_to_result(instance, run_id, deadline, batch_size) do
-    case Continuum.await(run_id, 0, journal: Journal.Postgres, instance: instance.name) do
+    journal = Journal.for_repo(instance.repo)
+
+    case Continuum.await(run_id, 0, journal: journal, instance: instance.name) do
       {:error, :timeout} ->
         if System.monotonic_time(:millisecond) > deadline do
           {:error, :timeout}
@@ -421,6 +422,7 @@ defmodule Continuum.Test do
   def resolve_journal(opts) do
     case Keyword.get(opts, :journal, Journal.InMemory) do
       :postgres -> Journal.Postgres
+      :sqlite -> Journal.SQLite
       :in_memory -> Journal.InMemory
       module when is_atom(module) -> module
     end
@@ -467,19 +469,20 @@ defmodule Continuum.Test do
     end
   end
 
-  defp fire_postgres_timer(run_id, opts) do
+  defp fire_durable_timer(journal, run_id, opts) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
     timer_id = Keyword.get(opts, :timer_id)
 
-    timer =
-      instance.repo.one(
-        from(t in Timer,
-          where: t.run_id == ^run_id and t.fired == false,
-          where: is_nil(^timer_id) or t.id == ^timer_id,
-          order_by: [desc: t.fires_at],
-          limit: 1
-        )
+    query =
+      from(t in Timer,
+        where: t.run_id == ^run_id and t.fired == false,
+        order_by: [desc: t.fires_at],
+        limit: 1
       )
+
+    # Ecto refuses `t.id == ^nil`, so the optional filter is added only when given.
+    query = if timer_id, do: where(query, [t], t.id == ^timer_id), else: query
+    timer = instance.repo.one(query)
 
     case timer do
       nil ->
@@ -489,7 +492,7 @@ defmodule Continuum.Test do
         lease_token =
           instance.repo.one(from(r in Run, where: r.id == ^run_id, select: r.lease_token))
 
-        :ok = Journal.Postgres.fire_timer!(instance, run_id, timer.id, lease_token)
+        :ok = journal.fire_timer!(instance, run_id, timer.id, lease_token)
         Engine.wake(instance, run_id)
         :ok
     end

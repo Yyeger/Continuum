@@ -55,6 +55,49 @@ defmodule Mix.Tasks.Continuum.ArchiveContinuedChains do
   end
 
   defp candidate_run_ids(repo, days) do
+    if Continuum.Runtime.SQL.sqlite?(repo),
+      do: sqlite_candidate_run_ids(repo, days),
+      else: postgres_candidate_run_ids(repo, days)
+  end
+
+  defp sqlite_candidate_run_ids(repo, days) do
+    now = Continuum.Runtime.SQL.utc_now()
+    cutoff = DateTime.add(now, -days * 86_400, :second)
+
+    %{rows: rows} =
+      repo.query!(
+        """
+        SELECT r.id
+        FROM continuum_runs r
+        WHERE r.state = 'completed'
+          AND r.completed_at < ?1
+          AND r.retention_until IS NOT NULL
+          AND r.retention_until < ?2
+          AND EXISTS (
+            SELECT 1
+            FROM continuum_runs successor
+            WHERE successor.continued_from_run_id = r.id
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM continuum_runs chain_run
+            JOIN continuum_runs parent ON parent.id = chain_run.parent_run_id
+            WHERE chain_run.correlation_id = r.correlation_id
+              AND parent.state IN (SELECT value FROM json_each(?3))
+          )
+        ORDER BY r.correlation_id, r.completed_at, r.id
+        """,
+        [
+          Continuum.Runtime.SQL.timestamp(repo, cutoff),
+          Continuum.Runtime.SQL.timestamp(repo, now),
+          Jason.encode!(@non_terminal_states)
+        ]
+      )
+
+    Enum.map(rows, fn [run_id] -> run_id end)
+  end
+
+  defp postgres_candidate_run_ids(repo, days) do
     %{rows: rows} =
       repo.query!(
         """
