@@ -1,6 +1,6 @@
 defmodule Mix.Tasks.Continuum.Gen.Migration do
   @moduledoc """
-  Generates the Ecto migration that creates Continuum's Postgres tables.
+  Generates the Ecto migration that creates Continuum's tables.
 
       mix continuum.gen.migration
       mix continuum.gen.migration --from 0.6.1
@@ -15,6 +15,12 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
   `continuum_timers`, `continuum_activity_tasks`,
   `continuum_activity_results`, `continuum_snapshots`,
   `continuum_workflow_versions`, and the `continuum_lease_token_seq` sequence.
+
+  When the repo uses `Ecto.Adapters.SQLite3`, the fresh migration creates the
+  SQLite schema instead: a plain `continuum_events` table (SQLite has no
+  partitions) and a `continuum_sequences` counter that replaces the lease-token
+  sequence. SQLite support has no earlier releases, so `--from` upgrades are
+  PostgreSQL-only. See the SQLite guide.
   """
   use Mix.Task
 
@@ -34,7 +40,7 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     File.mkdir_p!(path)
 
     timestamp = timestamp()
-    {name, source} = migration(opts[:from], repo)
+    {name, source} = migration(dialect(repo), opts[:from], repo)
     filename = Path.join(path, "#{timestamp}_#{name}.exs")
 
     if File.exists?(filename) do
@@ -44,6 +50,20 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     File.write!(filename, source)
     Mix.shell().info("Created #{filename}")
   end
+
+  defp migration(:sqlite, nil, repo) do
+    name = "create_continuum_tables"
+    {name, sqlite_migration_source("#{inspect(repo)}.Migrations.#{camelize(name)}")}
+  end
+
+  defp migration(:sqlite, version, _repo) do
+    Mix.raise(
+      "Continuum upgrade migrations (--from #{version}) are PostgreSQL-only; " <>
+        "SQLite installations start from the current schema without --from"
+    )
+  end
+
+  defp migration(:postgres, version, repo), do: migration(version, repo)
 
   defp migration(nil, repo) do
     name = "create_continuum_tables"
@@ -85,6 +105,14 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
   defp validate_args!(rest, invalid) do
     if invalid != [], do: Mix.raise("invalid options: #{inspect(invalid)}")
     if rest != [], do: Mix.raise("unexpected arguments: #{Enum.join(rest, " ")}")
+  end
+
+  defp dialect(repo) do
+    if Code.ensure_loaded?(repo) and function_exported?(repo, :__adapter__, 0) do
+      Continuum.Runtime.SQL.dialect(repo)
+    else
+      :postgres
+    end
   end
 
   defp source_migrations_path(repo) do
@@ -881,5 +909,400 @@ defmodule Mix.Tasks.Continuum.Gen.Migration do
     end
     drop table(:continuum_recurring_schedules)
     """
+  end
+
+  # SQLite stores `utc_datetime_usec` as ISO 8601 text with six fractional
+  # digits, matching what `ecto_sqlite3` writes, so defaults and application
+  # writes sort together. `%f` yields milliseconds; the padding supplies the
+  # remaining digits.
+  @sqlite_now "(strftime('%Y-%m-%dT%H:%M:%f', 'now') || '000Z')"
+
+  @sqlite_up [
+    """
+    CREATE TABLE continuum_sequences (
+      name TEXT NOT NULL PRIMARY KEY,
+      value INTEGER NOT NULL
+    )
+    """,
+    "INSERT INTO continuum_sequences (name, value) VALUES ('lease_token', 0)",
+    """
+    CREATE TABLE continuum_runs (
+      id TEXT NOT NULL PRIMARY KEY,
+      workflow TEXT NOT NULL,
+      version_hash BLOB NOT NULL,
+      namespace TEXT NOT NULL DEFAULT 'default',
+      idempotency_key TEXT,
+      state TEXT NOT NULL,
+      input BLOB NOT NULL,
+      attributes TEXT NOT NULL DEFAULT '{}',
+      result BLOB,
+      error BLOB,
+      error_stacktrace BLOB,
+      trace_context BLOB,
+      parent_run_id TEXT,
+      parent_command_id BLOB,
+      correlation_id TEXT,
+      continued_from_run_id TEXT,
+      started_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      completed_at TEXT,
+      lease_owner TEXT,
+      lease_token INTEGER,
+      lease_acquired_at TEXT,
+      lease_heartbeat_at TEXT,
+      lease_expires_at TEXT,
+      next_wakeup_at TEXT,
+      retention_until TEXT,
+      cancel_requested_at TEXT
+    )
+    """,
+    """
+    CREATE INDEX continuum_runs_dispatch_idx
+      ON continuum_runs (next_wakeup_at)
+      WHERE state = 'suspended' AND lease_owner IS NULL
+    """,
+    """
+    CREATE INDEX continuum_runs_lease_idx
+      ON continuum_runs (lease_expires_at)
+      WHERE lease_owner IS NOT NULL
+    """,
+    """
+    CREATE INDEX continuum_runs_catch_up_idx
+      ON continuum_runs (next_wakeup_at, lease_expires_at, id)
+      WHERE state IN ('running', 'suspended')
+        AND lease_owner IS NOT NULL
+        AND lease_token IS NOT NULL
+        AND next_wakeup_at IS NOT NULL
+    """,
+    """
+    CREATE INDEX continuum_runs_parent_idx
+      ON continuum_runs (parent_run_id)
+      WHERE parent_run_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX continuum_runs_correlation_completed_idx
+      ON continuum_runs (correlation_id, completed_at)
+      WHERE correlation_id IS NOT NULL
+    """,
+    """
+    CREATE INDEX continuum_runs_continued_from_idx
+      ON continuum_runs (continued_from_run_id)
+      WHERE continued_from_run_id IS NOT NULL
+    """,
+    "CREATE INDEX continuum_runs_namespace_state_idx ON continuum_runs (namespace, state)",
+    """
+    CREATE UNIQUE INDEX continuum_runs_ingress_key_idx
+      ON continuum_runs (namespace, workflow, idempotency_key)
+      WHERE idempotency_key IS NOT NULL
+        AND parent_run_id IS NULL
+        AND continued_from_run_id IS NULL
+    """,
+    """
+    CREATE TABLE continuum_run_ingress_keys (
+      namespace TEXT NOT NULL,
+      workflow TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      PRIMARY KEY (namespace, workflow, idempotency_key)
+    )
+    """,
+    "CREATE INDEX continuum_run_ingress_keys_run_id_index ON continuum_run_ingress_keys (run_id)",
+    """
+    CREATE TABLE continuum_recurring_schedules (
+      id TEXT NOT NULL PRIMARY KEY,
+      workflow TEXT NOT NULL,
+      version_hash BLOB NOT NULL,
+      input BLOB NOT NULL,
+      namespace TEXT NOT NULL DEFAULT 'default',
+      attributes TEXT NOT NULL DEFAULT '{}',
+      trace_context BLOB,
+      every_ms INTEGER NOT NULL,
+      next_occurrence_at TEXT NOT NULL,
+      overlap_policy TEXT NOT NULL,
+      missed_policy TEXT NOT NULL,
+      max_catch_up INTEGER NOT NULL DEFAULT 10,
+      state TEXT NOT NULL DEFAULT 'active',
+      inserted_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      CONSTRAINT continuum_recurring_contract CHECK (
+        every_ms >= 1000
+        AND max_catch_up BETWEEN 1 AND 100
+        AND overlap_policy IN ('allow', 'skip')
+        AND missed_policy IN ('skip', 'catch_up')
+        AND state IN ('active', 'paused')
+      )
+    )
+    """,
+    """
+    CREATE INDEX continuum_recurring_due_idx
+      ON continuum_recurring_schedules (next_occurrence_at, id)
+      WHERE state = 'active'
+    """,
+    """
+    CREATE TABLE continuum_schedules (
+      id TEXT NOT NULL PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      workflow TEXT NOT NULL,
+      version_hash BLOB NOT NULL,
+      input BLOB NOT NULL,
+      namespace TEXT NOT NULL DEFAULT 'default',
+      attributes TEXT NOT NULL DEFAULT '{}',
+      trace_context BLOB,
+      scheduled_at TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'scheduled',
+      attempt INTEGER NOT NULL DEFAULT 0,
+      claimed_at TEXT,
+      started_at TEXT,
+      last_error TEXT,
+      inserted_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      recurring_schedule_id TEXT REFERENCES continuum_recurring_schedules (id),
+      occurrence_at TEXT,
+      CONSTRAINT continuum_schedule_occurrence_pair
+        CHECK ((recurring_schedule_id IS NULL) = (occurrence_at IS NULL))
+    )
+    """,
+    """
+    CREATE INDEX continuum_schedules_due_idx
+      ON continuum_schedules (scheduled_at, id)
+      WHERE state IN ('scheduled', 'starting')
+    """,
+    """
+    CREATE UNIQUE INDEX continuum_schedule_occurrence_idx
+      ON continuum_schedules (recurring_schedule_id, occurrence_at)
+    """,
+    """
+    CREATE TABLE continuum_events (
+      run_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      event_type TEXT NOT NULL,
+      payload BLOB NOT NULL,
+      inserted_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      PRIMARY KEY (run_id, seq)
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE continuum_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      correlation_id TEXT,
+      name TEXT NOT NULL,
+      delivery_id TEXT,
+      payload BLOB NOT NULL,
+      delivered INTEGER NOT NULL DEFAULT 0,
+      inserted_at TEXT NOT NULL DEFAULT #{@sqlite_now}
+    )
+    """,
+    """
+    CREATE INDEX continuum_signals_pending_idx
+      ON continuum_signals (run_id, name)
+      WHERE delivered = 0
+    """,
+    """
+    CREATE UNIQUE INDEX continuum_signals_delivery_key_idx
+      ON continuum_signals (correlation_id, name, delivery_id)
+      WHERE delivery_id IS NOT NULL
+    """,
+    """
+    CREATE TABLE continuum_timers (
+      id TEXT NOT NULL PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      fires_at TEXT NOT NULL,
+      fired INTEGER NOT NULL DEFAULT 0,
+      owner_seq INTEGER
+    )
+    """,
+    """
+    CREATE INDEX continuum_timers_due_idx
+      ON continuum_timers (fires_at)
+      WHERE fired = 0
+    """,
+    "CREATE INDEX continuum_timers_run_id_index ON continuum_timers (run_id)",
+    """
+    CREATE TABLE continuum_activity_tasks (
+      id TEXT NOT NULL PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      lineage_id TEXT,
+      parent_task_id TEXT REFERENCES continuum_activity_tasks (id) ON DELETE SET NULL,
+      seq INTEGER NOT NULL,
+      queue TEXT NOT NULL DEFAULT 'default',
+      priority INTEGER NOT NULL DEFAULT 0,
+      mfa BLOB NOT NULL,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      state TEXT NOT NULL,
+      scheduled_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      available_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      lease_owner TEXT,
+      lease_expires_at TEXT,
+      last_heartbeat_at TEXT,
+      heartbeat_details BLOB,
+      result BLOB,
+      error BLOB
+    )
+    """,
+    """
+    CREATE INDEX continuum_activity_tasks_pickup_idx
+      ON continuum_activity_tasks (queue, priority DESC, available_at, scheduled_at)
+      WHERE state = 'available'
+    """,
+    """
+    CREATE INDEX continuum_activity_tasks_lineage_id_scheduled_at_index
+      ON continuum_activity_tasks (lineage_id, scheduled_at)
+    """,
+    """
+    CREATE INDEX continuum_activity_tasks_run_id_index
+      ON continuum_activity_tasks (run_id)
+    """,
+    """
+    CREATE INDEX continuum_activity_tasks_parent_task_id_index
+      ON continuum_activity_tasks (parent_task_id)
+    """,
+    """
+    CREATE TABLE continuum_activity_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      lineage_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL,
+      outcome TEXT NOT NULL,
+      error BLOB,
+      recorded_at TEXT NOT NULL DEFAULT #{@sqlite_now}
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX continuum_activity_attempts_task_id_attempt_index
+      ON continuum_activity_attempts (task_id, attempt)
+    """,
+    """
+    CREATE INDEX continuum_activity_attempts_lineage_id_recorded_at_index
+      ON continuum_activity_attempts (lineage_id, recorded_at)
+    """,
+    """
+    CREATE TABLE continuum_activity_operations (
+      id TEXT NOT NULL PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      successor_task_id TEXT,
+      run_id TEXT NOT NULL,
+      lineage_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      classification TEXT,
+      operator TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      retry_policy BLOB,
+      inserted_at TEXT NOT NULL DEFAULT #{@sqlite_now}
+    )
+    """,
+    """
+    CREATE INDEX continuum_activity_operations_lineage_id_inserted_at_index
+      ON continuum_activity_operations (lineage_id, inserted_at)
+    """,
+    """
+    CREATE UNIQUE INDEX continuum_activity_operations_successor_task_id_index
+      ON continuum_activity_operations (successor_task_id)
+    """,
+    """
+    CREATE TABLE continuum_activity_results (
+      activity_module TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      result BLOB NOT NULL,
+      completed_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      PRIMARY KEY (activity_module, idempotency_key)
+    )
+    """,
+    """
+    CREATE TABLE continuum_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      through_seq INTEGER NOT NULL,
+      version_hash BLOB NOT NULL,
+      format_version INTEGER NOT NULL DEFAULT 1,
+      payload BLOB NOT NULL,
+      taken_at TEXT NOT NULL DEFAULT #{@sqlite_now}
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX continuum_snapshots_run_seq_idx
+      ON continuum_snapshots (run_id, through_seq)
+    """,
+    """
+    CREATE INDEX continuum_snapshots_latest_idx
+      ON continuum_snapshots (run_id, through_seq DESC)
+    """,
+    """
+    CREATE TABLE continuum_workflow_versions (
+      workflow TEXT NOT NULL,
+      version_hash BLOB NOT NULL,
+      entrypoint TEXT NOT NULL,
+      registered_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      PRIMARY KEY (workflow, version_hash)
+    )
+    """,
+    """
+    CREATE TABLE continuum_health_reviews (
+      finding_type TEXT NOT NULL,
+      subject_id TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      reviewed_by TEXT,
+      reason TEXT,
+      reviewed_at TEXT NOT NULL DEFAULT #{@sqlite_now},
+      PRIMARY KEY (finding_type, subject_id, fingerprint)
+    )
+    """
+  ]
+
+  @sqlite_tables ~w(
+    continuum_health_reviews
+    continuum_workflow_versions
+    continuum_snapshots
+    continuum_activity_results
+    continuum_activity_operations
+    continuum_activity_attempts
+    continuum_activity_tasks
+    continuum_timers
+    continuum_signals
+    continuum_events
+    continuum_schedules
+    continuum_recurring_schedules
+    continuum_run_ingress_keys
+    continuum_runs
+    continuum_sequences
+  )
+
+  @doc false
+  def sqlite_migration_source(module_name) do
+    up = Enum.map_join(@sqlite_up, "\n\n", &execute_source/1)
+
+    down =
+      Enum.map_join(@sqlite_tables, "\n", &~s|    execute "DROP TABLE IF EXISTS #{&1}"|)
+
+    """
+    defmodule #{module_name} do
+      use Ecto.Migration
+
+      # Continuum's SQLite schema for ecto_sqlite3. Timestamps are ISO 8601
+      # text with microseconds, UUIDs are text, and terms are BLOBs.
+
+      def up do
+    #{up}
+      end
+
+      def down do
+    #{down}
+      end
+    end
+    """
+  end
+
+  defp execute_source(sql) do
+    lines = sql |> String.trim() |> String.split("\n")
+
+    case lines do
+      [line] ->
+        ~s|    execute #{inspect(line)}|
+
+      lines ->
+        body = Enum.map_join(lines, "\n", &("    " <> &1))
+        ~s|    execute """\n#{body}\n    """|
+    end
   end
 end

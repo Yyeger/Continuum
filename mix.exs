@@ -34,6 +34,7 @@ defmodule Continuum.MixProject do
     [
       {:ecto_sql, dependency_version("~> 3.14", "3.14.0")},
       {:postgrex, dependency_version("~> 0.22.4", "0.22.4")},
+      {:ecto_sqlite3, dependency_version("~> 0.25", "0.25.0"), optional: true},
       {:jason, dependency_version("~> 1.4.5", "1.4.5")},
       {:telemetry, dependency_version("~> 1.3", "1.3.0")},
       {:phoenix_pubsub, dependency_version("~> 2.1", "2.1.0")},

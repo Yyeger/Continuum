@@ -28,6 +28,8 @@ case Continuum.Test.Repo.start_link() do
   {:error, {:already_started, _pid}} -> :ok
 end
 
+Continuum.Test.SQLiteCase.setup_database!()
+
 # Continuum is a dependency of this test host, so its application starts before
 # the host Repo. Mirror the documented integration by supervising the default
 # Postgres runtime only after the Repo is alive.

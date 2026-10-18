@@ -23,6 +23,18 @@ config :continuum, Continuum.Test.Repo,
   log: false,
   priv: "priv/test_repo"
 
+# SQLite coverage runs against a file database rebuilt from the generated
+# migration at the start of every suite run (see test/test_helper.exs).
+config :continuum, Continuum.Test.SQLiteRepo,
+  database:
+    Path.expand(
+      "../tmp/continuum_test#{System.get_env("MIX_TEST_PARTITION")}.sqlite3",
+      __DIR__
+    ),
+  pool_size: 5,
+  busy_timeout: 10_000,
+  log: false
+
 config :continuum, Continuum.Test.ObserverEndpoint,
   secret_key_base: String.duplicate("a", 64),
   live_view: [signing_salt: "observer-test"],
