@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Require `bandit` 1.13 or newer for development and tests, including the
+  minimum-dependency CI lane, to address CVE-2026-105659 and CVE-2026-105660.
+  Update the lockfile to `bandit` 1.13.1 and `decimal` 3.2.0, which addresses
+  CVE-2026-97853 in the transitive `decimal` dependency.
+
 - Add SQLite as a durable backend for single-node deployments, through the
   optional `ecto_sqlite3` dependency and `Continuum.Runtime.Journal.SQLite`.
   Workflows keep the same replay, drift detection, lease fencing, activities,
