@@ -19,6 +19,7 @@ defmodule Continuum.Runtime.Journal.SQLite do
   Requires the optional `:ecto_sqlite3` dependency and a repo that uses
   `Ecto.Adapters.SQLite3`.
   """
+  @moduledoc since: "0.9.0"
 
   @behaviour Continuum.Runtime.Journal
 

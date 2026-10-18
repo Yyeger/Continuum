@@ -147,8 +147,10 @@ defmodule Continuum.Runtime.Journal do
   Runtime code that needs durable behavior matches on this guard rather than
   on a single adapter module.
   """
+  @doc since: "0.9.0"
   defguard is_durable_journal(journal) when journal in @durable_journals
 
+  @doc since: "0.9.0"
   @doc "Returns true when `journal` is a database-backed journal."
   @spec durable?(module() | nil) :: boolean()
   def durable?(journal), do: journal in @durable_journals

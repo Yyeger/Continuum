@@ -19,7 +19,7 @@ Add the adapter next to Continuum:
 ```elixir
 def deps do
   [
-    {:continuum, "~> 0.8.5"},
+    {:continuum, "~> 0.9.0"},
     {:ecto_sqlite3, "~> 0.25"}
   ]
 end

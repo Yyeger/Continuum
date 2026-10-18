@@ -1,6 +1,6 @@
 # Continuum roadmap
 
-Current release: **0.8.5**. The version in `mix.exs` and the published sections
+Current release: **0.9.0**. The version in `mix.exs` and the published sections
 of [CHANGELOG.md](CHANGELOG.md) define release status. Work under Unreleased is
 not yet a release. This roadmap records the bounded scope accepted for the
 current task; it does not assign new release numbers or feature deadlines.
@@ -92,7 +92,8 @@ all candidate features or committing to the older roadmap's dates.
 The user problem (issue: "Add support for Sqlite (via Honker?)") is that
 Continuum required a PostgreSQL server even for applications that run on one
 node. The accepted scope is a single-node SQLite backend through the optional
-`ecto_sqlite3` dependency, delivered in separate commits. It changes no event
+`ecto_sqlite3` dependency, delivered in separate commits and released in
+**v0.9.0**. It changes no event
 shapes or replay semantics.
 
 | ID | Implemented behavior | Commit |
@@ -125,10 +126,12 @@ Acceptance verification:
   reclaiming a run after its engine is killed) and cover fencing and
   exactly-one claims under concurrency. The generated SQLite migration is
   applied at every test start and migrated up and down in isolation.
-- Across roughly 27 additional full-suite runs during development, four runs
-  each had one different timing-sensitive PostgreSQL test fail on a short
-  `await` window, none reproducible on rerun; 23 runs of the pre-change suite
-  had none. Interleaved runs of both trees on the same seeds were clean.
+- During development some full-suite runs had one PostgreSQL test fail on a
+  short `await`. The recurring case, `ActivityOperationsTest`, was traced to
+  manual retries stamping `available_at` with the application clock while the
+  claim reads the database clock; the local container's clock drifted up to
+  2.5 ms behind the host. Manual retries now use the database clock (fixed
+  before v0.9.0), and the six seeds above were rerun after the fix.
 
 Compatibility and exclusions:
 

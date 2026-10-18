@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 — 2026-10-18 — "SQLite on a single node"
 
-- Require `bandit` 1.13 or newer for development and tests, including the
-  minimum-dependency CI lane, to address CVE-2026-105659 and CVE-2026-105660.
-  Update the lockfile to `bandit` 1.13.1 and `decimal` 3.2.0, which addresses
-  CVE-2026-97853 in the transitive `decimal` dependency.
+This release adds SQLite as a durable backend for applications that run on one
+node, alongside a timer wheel fix and dependency security updates.
+
+**Upgrading from v0.8.5:** no schema migration is needed for PostgreSQL
+installations. SQLite installations generate the current schema with
+`mix continuum.gen.migration --repo MyApp.Repo`; see the
+[SQLite guide](guides/sqlite.md).
 
 - Add SQLite as a durable backend for single-node deployments, through the
   optional `ecto_sqlite3` dependency and `Continuum.Runtime.Journal.SQLite`.
@@ -23,6 +26,15 @@
 
 - Fix `Continuum.Test.fire_timer/2` raising on durable journals when no
   `:timer_id` is given.
+
+- Stamp manually retried activity tasks with the database clock. The claim
+  compares availability with that clock, so an application clock running ahead
+  of the database briefly left the retried task unclaimable.
+
+- Require `bandit` 1.13 or newer for development and tests, including the
+  minimum-dependency CI lane, to address CVE-2026-105659 and CVE-2026-105660.
+  Update the lockfile to `bandit` 1.13.1 and `decimal` 3.2.0, which addresses
+  CVE-2026-97853 in the transitive `decimal` dependency.
 
 ## v0.8.5 — 2026-09-26 — "Durable ingress and recurring work"
 
