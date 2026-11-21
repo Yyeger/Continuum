@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.2 — 2026-11-21 — "Namespace guards for schedules"
+
+- Honor an explicit `:namespace` when looking up or cancelling a schedule,
+  inspecting, pausing, or resuming a recurring definition, and listing its
+  occurrences. A mismatched namespace returns `{:error, :not_found}` for
+  single-record operations and an empty page for lists. Passing an invalid
+  namespace to these operations or to `list_recurring/1` returns an error.
+  Omitting the option preserves global access. No migration is required.
+- Return `{:error, :repo_not_configured}` from `Schedules.get/2` when the
+  selected instance has no durable repo.
+
 ## v0.9.1 — 2026-11-21 — "Run lineage filters and security updates"
 
 - Filter `Continuum.list_runs/1,2` by `:parent_run_id`, `:continued_from_run_id`,

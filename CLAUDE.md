@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Orientation for agents working on Continuum. Current package version: **0.9.1**.
+Orientation for agents working on Continuum. Current package version: **0.9.2**.
 The completed correctness fixes and features are included in v0.8.5, and the
 SQLite backend in v0.9.0; see
 [CHANGELOG.md](CHANGELOG.md).

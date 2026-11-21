@@ -1,9 +1,16 @@
 # Continuum roadmap
 
-Current package version: **0.9.1**. The version in `mix.exs` and the published sections
+Current package version: **0.9.2**. The version in `mix.exs` and the published sections
 of [CHANGELOG.md](CHANGELOG.md) define release status. Work under Unreleased is
 not yet a release. This roadmap records the bounded scope accepted for the
 current task; it does not assign new release numbers or feature deadlines.
+
+## v0.9.2 patch scope
+
+Service layers can supply an expected namespace when inspecting or managing
+schedules. Single-row reads and mutations check it in the database, and
+list queries apply it before pagination. Both durable backends use the
+existing namespace columns. See the [schedule guide](guides/schedules.md).
 
 ## v0.9.1 patch scope
 
