@@ -1,9 +1,9 @@
 # CLAUDE.md
 
 Orientation for agents working on Continuum. Current package version: **0.9.3**.
-The completed correctness fixes and features are included in v0.8.5, and the
-SQLite backend in v0.9.0; see
-[CHANGELOG.md](CHANGELOG.md).
+v0.9.3 adds transactional scheduling and historical interval backfills on
+PostgreSQL and SQLite. The [changelog](CHANGELOG.md) records the earlier
+namespace guards, run lineage filters, and dependency updates.
 
 [ROADMAP.md](ROADMAP.md) is the current scope record. Setup and verification
 commands are below, and the [guides](guides/) document supported behavior.
@@ -57,16 +57,20 @@ compatibility requirements are recorded in ROADMAP.md. Additional feature
 candidates remain outside this scope. Keep `REVIEW_v0.8.1.md` local and ignored,
 and do not recreate `CONTRIBUTING.md`.
 
-- Multi ingress must use the instance's durable repo and leave dispatch
-  until after commit; preserve idempotency reservations on duplicate starts.
+- Multi ingress and one-shot scheduling use the instance's durable repo.
+  Keep schedule insertion and workflow-version registration on the caller's
+  transaction connection. Dispatch starts after commit. Preserve idempotency
+  reservations on duplicate workflow starts.
 - SQLite is a single-node backend (S1–S4 in ROADMAP.md). Clustering, event
   partitions, and `--from` upgrade migrations stay PostgreSQL-only.
 - `activity_map/3` uses complete scheduling windows. Preserve its manifest,
   input ordering, bounded pending work, and event/snapshot parity.
 - Recurring definitions pin workflow versions, even while paused. Preserve
-  occurrence uniqueness and atomically advance the cursor with creation.
-  Existing installations must generate and apply the `--from 0.8.1` migration
-  before starting the updated runtime.
+  occurrence uniqueness. Regular generation advances the cursor atomically.
+  Backfills leave it in place, default to preview, and check the namespace
+  and overlap policy before queuing missing slots. The v0.9.x patches use
+  the v0.9.0 schema. For an upgrade from v0.8.1, follow the migration steps
+  in the [scheduling guide](guides/schedules.md).
 - Observer replay must remain read-only, bounded, and redacted. Host apps own
   authorization through their HTTP pipeline and LiveView `on_mount` hooks.
 

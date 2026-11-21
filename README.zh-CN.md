@@ -79,7 +79,7 @@ end
 def deps do
   [
     {:continuum, "~> 0.9.3"},
-    {:postgrex, "~> 0.19"}
+    {:postgrex, "~> 0.22.4"}
   ]
 end
 ```
@@ -162,6 +162,15 @@ end
 - **工作流版本管理** —— 带日志记录的 `Continuum.patched?/1` 标记，用于安全的原地
   改动；以及内容寻址的 `(workflow, version_hash)` 分发，它会将缺失的代码标记为
   `:stuck_unknown_version`，而不是用已变更的逻辑重放。
+
+### 工作流调度
+
+- **在事务中安排任务。** 使用 `Continuum.Multi.schedule_at/6` 可以在同一事务中保存发票并安排付款提醒。
+  调度器在事务提交后才能执行提醒。如果事务回滚，发票和提醒都会回滚。
+- **补跑错过的周期任务。** `Continuum.Schedules.backfill/4` 默认预览最多 100 个历史执行时间点。
+  传入 `execute: true` 后，调度器会按重叠策略处理缺失的任务。重复提交会保留已有的运行 ID 和下一次计划执行时间。
+
+这两项功能均支持 PostgreSQL 和 SQLite。从 v0.9.0、v0.9.1 或 v0.9.2 升级均无需迁移数据库。[调度示例](./guides/schedules.md)
 
 ### 运维与可观测性
 

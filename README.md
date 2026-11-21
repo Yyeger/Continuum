@@ -225,7 +225,7 @@ Add Continuum and a Postgres driver to your dependencies:
 def deps do
   [
     {:continuum, "~> 0.9.3"},
-    {:postgrex, "~> 0.19"}
+    {:postgrex, "~> 0.22.4"}
   ]
 end
 ```
@@ -314,6 +314,18 @@ end
   in-place edits, and content-addressed `(workflow, version_hash)` dispatch that
   leaves a run suspended when code is missing rather than replaying through
   changed logic. A node with the matching version can safely resume it later.
+
+### Workflow schedules
+
+- **Schedule work in a transaction.** With `Continuum.Multi.schedule_at/6`, an
+  invoice and its payment reminder commit together. The runner can dispatch
+  the reminder after commit. Rolling back the invoice also rolls back the reminder.
+- **Recover missed intervals.** `Continuum.Schedules.backfill/4` previews up to
+  100 historical slots and queues missing occurrences with `execute: true`.
+  Retrying preserves existing run IDs and the next scheduled occurrence.
+
+Both features work on PostgreSQL and SQLite. Upgrading from v0.9.0, v0.9.1,
+or v0.9.2 requires no database migration. [Scheduling examples](https://github.com/Yyeger/Continuum/blob/v0.9.3/guides/schedules.md)
 
 ### Operations & observability
 
