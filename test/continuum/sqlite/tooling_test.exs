@@ -83,6 +83,7 @@ defmodule Continuum.SQLite.ToolingTest do
         recovery: false,
         dispatcher: false,
         activity_dispatcher: false,
+        schedule_runner: false,
         timer_wheel: false,
         signal_router: [listen?: false],
         version_registry: false
@@ -136,6 +137,36 @@ defmodule Continuum.SQLite.ToolingTest do
       assert :ok = Test.fire_timer(run_id, [journal: :sqlite] ++ opts)
       assert {:ok, %{state: :completed, result: {:ok, :approved}}} = Test.drive(run_id, opts)
     end
+  end
+
+  test "schedule namespace guards cover persisted definitions and their occurrences", %{
+    opts: opts,
+    name: name
+  } do
+    alias Continuum.Schedules
+    billing = [namespace: "billing"] ++ opts
+    sales = [namespace: "sales"] ++ opts
+
+    {:ok, id} =
+      Continuum.schedule_every(
+        EchoFlow,
+        :input,
+        60_000,
+        [overlap: :allow, missed: :skip, starts_at: DateTime.add(DateTime.utc_now(), -1, :second)] ++
+          billing
+      )
+
+    assert {:ok, 1} = Continuum.RecurringSchedules.materialize(Instance.lookup(name), 1)
+    assert {:error, :not_found} = Schedules.pause_recurring(id, sales)
+    assert :ok = Schedules.pause_recurring(id, billing)
+    assert {:error, :not_found} = Schedules.resume_recurring(id, sales)
+    assert {:ok, %{state: "paused"}} = Schedules.get_recurring(id, billing)
+    assert {:ok, %{entries: []}} = Schedules.list_occurrences(id, sales)
+    assert {:ok, %{entries: [%{id: occurrence}]}} = Schedules.list_occurrences(id, billing)
+    assert {:error, :not_found} = Schedules.get(occurrence, sales)
+    assert {:error, :not_found} = Schedules.cancel(occurrence, sales)
+    assert :ok = Schedules.cancel(occurrence, billing)
+    assert {:ok, %{state: :cancelled}} = Schedules.get(occurrence, billing)
   end
 
   describe "queries" do

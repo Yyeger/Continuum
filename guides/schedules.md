@@ -22,6 +22,20 @@ Inspect or cancel a schedule before dispatch starts:
 :ok = Continuum.Schedules.cancel(schedule_id)
 ```
 
+## Scope operations to a namespace
+
+Pass the namespace your application has authorized when inspecting or changing
+a schedule by ID. For example, a billing operator can cancel a pending schedule
+with `Continuum.Schedules.cancel(schedule_id, namespace: "billing")`. The
+database checks the namespace and pending state in the same update.
+
+The same option applies to `get/2`, `get_recurring/2`, `pause_recurring/2`,
+`resume_recurring/2`, `list_recurring/1`, and `list_occurrences/2`. A missing
+or mismatched record returns `{:error, :not_found}` on single-record operations.
+Lists return an empty page when nothing matches. Omit `:namespace` for global
+access, or pass a nonempty string to enable the guard. An explicitly invalid
+value, including `nil`, returns `{:error, {:invalid_namespace, value}}`.
+
 ## When a start keeps failing
 
 A schedule whose run cannot be started — most often because no node has its

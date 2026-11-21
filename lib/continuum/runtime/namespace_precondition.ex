@@ -1,6 +1,7 @@
 defmodule Continuum.Runtime.NamespacePrecondition do
   @moduledoc false
 
+  import Ecto.Query, only: [where: 3]
   import Continuum.Runtime.Journal, only: [is_durable_journal: 1]
 
   alias Continuum.Runtime.Instance
@@ -24,6 +25,23 @@ defmodule Continuum.Runtime.NamespacePrecondition do
           %{} -> {:error, :not_found}
           {:error, _reason} = error -> error
         end
+    end
+  end
+
+  @doc false
+  def from_options(opts) do
+    case Keyword.fetch(opts, :namespace) do
+      :error -> {:ok, nil}
+      {:ok, namespace} -> normalize(namespace)
+    end
+  end
+
+  @doc false
+  def scope(query, opts) do
+    case from_options(opts) do
+      {:ok, nil} -> {:ok, query}
+      {:ok, namespace} -> {:ok, where(query, [row], row.namespace == ^namespace)}
+      {:error, _reason} = error -> error
     end
   end
 

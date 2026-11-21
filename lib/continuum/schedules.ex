@@ -4,11 +4,17 @@ defmodule Continuum.Schedules do
 
   Schedules preallocate a stable run ID. A runner may retry across any crash
   window, but the same scheduled occurrence can create at most one run.
+
+  Pass `:namespace` to scope inspection, listing, cancellation, pause, and
+  resume to an expected namespace. A mismatched ID returns `{:error, :not_found}`
+  for a single schedule or definition, and an empty page for a list. Omit
+  the option for global access.
   """
 
   import Ecto.Query
 
   alias Continuum.{DurableTerm, Runtime.Instance}
+  alias Continuum.Runtime.NamespacePrecondition
   alias Continuum.Schema.Schedule
 
   @doc """
@@ -84,25 +90,17 @@ defmodule Continuum.Schedules do
   def cancel(schedule_id, opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
-    if instance.repo do
+    with {:ok, repo} <- fetch_repo(instance),
+         {:ok, query} <-
+           NamespacePrecondition.scope(from(s in Schedule, where: s.id == ^schedule_id), opts) do
       {count, _} =
-        instance.repo.update_all(
-          from(s in Schedule, where: s.id == ^schedule_id and s.state == "scheduled"),
-          set: [state: "cancelled"]
-        )
+        repo.update_all(where(query, [s], s.state == "scheduled"), set: [state: "cancelled"])
 
       cond do
-        count == 1 ->
-          :ok
-
-        instance.repo.exists?(from(s in Schedule, where: s.id == ^schedule_id)) ->
-          {:error, :already_started}
-
-        true ->
-          {:error, :not_found}
+        count == 1 -> :ok
+        repo.exists?(query) -> {:error, :already_started}
+        true -> {:error, :not_found}
       end
-    else
-      {:error, :repo_not_configured}
     end
   end
 
@@ -111,9 +109,12 @@ defmodule Continuum.Schedules do
   def get(schedule_id, opts \\ []) do
     instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
-    case instance.repo && instance.repo.get(Schedule, schedule_id) do
-      nil -> {:error, :not_found}
-      schedule -> {:ok, decode(schedule)}
+    with {:ok, repo} <- fetch_repo(instance),
+         {:ok, query} <- NamespacePrecondition.scope(Schedule, opts) do
+      case repo.get(query, schedule_id) do
+        nil -> {:error, :not_found}
+        schedule -> {:ok, decode(schedule)}
+      end
     end
   end
 

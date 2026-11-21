@@ -10,6 +10,7 @@ defmodule Continuum.RecurringSchedules do
 
   import Ecto.Query
   alias Continuum.{DurableTerm, Page, Runtime.Instance, Runtime.SQL}
+  alias Continuum.Runtime.NamespacePrecondition
   alias Continuum.Schema.{RecurringSchedule, Run, Schedule}
 
   @doc """
@@ -70,8 +71,9 @@ defmodule Continuum.RecurringSchedules do
 
   @doc "Loads a definition, including its next occurrence cursor and recorded policies."
   def get(id, opts \\ []) do
-    with {:ok, instance} <- repo_instance(opts) do
-      case instance.repo.get(RecurringSchedule, id) do
+    with {:ok, instance} <- repo_instance(opts),
+         {:ok, query} <- NamespacePrecondition.scope(RecurringSchedule, opts) do
+      case instance.repo.get(query, id) do
         nil -> {:error, :not_found}
         row -> {:ok, decode(row)}
       end
@@ -80,20 +82,17 @@ defmodule Continuum.RecurringSchedules do
 
   @doc "Lists definitions with `:limit` (1–100), `:cursor`, and optional `:namespace`."
   def list(opts \\ []) do
-    with {:ok, instance} <- repo_instance(opts) do
-      query = from(s in RecurringSchedule)
-
-      query =
-        if opts[:namespace], do: where(query, [s], s.namespace == ^opts[:namespace]), else: query
-
+    with {:ok, instance} <- repo_instance(opts),
+         {:ok, query} <- NamespacePrecondition.scope(RecurringSchedule, opts) do
       page(instance.repo, query, opts, &decode/1)
     end
   end
 
   @doc false
   def set_state(id, state, opts) when state in [:active, :paused] do
-    with {:ok, instance} <- repo_instance(opts) do
-      case instance.repo.update_all(from(s in RecurringSchedule, where: s.id == ^id),
+    with {:ok, instance} <- repo_instance(opts),
+         {:ok, query} <- NamespacePrecondition.scope(RecurringSchedule, opts) do
+      case instance.repo.update_all(where(query, [s], s.id == ^id),
              set: [state: Atom.to_string(state)]
            ) do
         {1, _} -> :ok
@@ -104,10 +103,11 @@ defmodule Continuum.RecurringSchedules do
 
   @doc "Lists occurrences with `:limit` (1–100) and `:cursor`; each row includes its stable run ID."
   def occurrences(id, opts \\ []) do
-    with {:ok, instance} <- repo_instance(opts) do
+    with {:ok, instance} <- repo_instance(opts),
+         {:ok, query} <- NamespacePrecondition.scope(Schedule, opts) do
       page(
         instance.repo,
-        from(s in Schedule, where: s.recurring_schedule_id == ^id),
+        where(query, [s], s.recurring_schedule_id == ^id),
         opts,
         fn row -> row |> Map.from_struct() |> Map.drop([:__meta__, :input, :trace_context]) end
       )

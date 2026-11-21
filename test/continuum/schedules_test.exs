@@ -72,6 +72,24 @@ defmodule Continuum.SchedulesTest do
     assert Repo.aggregate(from(r in Run, where: r.id == ^run_id), :count) == 1
   end
 
+  test "guarded reads and cancellations only see the expected namespace" do
+    alias Continuum.Schedules
+    future = DateTime.add(DateTime.utc_now(), 1, :hour)
+    {:ok, id} = Continuum.schedule_at(ScheduledFlow, %{value: 1}, future, namespace: "billing")
+
+    assert {:error, :not_found} = Schedules.get(id, namespace: "sales")
+    assert {:error, :not_found} = Schedules.cancel(id, namespace: "sales")
+    assert {:error, {:invalid_namespace, nil}} = Schedules.cancel(id, namespace: nil)
+    assert {:ok, %{state: :scheduled}} = Schedules.get(id, namespace: "billing")
+    assert :ok = Schedules.cancel(id, namespace: "billing")
+    assert {:error, :not_found} = Schedules.cancel(id, namespace: "sales")
+    assert {:error, :already_started} = Schedules.cancel(id, namespace: "billing")
+    assert {:ok, %{state: :cancelled}} = Schedules.get(id)
+
+    assert {:error, :repo_not_configured} =
+             Schedules.get(id, instance: %{Instance.default() | repo: nil})
+  end
+
   test "pending schedules can be cancelled" do
     future = DateTime.utc_now() |> DateTime.add(1, :hour)
     assert {:ok, schedule_id} = Continuum.schedule_at(ScheduledFlow, %{value: 1}, future)

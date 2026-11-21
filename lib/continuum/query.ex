@@ -15,7 +15,7 @@ defmodule Continuum.Query do
   import Ecto.Query
 
   alias Continuum.DurableTerm
-  alias Continuum.Runtime.{Instance, SQL}
+  alias Continuum.Runtime.{Instance, NamespacePrecondition, SQL}
   alias Continuum.Schema.Run
 
   @default_per_page 25
@@ -103,7 +103,7 @@ defmodule Continuum.Query do
     with {:ok, instance} <- repo_instance(opts) do
       query = from(r in Run, where: r.id == ^run_id)
 
-      with {:ok, query} <- apply_namespace_precondition(query, opts),
+      with {:ok, query} <- NamespacePrecondition.scope(query, opts),
            run when not is_nil(run) <- instance.repo.one(query) do
         {:ok, decode_run(run, opts)}
       else
@@ -125,7 +125,7 @@ defmodule Continuum.Query do
   def set_attributes(run_id, attributes, opts) when is_map(attributes) do
     with {:ok, instance} <- repo_instance(opts),
          {:ok, attributes} <- normalize_attributes(attributes),
-         {:ok, namespace} <- namespace_precondition(opts) do
+         {:ok, namespace} <- NamespacePrecondition.from_options(opts) do
       case SQL.dialect(instance.repo) do
         :postgres -> set_attributes_postgres(instance, run_id, attributes, namespace)
         :sqlite -> set_attributes_sqlite(instance, run_id, attributes, namespace)
@@ -171,21 +171,6 @@ defmodule Continuum.Query do
     |> case do
       {:ok, _result} -> :ok
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp apply_namespace_precondition(query, opts) do
-    case namespace_precondition(opts) do
-      {:ok, nil} -> {:ok, query}
-      {:ok, namespace} -> {:ok, from(r in query, where: r.namespace == ^namespace)}
-      {:error, _reason} = error -> error
-    end
-  end
-
-  defp namespace_precondition(opts) do
-    case Keyword.fetch(opts, :namespace) do
-      :error -> {:ok, nil}
-      {:ok, namespace} -> Continuum.Runtime.NamespacePrecondition.normalize(namespace)
     end
   end
 

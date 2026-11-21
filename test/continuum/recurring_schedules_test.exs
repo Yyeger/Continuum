@@ -130,6 +130,32 @@ defmodule Continuum.RecurringSchedulesTest do
            )
   end
 
+  test "namespace guards apply to definitions, occurrences and state changes" do
+    alias Continuum.Schedules
+    billing = [namespace: "billing"]
+    sales = [namespace: "sales"]
+    {:ok, id} = create(DateTime.add(DateTime.utc_now(), -1, :second), billing ++ [missed: :skip])
+    assert {:ok, 1} = RecurringSchedules.materialize(Instance.default(), 1)
+
+    assert {:error, :not_found} = Schedules.get_recurring(id, sales)
+    assert {:error, :not_found} = Schedules.pause_recurring(id, sales)
+    assert {:ok, %{state: "active"}} = Schedules.get_recurring(id, billing)
+    assert :ok = Schedules.pause_recurring(id, billing)
+    assert {:error, :not_found} = Schedules.resume_recurring(id, sales)
+    assert {:ok, %{state: "paused"}} = Schedules.get_recurring(id)
+    assert :ok = Schedules.resume_recurring(id, billing)
+
+    assert {:ok, %{entries: []}} = Schedules.list_recurring(sales)
+    assert {:ok, %{entries: [%{id: ^id}]}} = Schedules.list_recurring(billing)
+    assert {:ok, %{entries: []}} = Schedules.list_occurrences(id, sales)
+
+    assert {:ok, %{entries: [%{recurring_schedule_id: ^id}]}} =
+             Schedules.list_occurrences(id, billing)
+
+    assert {:error, {:invalid_namespace, false}} = Schedules.list_recurring(namespace: false)
+    assert {:error, {:invalid_namespace, ""}} = Schedules.pause_recurring(id, namespace: "")
+  end
+
   test "listing is bounded and invalid policies are rejected" do
     for _ <- 1..3, do: create(DateTime.add(DateTime.utc_now(), 1, :hour), missed: :skip)
     {:ok, page} = Continuum.Schedules.list_recurring(limit: 2)
