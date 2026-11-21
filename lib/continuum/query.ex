@@ -20,10 +20,20 @@ defmodule Continuum.Query do
 
   @default_per_page 25
   @max_per_page 100
-  @query_fields [:id, :state, :workflow, :started_at, :completed_at]
   @order_fields [:id, :state, :workflow, :started_at, :completed_at]
 
-  @type field :: :id | :run_id | :state | :workflow | :started_at | :completed_at
+  @query_fields @order_fields ++ [:parent_run_id, :continued_from_run_id, :correlation_id]
+
+  @type field ::
+          :id
+          | :run_id
+          | :state
+          | :workflow
+          | :started_at
+          | :completed_at
+          | :parent_run_id
+          | :continued_from_run_id
+          | :correlation_id
   @type attribute_path :: list(atom() | binary())
   @type condition ::
           {:eq | :neq | :lt | :lte | :gt | :gte, field(), term()}
@@ -37,7 +47,9 @@ defmodule Continuum.Query do
 
     * `:instance` - Continuum instance name or struct. Defaults to `Continuum`.
     * `:namespace` - run namespace. Defaults to `"default"`.
-    * `:where` - list of condition tuples.
+    * `:where` - list of condition tuples. Filter by `:parent_run_id` for children,
+      `:continued_from_run_id` for an immediate successor, or `:correlation_id`
+      for a continuation chain. Field equality and inequality accept `nil`.
     * `:search` - run id or workflow substring convenience filter.
     * `:workflow` - workflow substring convenience filter.
     * `:state` - run state convenience filter.
@@ -334,6 +346,14 @@ defmodule Continuum.Query do
   defp apply_condition(query, {:in, field, values}) when is_list(values) do
     with {:ok, field} <- query_field(field) do
       {:ok, from(r in query, where: field(r, ^field) in ^values)}
+    end
+  end
+
+  defp apply_condition(query, {op, field, nil}) when op in [:eq, :neq] do
+    with {:ok, field} <- query_field(field) do
+      if op == :eq,
+        do: {:ok, from(r in query, where: is_nil(field(r, ^field)))},
+        else: {:ok, from(r in query, where: not is_nil(field(r, ^field)))}
     end
   end
 

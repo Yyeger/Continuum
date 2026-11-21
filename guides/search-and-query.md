@@ -37,7 +37,14 @@ Use `Continuum.list_runs/1` with a closed `:where` spec:
 ```
 
 Supported run fields are `:id`, `:run_id`, `:state`, `:workflow`, `:started_at`,
-and `:completed_at`. Supported operators are `:eq`, `:neq`, `:lt`, `:lte`, `:gt`,
+`:completed_at`, `:parent_run_id`, `:continued_from_run_id`, and `:correlation_id`.
+For direct children, use `where: [{:eq, :parent_run_id, parent_id}]`. For a
+continuation chain, filter on its `:correlation_id`. To find the immediate
+successor of a specific run, filter on `:continued_from_run_id`. Each query
+uses the selected namespace. Use `{:eq, :completed_at, nil}` for runs without
+a completion timestamp or `:neq` for those with one.
+
+Supported operators are `:eq`, `:neq`, `:lt`, `:lte`, `:gt`,
 `:gte`, and `:in` for run fields. Attribute filters support `:eq` and `:neq` on
 paths like `[:attributes, "region"]`.
 

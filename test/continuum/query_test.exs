@@ -96,6 +96,39 @@ defmodule Continuum.QueryTest do
     assert Enum.map(page.entries, & &1.run_id) |> Enum.sort() == Enum.sort([older, newer])
   end
 
+  test "lineage and null filters compose with namespace and keyset pagination" do
+    parent = insert_run!(%{}, %{})
+    child = insert_run!(%{}, %{})
+    next = insert_run!(%{}, %{})
+    other = insert_run!(%{}, %{})
+
+    Repo.update_all(from(r in Run, where: r.id in ^[child, next, other]),
+      set: [parent_run_id: parent, correlation_id: child]
+    )
+
+    Repo.update_all(from(r in Run, where: r.id == ^next), set: [continued_from_run_id: child])
+    Repo.update_all(from(r in Run, where: r.id == ^other), set: [namespace: "other"])
+
+    for filter <- [{:eq, :parent_run_id, parent}, {:eq, :correlation_id, child}] do
+      opts = [where: [filter], order_by: {:asc, :id}, per_page: 1]
+      assert {:ok, %{entries: [first], next_cursor: cursor}} = Continuum.list_runs(opts)
+      assert is_binary(cursor)
+
+      assert {:ok, %{entries: [last], next_cursor: nil}} =
+               Continuum.list_runs([cursor: cursor] ++ opts)
+
+      assert [first.id, last.id] == Enum.sort([child, next])
+    end
+
+    assert {:ok, %{entries: [%{id: ^next}]}} =
+             Continuum.list_runs(
+               where: [{:eq, :continued_from_run_id, child}, {:neq, :parent_run_id, nil}]
+             )
+
+    assert {:ok, %{entries: [%{id: ^parent}]}} =
+             Continuum.list_runs(where: [{:eq, :parent_run_id, nil}, {:eq, :completed_at, nil}])
+  end
+
   test "caps pagination and preserves observer search behavior" do
     run_id = insert_run!(%{value: 9}, %{region: "eu"})
 

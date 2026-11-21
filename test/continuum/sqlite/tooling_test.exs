@@ -159,6 +159,23 @@ defmodule Continuum.SQLite.ToolingTest do
       %{eu: eu, us: us, other: other}
     end
 
+    test "filters lineage within the selected namespace", %{
+      name: name,
+      eu: eu,
+      us: us,
+      other: other
+    } do
+      SQLiteRepo.update_all(from(r in Run, where: r.id in ^[us, other]),
+        set: [parent_run_id: eu, continued_from_run_id: eu, correlation_id: eu]
+      )
+
+      assert ids(name, where: [{:eq, :parent_run_id, eu}, {:neq, :continued_from_run_id, nil}]) ==
+               [us]
+
+      assert ids(name, where: [{:eq, :correlation_id, eu}, {:eq, :parent_run_id, nil}]) == [eu]
+      assert ids(name, namespace: "other", where: [{:eq, :continued_from_run_id, eu}]) == [other]
+    end
+
     test "filter attributes by type, nesting, and negation", %{name: name, eu: eu, us: us} do
       assert ids(name, where: [{:eq, [:attributes, "region"], "eu"}]) == [eu]
       assert ids(name, where: [{:eq, [:attributes, :tier], 4}]) == [eu]
