@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.3 — 2026-11-21 — "Transactional scheduling and interval backfills"
+
+- Add `Continuum.Multi.schedule_at/6` for one-shot workflows whose schedule
+  must commit with an application record. Input, timestamp, and options can
+  depend on earlier Multi steps. The named result is the schedule ID.
+- Add `Continuum.Schedules.backfill/4` to preview and queue historical
+  recurring intervals. The operation respects namespace and overlap rules,
+  preserves previously recorded occurrences and the definition cursor, and
+  limits each request to 100 slots. PostgreSQL and SQLite use their existing
+  scheduling schema. No migration is required.
+
 ## v0.9.2 — 2026-11-21 — "Namespace guards for schedules"
 
 - Honor an explicit `:namespace` when looking up or cancelling a schedule,

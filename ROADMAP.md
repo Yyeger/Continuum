@@ -1,9 +1,20 @@
 # Continuum roadmap
 
-Current package version: **0.9.2**. The version in `mix.exs` and the published sections
+Current package version: **0.9.3**. The version in `mix.exs` and the published sections
 of [CHANGELOG.md](CHANGELOG.md) define release status. Work under Unreleased is
 not yet a release. This roadmap records the bounded scope accepted for the
 current task; it does not assign new release numbers or feature deadlines.
+
+## v0.9.3 scheduling features
+
+- Commit a one-shot schedule alongside the business write that creates it using
+  `Continuum.Multi.schedule_at/6`. A failed transaction leaves neither row.
+- Recover elapsed slots from an interval definition using `Continuum.Schedules.backfill/4`.
+  Operators can preview up to 100 slots, then queue missing occurrences with
+  the definition's pinned input, workflow version, and overlap policy.
+
+Both features use the existing PostgreSQL and SQLite schemas and the ordinary
+schedule runner. See the [scheduling guide](guides/schedules.md).
 
 ## v0.9.2 patch scope
 
