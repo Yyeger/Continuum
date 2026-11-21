@@ -53,6 +53,46 @@ defmodule Continuum.MultiTest do
     assert {:ok, %{result: %{order: "order-1"}}} = Continuum.await(id, 1_000)
   end
 
+  test "delayed work shares the business transaction and dispatches the pinned input" do
+    multi =
+      Ecto.Multi.new()
+      |> Ecto.Multi.run(:order, fn repo, _ ->
+        repo.query!("INSERT INTO continuum_multi_business VALUES ('scheduled-order')")
+        {:ok, %{id: "scheduled-order", due: DateTime.add(DateTime.utc_now(), -1, :second)}}
+      end)
+      |> Continuum.Multi.schedule_at(
+        :reminder,
+        Flow,
+        fn %{order: order} -> order.id end,
+        fn %{order: order} -> order.due end,
+        fn _ -> [namespace: "billing"] end
+      )
+
+    assert {:error, :reject, :invalid, %{reminder: rolled_back}} =
+             Repo.transaction(Ecto.Multi.run(multi, :reject, fn _, _ -> {:error, :invalid} end))
+
+    assert {:error, :not_found} = Continuum.Schedules.get(rolled_back)
+    assert Repo.query!("SELECT * FROM continuum_multi_business").rows == []
+
+    assert {:ok, %{reminder: id}} = Repo.transaction(multi)
+
+    assert {:ok, %{run_id: run, state: :scheduled, namespace: "billing"}} =
+             Continuum.Schedules.get(id)
+
+    refute Repo.get(Run, run)
+    assert {:ok, 1} = Continuum.Runtime.ScheduleRunner.dispatch_once()
+    assert {:ok, %{result: "scheduled-order"}} = Continuum.await(run, 1_000)
+
+    wrong = %{Instance.default() | repo: WrongRepo}
+
+    invalid =
+      Continuum.Multi.schedule_at(Ecto.Multi.new(), :reminder, Flow, nil, DateTime.utc_now(),
+        instance: wrong
+      )
+
+    assert {:error, :reminder, :repo_mismatch, %{}} = Repo.transaction(invalid)
+  end
+
   test "later failure rolls back business, run, and reserved idempotency key" do
     id = Ecto.UUID.generate()
 
@@ -123,7 +163,7 @@ defmodule Continuum.MultiCommitTest do
 
   import Ecto.Query
   alias Continuum.Runtime.{Dispatcher, Instance}
-  alias Continuum.Schema.Run
+  alias Continuum.Schema.{Run, Schedule}
   alias Continuum.Test.Repo
   alias Ecto.Adapters.SQL.Sandbox
 
@@ -142,6 +182,7 @@ defmodule Continuum.MultiCommitTest do
 
   test "a separate connection cannot see enqueue before commit, then dispatch survives producer death" do
     id = Ecto.UUID.generate()
+    schedule_id = Ecto.UUID.generate()
     parent = self()
 
     producer =
@@ -151,6 +192,13 @@ defmodule Continuum.MultiCommitTest do
             Ecto.Multi.new()
             |> Continuum.Multi.enqueue(:workflow, Continuum.MultiTest.Flow, :committed,
               run_id: id
+            )
+            |> Continuum.Multi.schedule_at(
+              :reminder,
+              Continuum.MultiTest.Flow,
+              :reminder,
+              DateTime.add(DateTime.utc_now(), 1, :hour),
+              id: schedule_id
             )
             |> Ecto.Multi.run(:wait, fn _, _ ->
               send(parent, {:ready, self()})
@@ -171,6 +219,7 @@ defmodule Continuum.MultiCommitTest do
 
     Sandbox.unboxed_run(Repo, fn ->
       refute Repo.get(Run, id)
+      refute Repo.get(Schedule, schedule_id)
       assert Registry.lookup(Instance.default().registry, id) == []
     end)
 
@@ -183,10 +232,12 @@ defmodule Continuum.MultiCommitTest do
       Sandbox.mode(Repo, {:shared, self()})
 
       try do
+        assert Repo.get!(Schedule, schedule_id).state == "scheduled"
         assert Repo.get!(Run, id).state == "running"
         assert {:ok, _} = Dispatcher.dispatch_once()
         assert {:ok, %{result: :committed}} = Continuum.await(id, 1_000)
       after
+        Repo.delete_all(from(s in Schedule, where: s.id == ^schedule_id))
         Repo.delete_all(from(r in Run, where: r.id == ^id))
         Sandbox.mode(Repo, :manual)
       end

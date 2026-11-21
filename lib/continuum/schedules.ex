@@ -74,6 +74,7 @@ defmodule Continuum.Schedules do
           inserted_at: now
         })
         |> Ecto.Changeset.unique_constraint(:id, name: :continuum_schedules_pkey)
+        |> Ecto.Changeset.unique_constraint(:id, name: :continuum_schedules_id_index)
 
       case repo.insert(changeset) do
         {:ok, _schedule} -> {:ok, schedule_id}

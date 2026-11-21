@@ -139,6 +139,31 @@ defmodule Continuum.SQLite.ToolingTest do
     end
   end
 
+  test "deferred Multi schedules commit or roll back with the SQLite writer", %{
+    name: name,
+    opts: opts
+  } do
+    instance = Instance.lookup(name)
+    start_supervised!({Continuum.VersionRegistry, instance: instance, workflow_modules: []})
+    id = Ecto.UUID.generate()
+    due = DateTime.add(DateTime.utc_now(), -1, :second)
+
+    multi =
+      Continuum.Multi.schedule_at(Ecto.Multi.new(), :work, EchoFlow, 42, due, [id: id] ++ opts)
+
+    assert {:error, :later, :fail, _} =
+             SQLiteRepo.transaction(Ecto.Multi.run(multi, :later, fn _, _ -> {:error, :fail} end),
+               mode: :immediate
+             )
+
+    assert {:error, :not_found} = Continuum.Schedules.get(id, opts)
+    assert {:ok, %{work: ^id}} = SQLiteRepo.transaction(multi, mode: :immediate)
+    assert {:error, :work, %Ecto.Changeset{}, _} = SQLiteRepo.transaction(multi, mode: :immediate)
+    assert {:ok, 1} = Continuum.Runtime.ScheduleRunner.dispatch_once(opts)
+    {:ok, %{run_id: run}} = Continuum.Schedules.get(id, opts)
+    assert {:ok, %{result: 42}} = Test.drive(run, opts)
+  end
+
   test "schedule namespace guards cover persisted definitions and their occurrences", %{
     opts: opts,
     name: name

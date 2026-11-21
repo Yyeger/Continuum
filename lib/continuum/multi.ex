@@ -57,23 +57,62 @@ defmodule Continuum.Multi do
 
       instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
 
-      cond do
-        instance.repo != repo ->
-          {:error, :repo_mismatch}
-
-        not Journal.durable?(Instance.journal(instance)) ->
-          {:error, :postgres_journal_required}
-
-        true ->
-          Instance.journal(instance).enqueue_run(
-            instance,
-            Keyword.get_lazy(opts, :run_id, &Ecto.UUID.generate/0),
-            workflow,
-            resolve(input, changes),
-            opts
-          )
+      with :ok <- validate_instance(repo, instance) do
+        Instance.journal(instance).enqueue_run(
+          instance,
+          Keyword.get_lazy(opts, :run_id, &Ecto.UUID.generate/0),
+          workflow,
+          resolve(input, changes),
+          opts
+        )
       end
     end)
+  end
+
+  @doc """
+  Schedules a one-shot workflow in the same transaction as application writes.
+
+  The named change is the schedule ID. Input, UTC due time, and options may
+  each be a value or a one-argument function of earlier Multi changes.
+  Accepts the same options as `Continuum.Schedules.schedule_at/4`. The runner
+  can dispatch a due schedule once the transaction commits. A later Multi
+  error rolls back the schedule. On SQLite use `mode: :immediate`.
+  """
+  @doc since: "0.9.3"
+  @spec schedule_at(
+          Ecto.Multi.t(),
+          Ecto.Multi.name(),
+          module(),
+          term(),
+          DateTime.t() | function(),
+          keyword() | function()
+        ) :: Ecto.Multi.t()
+  def schedule_at(multi, name, workflow, input, due_at, opts \\ []) do
+    Ecto.Multi.run(multi, name, fn repo, changes ->
+      opts =
+        opts
+        |> resolve(changes)
+        |> Keyword.validate!([:instance, :id, :run_id, :namespace, :attributes, :trace_context])
+
+      instance = Instance.lookup(Keyword.get(opts, :instance, Continuum))
+
+      with :ok <- validate_instance(repo, instance) do
+        Continuum.Schedules.schedule_at(
+          workflow,
+          resolve(input, changes),
+          resolve(due_at, changes),
+          Keyword.put(opts, :instance, instance)
+        )
+      end
+    end)
+  end
+
+  defp validate_instance(repo, instance) do
+    cond do
+      instance.repo != repo -> {:error, :repo_mismatch}
+      not Journal.durable?(Instance.journal(instance)) -> {:error, :postgres_journal_required}
+      true -> :ok
+    end
   end
 
   defp resolve(value, changes) when is_function(value, 1), do: value.(changes)

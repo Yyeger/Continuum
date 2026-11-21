@@ -22,6 +22,31 @@ Inspect or cancel a schedule before dispatch starts:
 :ok = Continuum.Schedules.cancel(schedule_id)
 ```
 
+## Commit a reminder with the invoice
+
+When creating an invoice also creates a payment reminder, put both operations
+in the same transaction. The schedule runner can see the reminder after commit.
+A later failure rolls back the invoice and reminder together.
+
+```elixir
+multi =
+  Ecto.Multi.new()
+  |> Ecto.Multi.insert(:invoice, changeset)
+  |> Continuum.Multi.schedule_at(:reminder, MyApp.InvoiceReminder,
+    fn %{invoice: invoice} -> %{invoice_id: invoice.id} end,
+    fn %{invoice: invoice} -> invoice.remind_at end,
+    namespace: "billing"
+  )
+
+{:ok, %{invoice: invoice, reminder: schedule_id}} = Repo.transaction(multi)
+```
+
+Use the repo belonging to the chosen durable instance. On SQLite call
+`Repo.transaction(multi, mode: :immediate)`. The due time is a UTC
+`DateTime`. Options may also be computed from prior changes. A caller-supplied
+`:id` gives the schedule a stable identifier. A duplicate ID fails the Multi,
+so handle transaction retries according to the application's uniqueness rules.
+
 ## Scope operations to a namespace
 
 Pass the namespace your application has authorized when inspecting or changing

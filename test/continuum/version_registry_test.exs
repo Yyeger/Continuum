@@ -46,6 +46,10 @@ defmodule Continuum.VersionRegistryTest do
     defp helper_b(value), do: {:ok, value}
   end
 
+  defmodule FakeRepo do
+    def in_transaction?, do: false
+  end
+
   test "identical workflow content produces identical hashes" do
     assert SameA.__continuum_workflow__().version_hash ==
              SameB.__continuum_workflow__().version_hash

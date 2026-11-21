@@ -274,9 +274,15 @@ defmodule Continuum.VersionRegistry do
   defp ensure_durable(%Instance{repo: nil}, _entries), do: :ok
 
   defp ensure_durable(%Instance{} = instance, entries) do
-    case GenServer.whereis(server_name(instance)) do
-      nil -> safe_persist_entries(instance, entries)
-      _pid -> GenServer.call(server_name(instance), {:ensure_durable, entries}, 15_000)
+    # A separate registry process cannot share the caller's transaction or its
+    # SQLite writer lock. Keep registration and rollback on the same connection.
+    if instance.repo.in_transaction?() do
+      safe_persist_entries(instance, entries)
+    else
+      case GenServer.whereis(server_name(instance)) do
+        nil -> safe_persist_entries(instance, entries)
+        _pid -> GenServer.call(server_name(instance), {:ensure_durable, entries}, 15_000)
+      end
     end
   catch
     :exit, _ -> safe_persist_entries(instance, entries)
