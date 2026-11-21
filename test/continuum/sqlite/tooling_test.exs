@@ -164,6 +164,36 @@ defmodule Continuum.SQLite.ToolingTest do
     assert {:ok, %{result: 42}} = Test.drive(run, opts)
   end
 
+  test "concurrent SQLite backfills keep one occurrence per interval", %{opts: opts} do
+    alias Continuum.Schedules
+    cursor = DateTime.add(DateTime.utc_now(), 60, :second)
+
+    {:ok, id} =
+      Continuum.schedule_every(
+        EchoFlow,
+        nil,
+        1_000,
+        [starts_at: cursor, overlap: :allow, missed: :skip] ++ opts
+      )
+
+    first = DateTime.add(cursor, -120, :second)
+    last = DateTime.add(first, 2, :second)
+    assert {:ok, %{entries: preview}} = Schedules.backfill(id, first, last, opts)
+    assert Enum.all?(preview, &(&1.status == :scheduled))
+
+    results =
+      1..3
+      |> Task.async_stream(fn _ ->
+        Schedules.backfill(id, first, last, [execute: true] ++ opts)
+      end)
+      |> Enum.flat_map(fn {:ok, {:ok, %{entries: entries}}} -> entries end)
+
+    assert Enum.frequencies_by(results, & &1.status) == %{scheduled: 3, existing: 6}
+    assert {:ok, %{entries: rows}} = Schedules.list_occurrences(id, opts)
+    assert [_, _, _] = Enum.uniq_by(rows, & &1.run_id)
+    assert {:ok, %{next_occurrence_at: ^cursor}} = Schedules.get_recurring(id, opts)
+  end
+
   test "schedule namespace guards cover persisted definitions and their occurrences", %{
     opts: opts,
     name: name

@@ -41,6 +41,26 @@ defmodule Continuum.Schedules do
   @doc "Lists a definition's occurrences, including overlap skips, using bounded pagination."
   def list_occurrences(id, opts \\ []), do: Continuum.RecurringSchedules.occurrences(id, opts)
 
+  @doc """
+  Previews or queues historical occurrences for a recurring interval definition.
+
+  The inclusive UTC range may cover up to 100 interval slots and must end
+  before the stored next occurrence and no later than now. The current
+  interval grid, pinned workflow, input, namespace and overlap policy apply.
+  Ranges can predate definition creation. Explicit backfills work while paused.
+
+  Returns `{:ok, %{mode: :preview | :executed, entries: entries}}`, oldest
+  first. Each entry contains `:occurrence_at` and a status of `:scheduled`,
+  `:skipped` (overlap), or `:existing` (any previously recorded slot).
+  Preview is the default. Pass `execute: true` to commit the whole batch.
+  Accepts `:instance` and `:namespace`. Backfills preserve the live cursor.
+  """
+  @doc since: "0.9.3"
+  @spec backfill(binary(), DateTime.t(), DateTime.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def backfill(id, from_at, until_at, opts \\ []),
+    do: Continuum.RecurringSchedules.Backfill.run(id, from_at, until_at, opts)
+
   @doc "Creates a durable one-shot schedule."
   @spec schedule_at(module(), term(), DateTime.t(), keyword()) ::
           {:ok, binary()} | {:error, term()}

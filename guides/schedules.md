@@ -141,3 +141,40 @@ and occurrence inspection retains database state/policy strings; the existing
 Existing 0.8.1 installations must apply the schema upgrade before starting the
 updated runtime: `mix continuum.gen.migration --from 0.8.1 --repo MyApp.Repo`,
 then `mix ecto.migrate`. Fresh installs receive this schema in the full generator.
+
+## Backfill missed intervals
+
+A nightly reconciliation with `missed: :skip` coalesces missed intervals after
+downtime. To run historical slots explicitly, preview the inclusive UTC range,
+inspect which slots already exist, then submit the same range for execution.
+
+```elixir
+alias Continuum.Schedules
+
+first = ~U[2026-11-01 00:00:00Z]
+last = ~U[2026-11-07 23:59:59Z]
+opts = [namespace: "billing"]
+
+{:ok, %{mode: :preview, entries: slots}} = Schedules.backfill(definition_id, first, last, opts)
+Enum.map(slots, &{&1.occurrence_at, &1.status})
+
+{:ok, %{mode: :executed}} =
+  Schedules.backfill(definition_id, first, last, [execute: true] ++ opts)
+```
+
+Each request covers at most 100 interval slots. Split larger ranges into
+smaller requests. The last timestamp must be at or before now and strictly
+before the definition's next occurrence. The interval grid extends backward
+from that cursor, including dates before definition creation if requested.
+An empty range between two slots yields an empty list.
+
+Execution checks the current rows again and commits the batch atomically.
+An existing slot in any state returns `:existing`. Missing slots become
+`:scheduled` or, under the overlap policy, `:skipped`. With `overlap: :skip`,
+outstanding work can cause the entire batch to be skipped. Otherwise the first
+new slot can be scheduled and the remaining overlapping slots are recorded as
+skipped. Retrying the same range preserves the rows and their run IDs.
+
+The runner dispatches queued occurrences with the definition's pinned input
+and version. The backfill never advances the live cursor. Paused definitions
+stay paused while explicitly queued occurrences can still run.

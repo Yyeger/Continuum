@@ -130,6 +130,80 @@ defmodule Continuum.RecurringSchedulesTest do
            )
   end
 
+  test "backfill recovers coalesced intervals, previews without writes, and retries without duplicates" do
+    alias Continuum.Schedules
+    first = DateTime.add(DateTime.utc_now(), -185, :second)
+    {:ok, id} = create(first, namespace: "billing", missed: :skip)
+    assert {:ok, 1} = RecurringSchedules.materialize(Instance.default(), 1)
+    :ok = Schedules.pause_recurring(id)
+    {:ok, %{next_occurrence_at: cursor}} = Schedules.get_recurring(id)
+    opts = [namespace: "billing"]
+    last = DateTime.add(first, 180, :second)
+    from_at = DateTime.add(first, 1, :microsecond)
+
+    assert {:error, :not_found} =
+             Schedules.backfill(id, from_at, last, namespace: "other", execute: true)
+
+    assert {:ok, %{mode: :preview, entries: preview}} =
+             Schedules.backfill(id, from_at, last, opts)
+
+    assert Enum.map(preview, & &1.status) == [:scheduled, :scheduled, :existing]
+
+    assert Enum.map(preview, & &1.occurrence_at) ==
+             Enum.map([60, 120, 180], &DateTime.add(first, &1, :second))
+
+    assert [_] = occurrences(id)
+
+    assert {:ok, %{mode: :executed, entries: ^preview}} =
+             Schedules.backfill(id, from_at, last, [execute: true] ++ opts)
+
+    rows = occurrences(id)
+    assert [_, _, _] = rows
+    assert Enum.all?(rows, &(&1.namespace == "billing" and &1.workflow == inspect(Flow)))
+
+    assert {:ok, %{entries: again}} =
+             Schedules.backfill(id, from_at, last, [execute: true] ++ opts)
+
+    assert Enum.all?(again, &(&1.status == :existing))
+    assert occurrences(id) == rows
+    assert {:ok, %{state: "paused", next_occurrence_at: ^cursor}} = Schedules.get_recurring(id)
+
+    assert {:ok, 3} = ScheduleRunner.dispatch_once()
+
+    for row <- rows do
+      assert {:ok, %{result: :input}} = Continuum.await(row.run_id, 1_000, journal: Postgres)
+    end
+  end
+
+  test "backfill enforces its slot budget, historical window and overlap policy" do
+    alias Continuum.Schedules
+    cursor = DateTime.add(DateTime.utc_now(), 1, :hour)
+    {:ok, id} = create(cursor, overlap: :skip, missed: :catch_up)
+    first = DateTime.add(cursor, -120, :minute)
+    last = DateTime.add(first, 120, :second)
+
+    assert {:error, :too_many_occurrences} =
+             Schedules.backfill(id, DateTime.add(first, -100, :minute), last, execute: true)
+
+    assert {:error, :range_not_historical} = Schedules.backfill(id, first, cursor)
+    assert {:error, :invalid_range} = Schedules.backfill(id, last, first)
+    assert {:error, :utc_range_required} = Schedules.backfill(id, DateTime.to_naive(first), last)
+    assert {:error, :invalid_execute} = Schedules.backfill(id, first, last, execute: "yes")
+
+    assert {:ok, %{entries: []}} =
+             Schedules.backfill(
+               id,
+               DateTime.add(first, 1, :microsecond),
+               DateTime.add(first, 1, :second)
+             )
+
+    assert {:ok, %{entries: entries}} = Schedules.backfill(id, first, last)
+    assert Enum.map(entries, & &1.status) == [:scheduled, :skipped, :skipped]
+    assert [] = occurrences(id)
+    assert {:ok, %{entries: ^entries}} = Schedules.backfill(id, first, last, execute: true)
+    assert Enum.map(occurrences(id), & &1.state) == ["scheduled", "skipped", "skipped"]
+  end
+
   test "namespace guards apply to definitions, occurrences and state changes" do
     alias Continuum.Schedules
     billing = [namespace: "billing"]

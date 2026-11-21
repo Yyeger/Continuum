@@ -165,28 +165,7 @@ defmodule Continuum.RecurringSchedules do
       at = DateTime.add(first, index * definition.every_ms, :millisecond)
       skipped? = definition.overlap_policy == "skip" and outstanding?(repo, definition.id)
 
-      occurrence = %{
-        id: Ecto.UUID.generate(),
-        run_id: Ecto.UUID.generate(),
-        recurring_schedule_id: definition.id,
-        occurrence_at: at,
-        workflow: definition.workflow,
-        version_hash: definition.version_hash,
-        input: definition.input,
-        namespace: definition.namespace,
-        attributes: definition.attributes,
-        trace_context: definition.trace_context,
-        scheduled_at: at,
-        inserted_at: now,
-        attempt: 0,
-        state: if(skipped?, do: "skipped", else: "scheduled"),
-        last_error: if(skipped?, do: "overlap policy skipped this occurrence", else: nil)
-      }
-
-      repo.insert_all(Schedule, [occurrence],
-        on_conflict: :nothing,
-        conflict_target: [:recurring_schedule_id, :occurrence_at]
-      )
+      insert_occurrence(repo, definition, at, now, skipped?)
     end)
 
     repo.update_all(from(s in RecurringSchedule, where: s.id == ^definition.id),
@@ -196,7 +175,34 @@ defmodule Continuum.RecurringSchedules do
     count
   end
 
-  defp outstanding?(repo, id) do
+  @doc false
+  def insert_occurrence(repo, definition, at, now, skipped?) do
+    occurrence = %{
+      id: Ecto.UUID.generate(),
+      run_id: Ecto.UUID.generate(),
+      recurring_schedule_id: definition.id,
+      occurrence_at: at,
+      workflow: definition.workflow,
+      version_hash: definition.version_hash,
+      input: definition.input,
+      namespace: definition.namespace,
+      attributes: definition.attributes,
+      trace_context: definition.trace_context,
+      scheduled_at: at,
+      inserted_at: now,
+      attempt: 0,
+      state: if(skipped?, do: "skipped", else: "scheduled"),
+      last_error: if(skipped?, do: "overlap policy skipped this occurrence", else: nil)
+    }
+
+    repo.insert_all(Schedule, [occurrence],
+      on_conflict: :nothing,
+      conflict_target: [:recurring_schedule_id, :occurrence_at]
+    )
+  end
+
+  @doc false
+  def outstanding?(repo, id) do
     repo.exists?(
       from(s in Schedule,
         as: :occurrence,
