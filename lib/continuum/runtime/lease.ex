@@ -256,6 +256,11 @@ defmodule Continuum.Runtime.Lease do
       :postgres -> renew_batch_postgres(entries, opts)
       :sqlite -> renew_batch_sqlite(entries, opts)
     end
+  catch
+    # DBConnection exits if the pool or ownership process disappears during
+    # checkout. No renewal outcome was observed, so retain the fenced claims.
+    :exit, {reason, {DBConnection.Holder, :checkout, _args}} ->
+      {:error, {:checkout_failed, reason}}
   end
 
   defp renew_batch_postgres(entries, opts) do

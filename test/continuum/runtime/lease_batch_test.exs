@@ -15,10 +15,15 @@ defmodule Continuum.Runtime.LeaseBatchTest do
     def query(_sql, [ids, _owners, _tokens, _ttl]) do
       Process.put(:renew_batch_sizes, [length(ids) | Process.get(:renew_batch_sizes, [])])
 
-      if Process.get(:renew_batch_error) do
-        {:error, :connection_unavailable}
-      else
-        {:ok, %{rows: Enum.map(ids, &[Ecto.UUID.load!(&1), nil])}}
+      case Process.get(:renew_batch_error) do
+        :checkout ->
+          exit({{:shutdown, "owner exited"}, {DBConnection.Holder, :checkout, [self(), []]}})
+
+        :unavailable ->
+          {:error, :connection_unavailable}
+
+        nil ->
+          {:ok, %{rows: Enum.map(ids, &[Ecto.UUID.load!(&1), nil])}}
       end
     end
   end
@@ -59,12 +64,15 @@ defmodule Continuum.Runtime.LeaseBatchTest do
 
   test "query failure keeps leases tracked and does not send ownership-loss messages" do
     state = state_with_leases(3)
-    Process.put(:renew_batch_error, true)
 
     ExUnit.CaptureLog.capture_log(fn ->
-      assert {:reply, :ok, ^state} = Heartbeater.handle_call(:renew_once, nil, state)
+      for reason <- [:unavailable, :checkout, nil] do
+        Process.put(:renew_batch_error, reason)
+        assert {:reply, :ok, ^state} = Heartbeater.handle_call(:renew_once, nil, state)
+      end
     end)
 
+    assert Process.get(:renew_batch_sizes) == [3, 3, 3]
     refute_received {:continuum_lease_lost, _, _}
     refute_received {:continuum_cancel_requested, _}
   end
