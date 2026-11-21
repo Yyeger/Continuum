@@ -124,7 +124,7 @@ jobs:
         run: mix hex.audit
       - name: Audit example application dependencies
         working-directory: examples/continuum_example_orders
-        run: mix hex.audit
+        run: mix deps.get --check-locked && mix hex.audit
       - name: Reject unused lock entries
         run: mix deps.unlock --check-unused
       - name: Build docs and check generated links
