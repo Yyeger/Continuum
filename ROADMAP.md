@@ -1,9 +1,17 @@
 # Continuum roadmap
 
-Current release: **0.9.0**. The version in `mix.exs` and the published sections
+Current package version: **0.9.1**. The version in `mix.exs` and the published sections
 of [CHANGELOG.md](CHANGELOG.md) define release status. Work under Unreleased is
 not yet a release. This roadmap records the bounded scope accepted for the
 current task; it does not assign new release numbers or feature deadlines.
+
+## v0.9.1 patch scope
+
+Operators can find direct children, continuation chains, and immediate successors
+through the existing paginated run search on PostgreSQL and SQLite. These filters
+use existing columns and namespace rules. The patch also updates both dependency
+locks, audits the example app in CI, and preserves lease tracking across a failed
+database checkout. No migration or workflow history conversion is required.
 
 ## Completed correctness milestone
 

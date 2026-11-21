@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.1 — 2026-11-21 — "Run lineage filters and security updates"
+
+- Filter `Continuum.list_runs/1,2` by `:parent_run_id`, `:continued_from_run_id`,
+  or `:correlation_id` on PostgreSQL and SQLite. Run-field `:eq` and `:neq`
+  filters now handle `nil`, including queries for a missing completion timestamp.
+  These changes use the existing schema.
+- Preserve tracked leases when a database connection owner exits during a
+  heartbeat checkout. The next heartbeat retries with the same fencing tokens.
+- Require Phoenix LiveView 1.2.14 and Phoenix HTML 4.4 for the optional Observer
+  integration, and Bandit 1.15 for development and tests. Update the locked
+  releases of Ecto, Plug, and Plug Crypto. The example app also upgrades Cowboy,
+  Cowlib, Decimal, and its TLS dependencies. CI now audits both lockfiles.
+
 ## v0.9.0 — 2026-10-18 — "SQLite on a single node"
 
 This release adds SQLite as a durable backend for applications that run on one
